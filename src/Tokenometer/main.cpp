@@ -7,6 +7,7 @@
 #include "DashboardView.h"
 #include "Database.h"
 #include "SourceContentReader.h"
+#include "TrendAnalytics.h"
 
 #include <algorithm>
 #include <atomic>
@@ -148,6 +149,17 @@ namespace
         std::wstring result(value.substr(0, maximumCharacters));
         result += L"\n\n[内容过长，已截断显示]";
         return result;
+    }
+
+    int TrendRangeDays(tokenometer::TrendRange range)
+    {
+        switch (range)
+        {
+        case tokenometer::TrendRange::Days7: return 7;
+        case tokenometer::TrendRange::Days90: return 90;
+        case tokenometer::TrendRange::Days365: return 365;
+        default: return 30;
+        }
     }
 }
 
@@ -302,6 +314,24 @@ private:
             RefreshDetails();
         };
         m_dashboard->SetDetailsCallbacks(std::move(callbacks));
+
+        tokenometer::TrendCallbacks trendCallbacks;
+        trendCallbacks.onGroupChanged = [this](tokenometer::TrendGroup group)
+        {
+            m_trendGroup = group;
+            RefreshTrends(true);
+        };
+        trendCallbacks.onChartChanged = [this](tokenometer::TrendChart chart)
+        {
+            m_trendChart = chart;
+            RefreshTrends(true);
+        };
+        trendCallbacks.onRangeChanged = [this](tokenometer::TrendRange range)
+        {
+            m_trendRange = range;
+            RefreshTrends(true);
+        };
+        m_dashboard->SetTrendCallbacks(std::move(trendCallbacks));
     }
 
     void LoadToolContent(std::wstring const& locator)
@@ -407,6 +437,99 @@ private:
             data.error = L"读取本地使用明细失败";
         }
         m_dashboard->UpdateDetails(data);
+    }
+
+    void RefreshTrends(bool force = false)
+    {
+        if (!m_dashboard)
+        {
+            return;
+        }
+
+        auto const nowTick = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (!force && nowTick - m_lastTrendRefreshTick < 5000)
+        {
+            return;
+        }
+        m_lastTrendRefreshTick = nowTick;
+
+        tokenometer::TrendViewData data;
+        data.group = m_trendGroup;
+        data.chart = m_trendChart;
+        data.range = m_trendRange;
+        if (!m_database)
+        {
+            data.error = L"本地使用数据库不可用";
+            m_dashboard->UpdateTrends(data);
+            return;
+        }
+
+        try
+        {
+            int const rangeDays = TrendRangeDays(m_trendRange);
+            auto const daily = m_database->GetDailyUsage(365);
+            std::vector<tokenometer::HourlyUsage> hourly;
+            if (m_trendChart == tokenometer::TrendChart::Kline)
+            {
+                hourly = m_database->GetHourlyUsage(rangeDays);
+            }
+            auto const dimension = m_trendGroup == tokenometer::TrendGroup::Tool
+                ? tokenometer::TrendDimension::Tool
+                : tokenometer::TrendDimension::Model;
+            auto const analysis = tokenometer::AnalyzeTrends(daily, hourly, dimension, rangeDays);
+
+            for (auto const& legend : analysis.legend)
+            {
+                tokenometer::TrendSeries series;
+                series.key = legend.series;
+                series.total = legend.total;
+                series.percent = legend.percent;
+                series.points.reserve(analysis.stackedDays.size());
+                for (auto const& day : analysis.stackedDays)
+                {
+                    auto const value = std::find_if(day.values.begin(), day.values.end(), [&](auto const& item)
+                    {
+                        return item.series == legend.series;
+                    });
+                    series.points.push_back({ day.day, value == day.values.end() ? 0 : value->value });
+                }
+                data.series.push_back(std::move(series));
+            }
+
+            data.heatCells.reserve(analysis.heatmap.size());
+            for (auto const& day : analysis.heatmap)
+            {
+                data.heatCells.push_back({ day.day, day.value });
+            }
+            data.currentStreak = analysis.currentStreak;
+            data.longestStreak = analysis.longestStreak;
+
+            if (!analysis.legend.empty())
+            {
+                data.candleSeries = analysis.legend.front().series;
+                for (auto const& candle : analysis.candles)
+                {
+                    if (candle.series == data.candleSeries)
+                    {
+                        data.candles.push_back({
+                            candle.day,
+                            candle.open,
+                            candle.high,
+                            candle.low,
+                            candle.close,
+                            candle.volume,
+                        });
+                    }
+                }
+            }
+            data.loading = m_collecting.load(std::memory_order_relaxed) && data.series.empty();
+        }
+        catch (...)
+        {
+            data.error = L"读取或汇总趋势数据失败";
+        }
+        m_dashboard->UpdateTrends(data);
     }
 
     void BuildContent()
@@ -647,7 +770,6 @@ private:
                 try
                 {
                     winrt::init_apartment(winrt::apartment_type::multi_threaded);
-                    bool firstPass = true;
                     while (!stopToken.stop_requested())
                     {
                         try
@@ -656,11 +778,9 @@ private:
                             auto const result = m_collector->CollectOnce(stopToken);
                             m_lastCollectionAt.store(result.completedAt, std::memory_order_relaxed);
                             m_collectionFailed.store(false, std::memory_order_relaxed);
-                            if (firstPass && !stopToken.stop_requested())
+                            if (!stopToken.stop_requested() && m_database->PruneDetailsIfDue())
                             {
-                                m_database->PruneDetails();
                                 m_database->Optimize();
-                                firstPass = false;
                             }
                         }
                         catch (...)
@@ -758,6 +878,10 @@ private:
         {
             RefreshDetails();
         }
+        else if (m_dashboard->CurrentPage() == tokenometer::DashboardPage::Trends)
+        {
+            RefreshTrends();
+        }
     }
 
     void StartBackdrop()
@@ -817,6 +941,10 @@ private:
     std::wstring m_selectedToolLocator;
     std::wstring m_selectedToolDetails;
     std::vector<std::pair<std::wstring, tokenometer::ToolCallDetail>> m_toolLocators;
+    tokenometer::TrendGroup m_trendGroup{ tokenometer::TrendGroup::Tool };
+    tokenometer::TrendChart m_trendChart{ tokenometer::TrendChart::Bars };
+    tokenometer::TrendRange m_trendRange{ tokenometer::TrendRange::Days30 };
+    int64_t m_lastTrendRefreshTick{};
     HWND m_hwnd{};
     bool m_bubbleMode{};
 };
@@ -830,6 +958,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         if (!tokenometer::Database::SelfTest()) return 11;
         if (!tokenometer::CodexCollector::SelfTest()) return 12;
         if (!tokenometer::TestSourceContentReader()) return 13;
+        if (!tokenometer::TestTrendAnalytics()) return 14;
         return 0;
     }
 

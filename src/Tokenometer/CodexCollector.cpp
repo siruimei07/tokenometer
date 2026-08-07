@@ -238,9 +238,12 @@ namespace tokenometer
             ULARGE_INTEGER ticks{};
             ticks.QuadPart = (static_cast<uint64_t>(timestamp) + 11'644'473'600ULL) * 10'000'000ULL;
             FILETIME utc{ ticks.LowPart, ticks.HighPart };
-            FILETIME local{};
+            SYSTEMTIME utcTime{};
             SYSTEMTIME time{};
-            if (!FileTimeToLocalFileTime(&utc, &local) || !FileTimeToSystemTime(&local, &time))
+            DYNAMIC_TIME_ZONE_INFORMATION timeZone{};
+            if (!FileTimeToSystemTime(&utc, &utcTime) ||
+                GetDynamicTimeZoneInformation(&timeZone) == TIME_ZONE_ID_INVALID ||
+                !SystemTimeToTzSpecificLocalTimeEx(&timeZone, &utcTime, &time))
             {
                 return L"unknown";
             }

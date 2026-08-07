@@ -75,6 +75,7 @@
     <ClCompile Include="DashboardView.cpp" />
     <ClCompile Include="Database.cpp" />
     <ClCompile Include="SourceContentReader.cpp" />
+    <ClCompile Include="TrendAnalytics.cpp" />
     <ClCompile Include="CaptureRenderer.cpp" />
     <ClCompile Include="main.cpp" />
     <ClInclude Include="CodexCollector.h" />
@@ -82,6 +83,7 @@
     <ClInclude Include="DashboardView.h" />
     <ClInclude Include="Database.h" />
     <ClInclude Include="SourceContentReader.h" />
+    <ClInclude Include="TrendAnalytics.h" />
     <ClInclude Include="UsageModels.h" />
     <Manifest Include="app.manifest" />
     <None Include="Glass.hlsl" />

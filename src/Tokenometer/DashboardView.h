@@ -72,6 +72,78 @@ namespace tokenometer
         std::function<void(std::wstring const&)> onToolCallRequested;
     };
 
+    enum class TrendGroup
+    {
+        Tool,
+        Model,
+    };
+
+    enum class TrendChart
+    {
+        Bars,
+        Kline,
+    };
+
+    enum class TrendRange
+    {
+        Days7,
+        Days30,
+        Days90,
+        Days365,
+    };
+
+    struct TrendPoint
+    {
+        std::wstring day;
+        int64_t value{};
+    };
+
+    struct TrendSeries
+    {
+        std::wstring key;
+        std::vector<TrendPoint> points;
+        int64_t total{};
+        double percent{};
+    };
+
+    struct TrendCandle
+    {
+        std::wstring day;
+        int64_t open{};
+        int64_t high{};
+        int64_t low{};
+        int64_t close{};
+        int64_t volume{};
+    };
+
+    struct TrendHeatCell
+    {
+        std::wstring day;
+        int64_t value{};
+    };
+
+    struct TrendViewData
+    {
+        TrendGroup group{ TrendGroup::Tool };
+        TrendChart chart{ TrendChart::Bars };
+        TrendRange range{ TrendRange::Days30 };
+        std::vector<TrendSeries> series;
+        std::wstring candleSeries;
+        std::vector<TrendCandle> candles;
+        std::vector<TrendHeatCell> heatCells;
+        int currentStreak{};
+        int longestStreak{};
+        bool loading{};
+        std::wstring error;
+    };
+
+    struct TrendCallbacks
+    {
+        std::function<void(TrendGroup)> onGroupChanged;
+        std::function<void(TrendChart)> onChartChanged;
+        std::function<void(TrendRange)> onRangeChanged;
+    };
+
     class DashboardView final
     {
     public:
@@ -87,6 +159,8 @@ namespace tokenometer
         void UpdateOverview(OverviewViewData const& data);
         void UpdateDetails(DetailsViewData const& data);
         void SetDetailsCallbacks(DetailsCallbacks callbacks);
+        void UpdateTrends(TrendViewData const& data);
+        void SetTrendCallbacks(TrendCallbacks callbacks);
         void ShowPage(DashboardPage page);
 
     private:
@@ -104,6 +178,7 @@ namespace tokenometer
         void UpdateNavigationState();
         void UpdateDailyVisuals(std::vector<DailyUsage> const& daily);
         void UpdateDetailsDimensionButtons();
+        void UpdateTrendButtons();
 
         winrt::Microsoft::UI::Xaml::Controls::Grid m_root{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::Grid m_pageHost{ nullptr };
@@ -167,6 +242,21 @@ namespace tokenometer
         std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_detailsDimensionButtons;
         DetailsDimension m_detailsDimension{ DetailsDimension::Tool };
         DetailsCallbacks m_detailsCallbacks;
+
+        winrt::Microsoft::UI::Xaml::Controls::Grid m_trendChartHost{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_trendChartCaption{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_currentStreakText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_longestStreakText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_trendHeatCaption{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::StackPanel m_trendLegend{ nullptr };
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Border> m_trendHeatCells;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_trendGroupButtons;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_trendChartButtons;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_trendRangeButtons;
+        TrendGroup m_trendGroup{ TrendGroup::Tool };
+        TrendChart m_trendChart{ TrendChart::Bars };
+        TrendRange m_trendRange{ TrendRange::Days30 };
+        TrendCallbacks m_trendCallbacks;
 
         DashboardPage m_currentPage{ DashboardPage::Overview };
     };

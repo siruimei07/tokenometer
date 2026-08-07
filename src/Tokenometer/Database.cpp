@@ -5,6 +5,7 @@
 #include <winsqlite/winsqlite3.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <stdexcept>
 #include <string>
@@ -177,6 +178,41 @@ namespace tokenometer
                 std::chrono::system_clock::now().time_since_epoch()).count();
         }
 
+        std::wstring LocalCalendarDay(int daysAgo = 0)
+        {
+            SYSTEMTIME local{};
+            GetLocalTime(&local);
+            local.wHour = 12;
+            local.wMinute = 0;
+            local.wSecond = 0;
+            local.wMilliseconds = 0;
+
+            FILETIME value{};
+            if (!SystemTimeToFileTime(&local, &value))
+            {
+                throw std::runtime_error("The local calendar date is unavailable");
+            }
+            ULARGE_INTEGER ticks{};
+            ticks.LowPart = value.dwLowDateTime;
+            ticks.HighPart = value.dwHighDateTime;
+            constexpr uint64_t ticksPerDay = 86400ULL * 10'000'000ULL;
+            uint64_t const availableDays = ticks.QuadPart / ticksPerDay;
+            uint64_t const requestedDays = std::min<uint64_t>(
+                static_cast<uint64_t>(std::max(daysAgo, 0)),
+                availableDays);
+            ticks.QuadPart -= requestedDays * ticksPerDay;
+            value.dwLowDateTime = ticks.LowPart;
+            value.dwHighDateTime = ticks.HighPart;
+            if (!FileTimeToSystemTime(&value, &local))
+            {
+                throw std::runtime_error("The local calendar date is unavailable");
+            }
+
+            std::array<wchar_t, 16> text{};
+            swprintf_s(text.data(), text.size(), L"%04u-%02u-%02u", local.wYear, local.wMonth, local.wDay);
+            return text.data();
+        }
+
         void BindCounts(Statement& statement, int first, TokenCounts const& counts)
         {
             statement.Bind(first, counts.input);
@@ -265,7 +301,7 @@ namespace tokenometer
             versionStatement.Step();
             version = versionStatement.Int(0);
         }
-        if (version > 4)
+        if (version > 5)
         {
             throw std::runtime_error("The usage database was created by a newer Tokenometer version");
         }
@@ -421,9 +457,10 @@ namespace tokenometer
                 reported_total_tokens INTEGER NOT NULL DEFAULT 0,
                 messages INTEGER NOT NULL DEFAULT 0,
                 tool_calls INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY(source_path, hour_start, session_id, source_kind, account_id, tool, model, project, device_id)
+                PRIMARY KEY(source_path, hour_start, day, session_id, source_kind, account_id, tool, model, project, device_id)
             );
             CREATE INDEX IF NOT EXISTS hourly_usage_time_idx ON hourly_usage(hour_start);
+            CREATE INDEX IF NOT EXISTS hourly_usage_day_idx ON hourly_usage(day, hour_start);
             CREATE TABLE IF NOT EXISTS daily_usage(
                 source_path TEXT NOT NULL,
                 day TEXT NOT NULL,
@@ -473,7 +510,9 @@ namespace tokenometer
                 VALUES(3, CAST(strftime('%s','now') AS INTEGER));
             INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                 VALUES(4, CAST(strftime('%s','now') AS INTEGER));
-            PRAGMA user_version=4;
+            INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES(5, CAST(strftime('%s','now') AS INTEGER));
+            PRAGMA user_version=5;
                 )sql");
             });
         }
@@ -670,6 +709,54 @@ namespace tokenometer
                     INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                         VALUES(4, CAST(strftime('%s','now') AS INTEGER));
                     PRAGMA user_version=4;
+                )sql");
+            });
+            version = 4;
+        }
+
+        if (version == 4)
+        {
+            Transaction([&]
+            {
+                Execute(R"sql(
+                    ALTER TABLE hourly_usage RENAME TO hourly_usage_v4;
+                    CREATE TABLE hourly_usage(
+                        source_path TEXT NOT NULL,
+                        hour_start INTEGER NOT NULL,
+                        day TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        source_kind TEXT NOT NULL,
+                        account_id TEXT NOT NULL DEFAULT 'current',
+                        tool TEXT NOT NULL,
+                        model TEXT NOT NULL DEFAULT '',
+                        project TEXT NOT NULL DEFAULT '',
+                        device_id TEXT NOT NULL DEFAULT '',
+                        input_tokens INTEGER NOT NULL DEFAULT 0,
+                        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        output_tokens INTEGER NOT NULL DEFAULT 0,
+                        reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                        reported_total_tokens INTEGER NOT NULL DEFAULT 0,
+                        messages INTEGER NOT NULL DEFAULT 0,
+                        tool_calls INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(source_path, hour_start, day, session_id, source_kind, account_id, tool, model, project, device_id)
+                    );
+                    INSERT INTO hourly_usage(
+                        source_path, hour_start, day, session_id, source_kind, account_id, tool,
+                        model, project, device_id, input_tokens, cached_input_tokens,
+                        cache_write_input_tokens, output_tokens, reasoning_output_tokens,
+                        reported_total_tokens, messages, tool_calls)
+                    SELECT source_path, hour_start, day, session_id, source_kind, account_id, tool,
+                           model, project, device_id, input_tokens, cached_input_tokens,
+                           cache_write_input_tokens, output_tokens, reasoning_output_tokens,
+                           reported_total_tokens, messages, tool_calls
+                    FROM hourly_usage_v4;
+                    DROP TABLE hourly_usage_v4;
+                    CREATE INDEX hourly_usage_time_idx ON hourly_usage(hour_start);
+                    CREATE INDEX hourly_usage_day_idx ON hourly_usage(day, hour_start);
+                    INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                        VALUES(5, CAST(strftime('%s','now') AS INTEGER));
+                    PRAGMA user_version=5;
                 )sql");
             });
         }
@@ -950,7 +1037,7 @@ namespace tokenometer
                 project, device_id, input_tokens, cached_input_tokens, cache_write_input_tokens,
                 output_tokens, reasoning_output_tokens, reported_total_tokens)
             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
-            ON CONFLICT(source_path, hour_start, session_id, source_kind, account_id, tool, model, project, device_id)
+            ON CONFLICT(source_path, hour_start, day, session_id, source_kind, account_id, tool, model, project, device_id)
             DO UPDATE SET
                 account_id=excluded.account_id,
                 input_tokens=input_tokens+excluded.input_tokens,
@@ -1058,7 +1145,7 @@ namespace tokenometer
                 source_path, hour_start, day, session_id, source_kind, account_id, tool, model,
                 project, device_id, tool_calls)
             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1)
-            ON CONFLICT(source_path, hour_start, session_id, source_kind, account_id, tool, model, project, device_id)
+            ON CONFLICT(source_path, hour_start, day, session_id, source_kind, account_id, tool, model, project, device_id)
             DO UPDATE SET account_id=excluded.account_id, tool_calls=tool_calls+1;
         )sql");
         hourlyStatement.Bind(1, event.sourcePath);
@@ -1166,7 +1253,7 @@ namespace tokenometer
                 source_path, hour_start, day, session_id, source_kind, account_id, tool, model,
                 project, device_id, messages)
             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1)
-            ON CONFLICT(source_path, hour_start, session_id, source_kind, account_id, tool, model, project, device_id)
+            ON CONFLICT(source_path, hour_start, day, session_id, source_kind, account_id, tool, model, project, device_id)
             DO UPDATE SET account_id=excluded.account_id, messages=messages+1;
         )sql");
         hourlyStatement.Bind(1, event.sourcePath);
@@ -1274,18 +1361,26 @@ namespace tokenometer
     std::vector<DailyUsage> Database::GetDailyUsage(int days)
     {
         std::scoped_lock lock(m_mutex);
-        int64_t const since = days > 0 ? UnixNow() - static_cast<int64_t>(days) * 86400 : 0;
-        Statement statement(m_database, R"sql(
+        std::string sql = R"sql(
             SELECT day, source_kind, tool, model, project, device_id, account_id,
                    SUM(input_tokens), SUM(cached_input_tokens), SUM(cache_write_input_tokens),
                    SUM(output_tokens), SUM(reasoning_output_tokens), SUM(reported_total_tokens),
                    SUM(messages), SUM(tool_calls)
-            FROM daily_usage
-            WHERE (?1=0 OR last_timestamp>=?1)
+            FROM daily_usage )sql";
+        if (days > 0)
+        {
+            sql += "WHERE day>=?1 AND day<=?2 ";
+        }
+        sql += R"sql(
             GROUP BY day, source_kind, tool, model, project, device_id, account_id
             ORDER BY day ASC;
-        )sql");
-        statement.Bind(1, since);
+        )sql";
+        Statement statement(m_database, sql.c_str());
+        if (days > 0)
+        {
+            statement.Bind(1, LocalCalendarDay(days - 1));
+            statement.Bind(2, LocalCalendarDay());
+        }
         std::vector<DailyUsage> result;
         while (statement.Step())
         {
@@ -1308,18 +1403,26 @@ namespace tokenometer
     std::vector<HourlyUsage> Database::GetHourlyUsage(int days)
     {
         std::scoped_lock lock(m_mutex);
-        int64_t const since = days > 0 ? UnixNow() - static_cast<int64_t>(days) * 86400 : 0;
-        Statement statement(m_database, R"sql(
+        std::string sql = R"sql(
             SELECT hour_start, day, source_kind, tool, model, project, device_id, account_id,
                    SUM(input_tokens), SUM(cached_input_tokens), SUM(cache_write_input_tokens),
                    SUM(output_tokens), SUM(reasoning_output_tokens), SUM(reported_total_tokens),
                    SUM(messages), SUM(tool_calls)
-            FROM hourly_usage
-            WHERE (?1=0 OR hour_start>=?1)
+            FROM hourly_usage )sql";
+        if (days > 0)
+        {
+            sql += "WHERE day>=?1 AND day<=?2 ";
+        }
+        sql += R"sql(
             GROUP BY hour_start, day, source_kind, tool, model, project, device_id, account_id
             ORDER BY hour_start ASC;
-        )sql");
-        statement.Bind(1, since);
+        )sql";
+        Statement statement(m_database, sql.c_str());
+        if (days > 0)
+        {
+            statement.Bind(1, LocalCalendarDay(days - 1));
+            statement.Bind(2, LocalCalendarDay());
+        }
         std::vector<HourlyUsage> result;
         while (statement.Step())
         {
@@ -1528,6 +1631,37 @@ namespace tokenometer
         }
     }
 
+    bool Database::PruneDetailsIfDue(int usageDays, int toolDays, int hourlyDays)
+    {
+        std::scoped_lock lock(m_mutex);
+        int64_t const now = UnixNow();
+        int64_t lastRun{};
+        {
+            Statement statement(m_database, R"sql(
+                SELECT CAST(value AS INTEGER)
+                FROM app_state WHERE key='last_retention_prune_at';
+            )sql");
+            if (statement.Step()) lastRun = statement.Int64(0);
+        }
+        if (lastRun > 0 && now >= lastRun && now - lastRun < 86400)
+        {
+            return false;
+        }
+
+        Transaction([&]
+        {
+            PruneDetails(usageDays, toolDays, hourlyDays);
+            Statement statement(m_database, R"sql(
+                INSERT INTO app_state(key, value)
+                VALUES('last_retention_prune_at', ?1)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+            )sql");
+            statement.Bind(1, now);
+            statement.Step();
+        });
+        return true;
+    }
+
     void Database::Optimize()
     {
         std::scoped_lock lock(m_mutex);
@@ -1701,10 +1835,42 @@ namespace tokenometer
             accountBUsage.sourceOffset = 2;
             accountBUsage.accountId = L"account-b";
             accountBUsage.counts = { 200, 100, 0, 20, 0, 220 };
+            UsageEvent followingDayUsage = accountAUsage;
+            followingDayUsage.sourceOffset = 3;
+            followingDayUsage.day = L"1970-01-02";
             if (!accountKeys.InsertUsageEvent(accountAUsage) ||
                 !accountKeys.InsertUsageEvent(accountBUsage) ||
+                !accountKeys.InsertUsageEvent(followingDayUsage) ||
                 accountKeys.GetBreakdown(L"account").size() != 2 ||
-                accountKeys.GetHourlyUsage(0).size() != 2)
+                accountKeys.GetHourlyUsage(0).size() != 3)
+            {
+                return false;
+            }
+
+            Database calendarDays(L":memory:");
+            calendarDays.Initialize();
+            int64_t const now = UnixNow();
+            UsageEvent todayUsage = usage;
+            todayUsage.sourcePath = L"today.jsonl";
+            todayUsage.sourceOffset = 1;
+            todayUsage.sessionId = L"today";
+            todayUsage.timestamp = now;
+            todayUsage.day = LocalCalendarDay();
+            todayUsage.counts = { 10, 0, 0, 0, 0, 10 };
+            UsageEvent yesterdayUsage = todayUsage;
+            yesterdayUsage.sourcePath = L"yesterday.jsonl";
+            yesterdayUsage.sessionId = L"yesterday";
+            yesterdayUsage.timestamp = now - 86400;
+            yesterdayUsage.day = LocalCalendarDay(1);
+            yesterdayUsage.counts = { 20, 0, 0, 0, 0, 20 };
+            if (!calendarDays.InsertUsageEvent(todayUsage) ||
+                !calendarDays.InsertUsageEvent(yesterdayUsage) ||
+                calendarDays.GetDailyUsage(1).size() != 1 ||
+                calendarDays.GetDailyUsage(2).size() != 2 ||
+                calendarDays.GetHourlyUsage(1).size() != 1 ||
+                calendarDays.GetHourlyUsage(2).size() != 2 ||
+                !calendarDays.PruneDetailsIfDue() ||
+                calendarDays.PruneDetailsIfDue())
             {
                 return false;
             }
@@ -1758,11 +1924,21 @@ namespace tokenometer
                     tool_calls INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(source_path, hour_start, session_id, source_kind, tool, model, project, device_id)
                 );
+                INSERT INTO daily_usage(
+                    source_path, day, session_id, source_kind, tool, first_timestamp,
+                    last_timestamp, reported_total_tokens)
+                VALUES('migration.jsonl', '2026-01-01', 'migration-session', 'codex',
+                       'Codex', 1, 1, 183);
+                INSERT INTO hourly_usage(
+                    source_path, hour_start, day, session_id, source_kind, tool,
+                    reported_total_tokens)
+                VALUES('migration.jsonl', 0, '2026-01-01', 'migration-session', 'codex',
+                       'Codex', 270);
                 PRAGMA user_version=2;
             )sql");
             migrated.Initialize();
             Statement migratedVersion(migrated.m_database, "PRAGMA user_version;");
-            if (!migratedVersion.Step() || migratedVersion.Int(0) != 4) return false;
+            if (!migratedVersion.Step() || migratedVersion.Int(0) != 5) return false;
             auto hasAccountColumn = [&](char const* table)
             {
                 std::string sql = "PRAGMA table_info(";
@@ -1775,7 +1951,7 @@ namespace tokenometer
                 }
                 return false;
             };
-            auto accountIsPartOfPrimaryKey = [&](char const* table)
+            auto columnIsPartOfPrimaryKey = [&](char const* table, std::wstring_view column)
             {
                 std::string sql = "PRAGMA table_info(";
                 sql += table;
@@ -1783,15 +1959,20 @@ namespace tokenometer
                 Statement columns(migrated.m_database, sql.c_str());
                 while (columns.Step())
                 {
-                    if (columns.Text(1) == L"account_id") return columns.Int(5) > 0;
+                    if (columns.Text(1) == column) return columns.Int(5) > 0;
                 }
                 return false;
             };
+            auto const migratedDays = migrated.GetDailyUsage(0);
+            auto const migratedHours = migrated.GetHourlyUsage(0);
             return hasAccountColumn("sessions") &&
                    hasAccountColumn("daily_usage") &&
                    hasAccountColumn("hourly_usage") &&
-                   accountIsPartOfPrimaryKey("daily_usage") &&
-                   accountIsPartOfPrimaryKey("hourly_usage");
+                   columnIsPartOfPrimaryKey("daily_usage", L"account_id") &&
+                   columnIsPartOfPrimaryKey("hourly_usage", L"account_id") &&
+                   columnIsPartOfPrimaryKey("hourly_usage", L"day") &&
+                   migratedDays.size() == 1 && migratedDays.front().counts.reportedTotal == 183 &&
+                   migratedHours.size() == 1 && migratedHours.front().counts.reportedTotal == 270;
         }
         catch (...)
         {

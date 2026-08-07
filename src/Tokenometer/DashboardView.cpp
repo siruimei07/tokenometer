@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <iomanip>
 #include <map>
@@ -251,23 +252,25 @@ namespace
     controls::StackPanel Heatmap(
         int weeks,
         winrt::Windows::UI::Color const& accent,
-        std::vector<controls::Border>* cells = nullptr)
+        std::vector<controls::Border>* cells = nullptr,
+        double cellSize = 10,
+        double spacing = 3)
     {
         controls::StackPanel map;
         map.Orientation(controls::Orientation::Horizontal);
-        map.Spacing(3);
+        map.Spacing(spacing);
         map.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
 
         for (int week = 0; week < weeks; ++week)
         {
             controls::StackPanel column;
-            column.Spacing(3);
+            column.Spacing(spacing);
             for (int day = 0; day < 7; ++day)
             {
                 auto const active = ((week * 3 + day * 5 + week / 2) % 9) > 3;
                 controls::Border cell;
-                cell.Width(10);
-                cell.Height(10);
+                cell.Width(cellSize);
+                cell.Height(cellSize);
                 cell.CornerRadius(Radius(3));
                 cell.Background(Brush(active ? accent : Color(55, 52, 53)));
                 cell.Opacity(active ? 0.42 + 0.08 * ((week + day) % 6) : 0.5);
@@ -378,42 +381,33 @@ namespace
         return std::to_wstring(std::max<int64_t>(minutes, 1)) + L"m 后重置";
     }
 
-    controls::Border Metric(
-        std::wstring_view label,
-        std::wstring_view value,
-        std::wstring_view detail,
-        winrt::Windows::UI::Color const& accent)
+    winrt::Windows::UI::Color SeriesColor(size_t index)
     {
-        controls::StackPanel content;
-        content.Spacing(4);
-        content.Children().Append(Text(label, 11, Color(143, 139, 140), 500));
-        content.Children().Append(Text(value, 22, Color(247, 247, 245), 650, true));
-        content.Children().Append(Text(detail, 10.5, accent, 500));
-        return SoftPanel(content);
+        constexpr std::array<std::array<uint8_t, 3>, 5> palette{
+            std::array<uint8_t, 3>{ 98, 223, 125 },
+            std::array<uint8_t, 3>{ 255, 253, 142 },
+            std::array<uint8_t, 3>{ 240, 63, 22 },
+            std::array<uint8_t, 3>{ 153, 183, 163 },
+            std::array<uint8_t, 3>{ 204, 164, 92 },
+        };
+        auto const& value = palette[index % palette.size()];
+        return Color(value[0], value[1], value[2]);
     }
 
-    controls::Border BreakdownPanel(
-        std::wstring_view name,
-        std::wstring_view detail,
-        std::wstring_view value,
-        double ratio,
-        winrt::Windows::UI::Color const& accent)
+    std::wstring_view RangeLabel(tokenometer::TrendRange range)
     {
-        controls::StackPanel content;
-        content.Spacing(8);
-
-        controls::Grid top;
-        AddColumn(top, Star());
-        AddColumn(top, mux::GridLengthHelper::Auto());
-        top.Children().Append(Text(name, 13.5, Color(247, 247, 245), 600));
-
-        auto valueText = Text(value, 13, Color(247, 247, 245), 600, true);
-        controls::Grid::SetColumn(valueText, 1);
-        top.Children().Append(valueText);
-        content.Children().Append(top);
-        content.Children().Append(Progress(ratio, accent));
-        content.Children().Append(Text(detail, 10.5, Color(143, 139, 140)));
-        return SoftPanel(content);
+        switch (range)
+        {
+        case tokenometer::TrendRange::Days7:
+            return L"7 days";
+        case tokenometer::TrendRange::Days30:
+            return L"30 days";
+        case tokenometer::TrendRange::Days90:
+            return L"90 days";
+        case tokenometer::TrendRange::Days365:
+            return L"365 days";
+        }
+        return L"30 days";
     }
 
     controls::Border SessionRow(
@@ -511,6 +505,7 @@ DashboardView::DashboardView()
     BuildShell();
     UpdateOverview({});
     UpdateDetails({});
+    UpdateTrends({});
     ShowPage(DashboardPage::Overview);
 }
 
@@ -1051,6 +1046,359 @@ void DashboardView::UpdateDetailsDimensionButtons()
     }
 }
 
+void DashboardView::SetTrendCallbacks(TrendCallbacks callbacks)
+{
+    m_trendCallbacks = std::move(callbacks);
+}
+
+void DashboardView::UpdateTrends(TrendViewData const& data)
+{
+    m_trendGroup = data.group;
+    m_trendChart = data.chart;
+    m_trendRange = data.range;
+    UpdateTrendButtons();
+
+    m_currentStreakText.Text(winrt::hstring{ FormatInteger(std::max(data.currentStreak, 0)) });
+    m_longestStreakText.Text(winrt::hstring{ FormatInteger(std::max(data.longestStreak, 0)) });
+    m_trendChartHost.Children().Clear();
+
+    auto showChartState = [this](std::wstring_view title, std::wstring_view detail)
+    {
+        controls::StackPanel copy;
+        copy.Spacing(3);
+        copy.HorizontalAlignment(mux::HorizontalAlignment::Center);
+        copy.VerticalAlignment(mux::VerticalAlignment::Center);
+        copy.Children().Append(Text(title, 12, Color(247, 247, 245), 600));
+        copy.Children().Append(Text(detail, 9.5, Color(143, 139, 140)));
+        auto panel = SoftPanel(copy);
+        panel.HorizontalAlignment(mux::HorizontalAlignment::Center);
+        panel.VerticalAlignment(mux::VerticalAlignment::Center);
+        m_trendChartHost.Children().Append(panel);
+    };
+
+    auto const groupLabel = data.group == TrendGroup::Tool ? L"按工具" : L"按模型";
+    if (!data.error.empty())
+    {
+        m_trendChartCaption.Text(L"趋势加载失败");
+        showChartState(L"无法读取趋势", data.error);
+    }
+    else if (data.loading)
+    {
+        m_trendChartCaption.Text(L"正在汇总趋势");
+        showChartState(L"正在加载", L"预聚合完成后会自动刷新图形。");
+    }
+    else if (data.chart == TrendChart::Bars)
+    {
+        auto const seriesCount = std::min<size_t>(data.series.size(), 5);
+        std::map<std::wstring, std::vector<int64_t>> buckets;
+        for (size_t seriesIndex = 0; seriesIndex < seriesCount; ++seriesIndex)
+        {
+            for (auto const& point : data.series[seriesIndex].points)
+            {
+                auto& values = buckets[point.day];
+                values.resize(seriesCount);
+                values[seriesIndex] += std::max<int64_t>(point.value, 0);
+            }
+        }
+
+        int64_t peak{};
+        for (auto const& [day, values] : buckets)
+        {
+            (void)day;
+            int64_t total{};
+            for (auto const value : values)
+            {
+                total += value;
+            }
+            peak = std::max(peak, total);
+        }
+
+        if (buckets.empty() || peak <= 0)
+        {
+            m_trendChartCaption.Text(winrt::hstring{
+                std::wstring{ RangeLabel(data.range) } + L" · " + groupLabel });
+            showChartState(L"暂无趋势数据", L"当前范围内没有可绘制的每日汇总。");
+        }
+        else
+        {
+            controls::Canvas canvas;
+            canvas.Width(960);
+            canvas.Height(166);
+            constexpr double plotLeft = 20.0;
+            constexpr double plotWidth = 920.0;
+            constexpr double plotBottom = 136.0;
+            constexpr double plotHeight = 120.0;
+
+            controls::Border baseline;
+            baseline.Width(plotWidth);
+            baseline.Height(1);
+            baseline.Background(Brush(Color(255, 255, 255, 22)));
+            controls::Canvas::SetLeft(baseline, plotLeft);
+            controls::Canvas::SetTop(baseline, plotBottom);
+            canvas.Children().Append(baseline);
+
+            auto const step = plotWidth / static_cast<double>(buckets.size());
+            auto const barWidth = std::max(1.0, step * 0.72);
+            size_t dayIndex{};
+            for (auto const& [day, values] : buckets)
+            {
+                auto bottom = plotBottom;
+                for (size_t seriesIndex = 0; seriesIndex < values.size(); ++seriesIndex)
+                {
+                    auto const height = plotHeight * static_cast<double>(values[seriesIndex])
+                        / static_cast<double>(peak);
+                    if (height <= 0.0)
+                    {
+                        continue;
+                    }
+                    controls::Border segment;
+                    segment.Width(barWidth);
+                    segment.Height(std::max(height, 1.0));
+                    segment.Background(Brush(SeriesColor(seriesIndex)));
+                    segment.Opacity(0.82);
+                    segment.CornerRadius(Radius(std::min(3.0, barWidth * 0.35)));
+                    bottom -= height;
+                    controls::Canvas::SetLeft(segment, plotLeft + step * dayIndex + (step - barWidth) * 0.5);
+                    controls::Canvas::SetTop(segment, bottom);
+                    canvas.Children().Append(segment);
+                }
+                ++dayIndex;
+            }
+
+            auto firstDay = Text(buckets.begin()->first, 8.5, Color(143, 139, 140), 500, true);
+            controls::Canvas::SetLeft(firstDay, plotLeft);
+            controls::Canvas::SetTop(firstDay, 146);
+            canvas.Children().Append(firstDay);
+            auto lastDay = Text(buckets.rbegin()->first, 8.5, Color(143, 139, 140), 500, true);
+            controls::Canvas::SetLeft(lastDay, 850);
+            controls::Canvas::SetTop(lastDay, 146);
+            canvas.Children().Append(lastDay);
+
+            controls::Viewbox viewbox;
+            viewbox.Stretch(media::Stretch::Fill);
+            viewbox.Child(canvas);
+            m_trendChartHost.Children().Append(viewbox);
+
+            auto caption = std::wstring{ RangeLabel(data.range) } + L" · " + groupLabel;
+            caption += L" · " + FormatInteger(static_cast<int64_t>(buckets.size())) + L" daily points";
+            if (data.series.size() > seriesCount)
+            {
+                caption += L" · 显示前 5 系列";
+            }
+            m_trendChartCaption.Text(winrt::hstring{ caption });
+        }
+    }
+    else
+    {
+        auto candleSeries = data.candleSeries;
+        if (candleSeries.empty() && !data.series.empty())
+        {
+            candleSeries = data.series.front().key;
+        }
+        if (candleSeries.empty())
+        {
+            candleSeries = L"系列未标明";
+        }
+
+        if (data.candles.empty())
+        {
+            m_trendChartCaption.Text(winrt::hstring{
+                std::wstring{ RangeLabel(data.range) } + L" · K-line · " + candleSeries });
+            showChartState(L"暂无 K-line 数据", L"当前范围内没有 OHLC 与日总 token 数据。");
+        }
+        else
+        {
+            int64_t chartHigh = data.candles.front().high;
+            int64_t chartLow = data.candles.front().low;
+            int64_t peakVolume{};
+            for (auto const& candle : data.candles)
+            {
+                chartHigh = std::max(chartHigh, std::max({ candle.high, candle.open, candle.close }));
+                chartLow = std::min(chartLow, std::min({ candle.low, candle.open, candle.close }));
+                peakVolume = std::max(peakVolume, std::max<int64_t>(candle.volume, 0));
+            }
+            if (chartHigh <= chartLow)
+            {
+                chartHigh = chartLow + 1;
+            }
+
+            controls::Canvas canvas;
+            canvas.Width(960);
+            canvas.Height(166);
+            constexpr double plotLeft = 20.0;
+            constexpr double plotWidth = 920.0;
+            constexpr double priceTop = 6.0;
+            constexpr double priceHeight = 104.0;
+            constexpr double volumeTop = 116.0;
+            constexpr double volumeHeight = 22.0;
+            auto const step = plotWidth / static_cast<double>(data.candles.size());
+            auto const bodyWidth = std::clamp(step * 0.55, 1.0, 10.0);
+            auto const priceRange = static_cast<double>(chartHigh) - static_cast<double>(chartLow);
+            auto yFor = [&](int64_t value)
+            {
+                return priceTop + (static_cast<double>(chartHigh) - static_cast<double>(value))
+                    / priceRange * priceHeight;
+            };
+
+            for (size_t index = 0; index < data.candles.size(); ++index)
+            {
+                auto const& candle = data.candles[index];
+                auto const high = std::max({ candle.high, candle.open, candle.close });
+                auto const low = std::min({ candle.low, candle.open, candle.close });
+                auto const highY = yFor(high);
+                auto const lowY = yFor(low);
+                auto const openY = yFor(candle.open);
+                auto const closeY = yFor(candle.close);
+                auto const x = plotLeft + step * index + step * 0.5;
+                auto const rising = candle.close >= candle.open;
+                auto const color = rising ? Color(98, 223, 125) : Color(240, 63, 22);
+
+                controls::Border wick;
+                wick.Width(1);
+                wick.Height(std::max(lowY - highY, 1.0));
+                wick.Background(Brush(color));
+                controls::Canvas::SetLeft(wick, x);
+                controls::Canvas::SetTop(wick, highY);
+                canvas.Children().Append(wick);
+
+                controls::Border body;
+                body.Width(bodyWidth);
+                body.Height(std::max(std::abs(closeY - openY), 2.0));
+                body.Background(Brush(color));
+                body.CornerRadius(Radius(std::min(2.0, bodyWidth * 0.25)));
+                controls::Canvas::SetLeft(body, x - bodyWidth * 0.5);
+                controls::Canvas::SetTop(body, std::min(openY, closeY));
+                canvas.Children().Append(body);
+
+                if (peakVolume > 0 && candle.volume > 0)
+                {
+                    controls::Border volume;
+                    volume.Width(bodyWidth);
+                    volume.Height(volumeHeight * static_cast<double>(candle.volume)
+                        / static_cast<double>(peakVolume));
+                    volume.Background(Brush(color));
+                    volume.Opacity(0.36);
+                    controls::Canvas::SetLeft(volume, x - bodyWidth * 0.5);
+                    controls::Canvas::SetTop(volume, volumeTop + volumeHeight - volume.Height());
+                    canvas.Children().Append(volume);
+                }
+            }
+
+            auto firstDay = Text(data.candles.front().day, 8.5, Color(143, 139, 140), 500, true);
+            controls::Canvas::SetLeft(firstDay, plotLeft);
+            controls::Canvas::SetTop(firstDay, 146);
+            canvas.Children().Append(firstDay);
+            auto lastDay = Text(data.candles.back().day, 8.5, Color(143, 139, 140), 500, true);
+            controls::Canvas::SetLeft(lastDay, 850);
+            controls::Canvas::SetTop(lastDay, 146);
+            canvas.Children().Append(lastDay);
+
+            controls::Viewbox viewbox;
+            viewbox.Stretch(media::Stretch::Fill);
+            viewbox.Child(canvas);
+            m_trendChartHost.Children().Append(viewbox);
+
+            auto caption = std::wstring{ RangeLabel(data.range) } + L" · K-line · " + candleSeries + L" · OHLC";
+            caption += L" · Peak volume " + FormatCompact(peakVolume) + L" tokens";
+            m_trendChartCaption.Text(winrt::hstring{ caption });
+        }
+    }
+
+    auto const heatCount = std::min({ data.heatCells.size(), m_trendHeatCells.size(), size_t{ 365 } });
+    int64_t heatPeak{};
+    for (size_t index = data.heatCells.size() - heatCount; index < data.heatCells.size(); ++index)
+    {
+        heatPeak = std::max(heatPeak, std::max<int64_t>(data.heatCells[index].value, 0));
+    }
+    auto const leadingCells = m_trendHeatCells.size() - heatCount;
+    for (size_t index = 0; index < m_trendHeatCells.size(); ++index)
+    {
+        if (index < leadingCells || heatPeak <= 0)
+        {
+            m_trendHeatCells[index].Background(Brush(Color(55, 52, 53)));
+            m_trendHeatCells[index].Opacity(0.5);
+            continue;
+        }
+        auto const dataIndex = data.heatCells.size() - heatCount + index - leadingCells;
+        auto const value = std::max<int64_t>(data.heatCells[dataIndex].value, 0);
+        auto const ratio = static_cast<double>(value) / static_cast<double>(heatPeak);
+        m_trendHeatCells[index].Background(Brush(value > 0 ? Color(98, 223, 125) : Color(55, 52, 53)));
+        m_trendHeatCells[index].Opacity(value > 0 ? 0.28 + 0.72 * ratio : 0.5);
+    }
+    if (heatCount == 0)
+    {
+        m_trendHeatCaption.Text(L"尚无年度活动数据 · 小时历史仅保留 400 日");
+    }
+    else
+    {
+        auto const first = data.heatCells[data.heatCells.size() - heatCount].day;
+        auto const last = data.heatCells.back().day;
+        auto caption = first + L" — " + last;
+        caption += L" · 最多 365 日 · 小时历史仅保留 400 日";
+        m_trendHeatCaption.Text(winrt::hstring{ caption });
+    }
+
+    m_trendLegend.Children().Clear();
+    auto const legendCount = std::min<size_t>(data.series.size(), 5);
+    if (legendCount == 0)
+    {
+        controls::StackPanel copy;
+        copy.Spacing(2);
+        copy.Children().Append(Text(L"暂无系列", 10.5, Color(247, 247, 245), 600));
+        copy.Children().Append(Text(L"等待预聚合数据。", 9, Color(143, 139, 140)));
+        m_trendLegend.Children().Append(SoftPanel(copy));
+    }
+    else
+    {
+        for (size_t index = 0; index < legendCount; ++index)
+        {
+            controls::Grid row;
+            AddColumn(row, Pixels(12));
+            AddColumn(row, Star());
+            AddColumn(row, mux::GridLengthHelper::Auto());
+            shapes::Ellipse dot;
+            dot.Width(7);
+            dot.Height(7);
+            dot.Fill(Brush(SeriesColor(index)));
+            dot.VerticalAlignment(mux::VerticalAlignment::Center);
+            row.Children().Append(dot);
+            auto name = Text(
+                data.series[index].key.empty() ? L"未命名" : data.series[index].key,
+                9.5,
+                Color(247, 247, 245),
+                600);
+            controls::Grid::SetColumn(name, 1);
+            row.Children().Append(name);
+            auto value = Text(
+                FormatCompact(data.series[index].total) + L" · " + FormatPercent(data.series[index].percent),
+                9.5,
+                Color(143, 139, 140),
+                600,
+                true);
+            controls::Grid::SetColumn(value, 2);
+            row.Children().Append(value);
+            m_trendLegend.Children().Append(row);
+        }
+    }
+}
+
+void DashboardView::UpdateTrendButtons()
+{
+    auto update = [](std::vector<controls::Button> const& buttons, size_t selected, winrt::Windows::UI::Color accent)
+    {
+        for (size_t index = 0; index < buttons.size(); ++index)
+        {
+            auto const active = index == selected;
+            buttons[index].Background(Brush(active ? Color(55, 52, 53) : Color(0, 0, 0, 0)));
+            buttons[index].Foreground(Brush(active ? Color(247, 247, 245) : Color(143, 139, 140)));
+            buttons[index].BorderBrush(Brush(active ? accent : Color(255, 255, 255, 12)));
+        }
+    };
+    update(m_trendGroupButtons, static_cast<size_t>(m_trendGroup), Color(98, 223, 125));
+    update(m_trendChartButtons, static_cast<size_t>(m_trendChart), Color(255, 253, 142));
+    update(m_trendRangeButtons, static_cast<size_t>(m_trendRange), Color(240, 63, 22));
+}
+
 void DashboardView::ShowPage(DashboardPage page)
 {
     m_currentPage = page;
@@ -1429,82 +1777,185 @@ controls::Grid DashboardView::BuildTrendsPage()
 {
     controls::Grid page;
     page.Height(548);
-    page.RowSpacing(16);
-    AddRow(page, Pixels(98));
-    AddRow(page, Pixels(434));
+    page.RowSpacing(14);
+    AddRow(page, Pixels(72));
+    AddRow(page, Pixels(280));
+    AddRow(page, Pixels(168));
 
-    controls::Grid metrics;
-    metrics.ColumnSpacing(10);
-    for (int index = 0; index < 4; ++index)
+    controls::Grid controlsRow;
+    controlsRow.ColumnSpacing(18);
+    controlsRow.Padding({ 16, 10, 16, 10 });
+    controlsRow.Background(Brush(Color(38, 36, 37)));
+    controlsRow.CornerRadius(Radius(18));
+    AddColumn(controlsRow, mux::GridLengthHelper::Auto());
+    AddColumn(controlsRow, mux::GridLengthHelper::Auto());
+    AddColumn(controlsRow, Star());
+    AddColumn(controlsRow, mux::GridLengthHelper::Auto());
+
+    auto makeChoice = [](std::wstring_view label)
     {
-        AddColumn(metrics, Star());
-    }
-    auto total = Metric(L"TOTAL TOKENS", L"7.02B", L"ALL DEVICES", Color(98, 223, 125));
-    metrics.Children().Append(total);
-    auto cost = Metric(L"TOTAL COST", L"$5.9K", L"ESTIMATED", Color(255, 253, 142));
-    controls::Grid::SetColumn(cost, 1);
-    metrics.Children().Append(cost);
-    auto streak = Metric(L"CURRENT STREAK", L"18", L"DAYS", Color(240, 63, 22));
-    controls::Grid::SetColumn(streak, 2);
-    metrics.Children().Append(streak);
-    auto model = Metric(L"TOP MODEL", L"gpt-5.6", L"37.0%", Color(98, 223, 125));
-    controls::Grid::SetColumn(model, 3);
-    metrics.Children().Append(model);
-    page.Children().Append(metrics);
+        controls::Button button;
+        button.Height(32);
+        button.MinWidth(58);
+        button.Padding({ 12, 0, 12, 0 });
+        button.CornerRadius(Radius(11));
+        button.BorderThickness({ 1 });
+        button.FontFamily(media::FontFamily{ L"Segoe UI Variable Display" });
+        button.FontSize(10.5);
+        button.FontWeight({ 600 });
+        button.Content(winrt::box_value(winrt::hstring{ label }));
+        automation::AutomationProperties::SetName(button, winrt::hstring{ label });
+        return button;
+    };
 
-    controls::Grid content;
-    content.ColumnSpacing(16);
-    AddColumn(content, Star(1.45));
-    AddColumn(content, Star());
-    controls::Grid::SetRow(content, 1);
-
-    controls::StackPanel chart;
-    chart.Spacing(12);
-    chart.Children().Append(StatLine(L"30 天 · 按工具堆叠", L"Bars / K-line"));
-    controls::StackPanel bars;
-    bars.Height(250);
-    bars.Orientation(controls::Orientation::Horizontal);
-    bars.Spacing(10);
-    bars.VerticalAlignment(mux::VerticalAlignment::Bottom);
-    for (int index = 0; index < 18; ++index)
+    controls::StackPanel groupButtons;
+    groupButtons.Orientation(controls::Orientation::Horizontal);
+    groupButtons.Spacing(4);
+    auto byTool = makeChoice(L"按工具");
+    byTool.Click([this](auto const&, auto const&)
     {
-        controls::StackPanel bar;
-        bar.VerticalAlignment(mux::VerticalAlignment::Bottom);
+        m_trendGroup = TrendGroup::Tool;
+        UpdateTrendButtons();
+        if (m_trendCallbacks.onGroupChanged)
+        {
+            m_trendCallbacks.onGroupChanged(m_trendGroup);
+        }
+    });
+    auto byModel = makeChoice(L"按模型");
+    byModel.Click([this](auto const&, auto const&)
+    {
+        m_trendGroup = TrendGroup::Model;
+        UpdateTrendButtons();
+        if (m_trendCallbacks.onGroupChanged)
+        {
+            m_trendCallbacks.onGroupChanged(m_trendGroup);
+        }
+    });
+    groupButtons.Children().Append(byTool);
+    groupButtons.Children().Append(byModel);
+    m_trendGroupButtons.push_back(byTool);
+    m_trendGroupButtons.push_back(byModel);
+    controlsRow.Children().Append(groupButtons);
 
-        controls::Border chatgpt;
-        chatgpt.Width(20);
-        chatgpt.Height(24 + (index * 17) % 58);
-        chatgpt.Background(Brush(Color(255, 253, 142)));
-        chatgpt.Opacity(0.78);
+    controls::StackPanel chartButtons;
+    chartButtons.Orientation(controls::Orientation::Horizontal);
+    chartButtons.Spacing(4);
+    auto bars = makeChoice(L"柱图");
+    bars.Click([this](auto const&, auto const&)
+    {
+        m_trendChart = TrendChart::Bars;
+        UpdateTrendButtons();
+        if (m_trendCallbacks.onChartChanged)
+        {
+            m_trendCallbacks.onChartChanged(m_trendChart);
+        }
+    });
+    auto kline = makeChoice(L"K-line");
+    kline.Click([this](auto const&, auto const&)
+    {
+        m_trendChart = TrendChart::Kline;
+        UpdateTrendButtons();
+        if (m_trendCallbacks.onChartChanged)
+        {
+            m_trendCallbacks.onChartChanged(m_trendChart);
+        }
+    });
+    chartButtons.Children().Append(bars);
+    chartButtons.Children().Append(kline);
+    m_trendChartButtons.push_back(bars);
+    m_trendChartButtons.push_back(kline);
+    controls::Grid::SetColumn(chartButtons, 1);
+    controlsRow.Children().Append(chartButtons);
 
-        controls::Border codex;
-        codex.Width(20);
-        codex.Height(48 + (index * 29) % 132);
-        codex.Background(Brush(Color(98, 223, 125)));
-        codex.Opacity(0.72);
-        codex.CornerRadius(index % 2 == 0 ? Radius(5) : Radius(2));
-
-        bar.Children().Append(chatgpt);
-        bar.Children().Append(codex);
-        bars.Children().Append(bar);
+    controls::StackPanel rangeButtons;
+    rangeButtons.Orientation(controls::Orientation::Horizontal);
+    rangeButtons.Spacing(4);
+    constexpr std::array<std::wstring_view, 4> rangeLabels{ L"7D", L"30D", L"90D", L"365D" };
+    constexpr std::array rangeValues{
+        TrendRange::Days7,
+        TrendRange::Days30,
+        TrendRange::Days90,
+        TrendRange::Days365,
+    };
+    for (size_t index = 0; index < rangeLabels.size(); ++index)
+    {
+        auto button = makeChoice(rangeLabels[index]);
+        button.MinWidth(50);
+        auto const range = rangeValues[index];
+        button.Click([this, range](auto const&, auto const&)
+        {
+            m_trendRange = range;
+            UpdateTrendButtons();
+            if (m_trendCallbacks.onRangeChanged)
+            {
+                m_trendCallbacks.onRangeChanged(range);
+            }
+        });
+        rangeButtons.Children().Append(button);
+        m_trendRangeButtons.push_back(button);
     }
-    chart.Children().Append(bars);
-    chart.Children().Append(StatLine(L"Codex 61.2%", L"ChatGPT 38.8%"));
-    auto chartCard = Card(L"历史趋势", Color(98, 223, 125), chart);
-    content.Children().Append(chartCard);
+    controls::Grid::SetColumn(rangeButtons, 3);
+    controlsRow.Children().Append(rangeButtons);
+    page.Children().Append(controlsRow);
 
-    controls::StackPanel year;
-    year.Spacing(14);
-    year.Children().Append(StatLine(L"活跃天数", L"111", Color(255, 253, 142)));
-    year.Children().Append(Heatmap(16, Color(98, 223, 125)));
-    year.Children().Append(StatLine(L"Peak day", L"307M"));
-    year.Children().Append(StatLine(L"Active time", L"542h 28m"));
-    year.Children().Append(Text(L"年度热图汇总所有 Windows 与 WSL 数据。", 10.5, Color(143, 139, 140)));
-    auto yearCard = Card(L"年度活动", Color(255, 253, 142), year);
-    controls::Grid::SetColumn(yearCard, 1);
-    content.Children().Append(yearCard);
+    controls::StackPanel chartBody;
+    chartBody.Spacing(8);
+    m_trendChartCaption = Text(L"等待趋势数据", 10.5, Color(143, 139, 140));
+    chartBody.Children().Append(m_trendChartCaption);
+    m_trendChartHost = controls::Grid{};
+    m_trendChartHost.Height(166);
+    chartBody.Children().Append(m_trendChartHost);
+    auto chartCard = Card(L"历史趋势", Color(98, 223, 125), chartBody);
+    controls::Grid::SetRow(chartCard, 1);
+    page.Children().Append(chartCard);
 
-    page.Children().Append(content);
+    controls::Grid bottom;
+    bottom.ColumnSpacing(16);
+    AddColumn(bottom, Star(1.55));
+    AddColumn(bottom, Star(0.85));
+    controls::Grid::SetRow(bottom, 2);
+
+    controls::StackPanel heatBody;
+    heatBody.Spacing(6);
+    controls::Grid streaks;
+    AddColumn(streaks, mux::GridLengthHelper::Auto());
+    AddColumn(streaks, mux::GridLengthHelper::Auto());
+    AddColumn(streaks, Star());
+    AddColumn(streaks, mux::GridLengthHelper::Auto());
+    streaks.Children().Append(Text(L"Current", 9.5, Color(143, 139, 140)));
+    m_currentStreakText = Text(L"0", 10.5, Color(98, 223, 125), 600, true);
+    m_currentStreakText.Margin({ 7, 0, 0, 0 });
+    controls::Grid::SetColumn(m_currentStreakText, 1);
+    streaks.Children().Append(m_currentStreakText);
+    auto longestLabel = Text(L"Longest", 9.5, Color(143, 139, 140));
+    controls::Grid::SetColumn(longestLabel, 2);
+    longestLabel.HorizontalAlignment(mux::HorizontalAlignment::Right);
+    longestLabel.Margin({ 0, 0, 7, 0 });
+    streaks.Children().Append(longestLabel);
+    m_longestStreakText = Text(L"0", 10.5, Color(255, 253, 142), 600, true);
+    controls::Grid::SetColumn(m_longestStreakText, 3);
+    streaks.Children().Append(m_longestStreakText);
+    heatBody.Children().Append(streaks);
+    heatBody.Children().Append(Heatmap(
+        53,
+        Color(98, 223, 125),
+        &m_trendHeatCells,
+        6,
+        1.5));
+    m_trendHeatCaption = Text(
+        L"365 日窗口 · 小时历史仅保留 400 日",
+        9,
+        Color(143, 139, 140));
+    heatBody.Children().Append(m_trendHeatCaption);
+    auto heatCard = Card(L"年度活动", Color(255, 253, 142), heatBody);
+    bottom.Children().Append(heatCard);
+
+    m_trendLegend = controls::StackPanel{};
+    m_trendLegend.Spacing(5);
+    auto legendCard = Card(L"系列", Color(240, 63, 22), m_trendLegend);
+    controls::Grid::SetColumn(legendCard, 1);
+    bottom.Children().Append(legendCard);
+    page.Children().Append(bottom);
     return page;
 }
 

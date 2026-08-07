@@ -59,6 +59,10 @@ namespace tokenometer
             std::wstring_view accountId = L"current");
 
         void PruneDetails(int usageDays = 180, int toolDays = 180, int hourlyDays = 400);
+        [[nodiscard]] bool PruneDetailsIfDue(
+            int usageDays = 180,
+            int toolDays = 180,
+            int hourlyDays = 400);
         void Optimize();
 
         [[nodiscard]] static bool SelfTest();
