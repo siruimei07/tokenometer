@@ -341,9 +341,9 @@ CaptureRenderer::ShaderParams CaptureRenderer::CropParams() const
     params.sourceOffset[1] = static_cast<float>(clientOrigin.y - monitorInfo.rcMonitor.top) / captureHeight;
     params.texelSize[0] = 1.0f / static_cast<float>(m_effectWidth);
     params.texelSize[1] = 1.0f / static_cast<float>(m_effectHeight);
-    params.tint[0] = 0.008f;
-    params.tint[1] = 0.012f;
-    params.tint[2] = 0.035f;
+    params.tint[0] = 0.045f;
+    params.tint[1] = 0.047f;
+    params.tint[2] = 0.044f;
     params.tint[3] = 1.0f;
     params.outputSize[0] = static_cast<float>(m_width);
     params.outputSize[1] = static_cast<float>(m_height);

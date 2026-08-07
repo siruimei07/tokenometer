@@ -39,7 +39,7 @@ float4 PrefilterPS(VertexOutput input) : SV_Target
         Source0.SampleLevel(LinearClamp, sourceUv + sampleOffset * float2(1.0, 1.0), 0).rgb;
     color *= 0.25;
     float luminance = dot(color, float3(0.2126, 0.7152, 0.0722));
-    return float4(lerp(luminance.xxx, color, 0.88), 1.0);
+    return float4(lerp(luminance.xxx, color, 0.08), 1.0);
 }
 
 float4 Blur(float2 uv, float2 direction)
@@ -91,14 +91,14 @@ float4 GlassPS(VertexOutput input) : SV_Target
     float2 glassUv = saturate(input.uv - outward * warp / OutputSize);
     float3 blurred = Source0.SampleLevel(LinearClamp, glassUv, 0).rgb;
 
-    float3 color = blurred * float3(0.10, 0.11, 0.28) + Tint.rgb;
-    color = min(color, float3(0.18, 0.21, 0.38));
+    float3 color = blurred * float3(0.325, 0.328, 0.325) + Tint.rgb;
     float2 local = input.uv * 2.0 - 1.0;
     float directional = 0.5 + 0.5 * sin(atan2(local.y, local.x) - 0.5);
     color *= 1.0 + (directional - 0.5) * 0.12 * edge;
     color += PixelNoise(input.position.xy) / 255.0;
     float border = shape * (1.0 - smoothstep(0.0, BorderWidth, inside));
-    color += border * float3(0.050, 0.055, 0.100) * (0.7 + 0.3 * directional);
+    color += border * float3(0.120, 0.122, 0.112) * (0.7 + 0.3 * directional);
+    color = min(color, float3(0.46, 0.47, 0.46));
 
     return float4(color * shape, shape);
 }
