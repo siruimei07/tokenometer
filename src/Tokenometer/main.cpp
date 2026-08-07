@@ -1,10 +1,14 @@
 #include <windows.h>
+#include <shellapi.h>
 #undef GetCurrentTime
 
 #include "CaptureRenderer.h"
+#include "CodexCollector.h"
+#include "Database.h"
 
 #include <chrono>
 #include <memory>
+#include <thread>
 
 #include <microsoft.ui.xaml.window.h>
 #include <winrt/base.h>
@@ -91,6 +95,27 @@ namespace
         icon.Child(label);
         return icon;
     }
+
+    bool HasArgument(std::wstring_view expected)
+    {
+        int count{};
+        auto arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+        if (!arguments)
+        {
+            return false;
+        }
+        bool found{};
+        for (int index = 1; index < count; ++index)
+        {
+            if (expected == arguments[index])
+            {
+                found = true;
+                break;
+            }
+        }
+        LocalFree(arguments);
+        return found;
+    }
 }
 
 struct TokenometerApp : mux::ApplicationT<TokenometerApp>
@@ -145,6 +170,7 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
         winrt::check_hresult(nativeWindow->get_WindowHandle(&m_hwnd));
         m_window.Activate();
         ConfigureWindow();
+        StartCollection();
         if (m_swapChainPanel.IsLoaded())
         {
             StartBackdrop();
@@ -336,7 +362,60 @@ private:
                 m_renderer->Stop();
                 m_renderer.reset();
             }
+            if (m_collectionThread.joinable())
+            {
+                m_collectionThread.request_stop();
+            }
         });
+    }
+
+    void StartCollection()
+    {
+        try
+        {
+            auto const databasePath = tokenometer::Database::DefaultDataDirectory() / L"tokenometer.db";
+            m_database = std::make_shared<tokenometer::Database>(databasePath);
+            m_database->Initialize();
+            m_collector = std::make_unique<tokenometer::CodexCollector>(*m_database);
+            m_collectionThread = std::jthread([this](std::stop_token stopToken)
+            {
+                try
+                {
+                    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                    bool firstPass = true;
+                    while (!stopToken.stop_requested())
+                    {
+                        try
+                        {
+                            [[maybe_unused]] auto result = m_collector->CollectOnce(stopToken);
+                            if (firstPass && !stopToken.stop_requested())
+                            {
+                                m_database->PruneDetails();
+                                m_database->Optimize();
+                                firstPass = false;
+                            }
+                        }
+                        catch (...)
+                        {
+                            OutputDebugStringW(L"Tokenometer: local usage collection failed.\n");
+                        }
+                        for (int tick = 0; tick < 20 && !stopToken.stop_requested(); ++tick)
+                        {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        }
+                    }
+                    winrt::uninit_apartment();
+                }
+                catch (...)
+                {
+                    OutputDebugStringW(L"Tokenometer: collector thread initialization failed.\n");
+                }
+            });
+        }
+        catch (...)
+        {
+            OutputDebugStringW(L"Tokenometer: local database initialization failed.\n");
+        }
     }
 
     void StartBackdrop()
@@ -382,12 +461,22 @@ private:
     controls::Button m_closeButton{ nullptr };
     mux::DispatcherTimer m_statusTimer{ nullptr };
     std::shared_ptr<CaptureRenderer> m_renderer;
+    std::shared_ptr<tokenometer::Database> m_database;
+    std::unique_ptr<tokenometer::CodexCollector> m_collector;
+    std::jthread m_collectionThread;
     HWND m_hwnd{};
 };
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
     winrt::init_apartment(winrt::apartment_type::single_threaded);
+
+    if (HasArgument(L"--self-test-storage"))
+    {
+        if (!tokenometer::Database::SelfTest()) return 11;
+        if (!tokenometer::CodexCollector::SelfTest()) return 12;
+        return 0;
+    }
 
     try
     {
