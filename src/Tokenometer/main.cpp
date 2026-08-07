@@ -8,6 +8,7 @@
 #include "Database.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <thread>
@@ -199,6 +200,11 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
         if (!HasArgument(L"--no-collection"))
         {
             StartCollection();
+            StartDashboardRefresh();
+        }
+        else if (!m_bubbleMode)
+        {
+            m_dashboard->SetStatus(L"预览模式", L"数据采集已禁用", false);
         }
         if (m_bubbleMode && m_swapChainPanel.IsLoaded())
         {
@@ -421,6 +427,10 @@ private:
             {
                 m_statusTimer.Stop();
             }
+            if (m_usageTimer)
+            {
+                m_usageTimer.Stop();
+            }
             if (m_renderer)
             {
                 m_renderer->Stop();
@@ -451,7 +461,10 @@ private:
                     {
                         try
                         {
-                            [[maybe_unused]] auto result = m_collector->CollectOnce(stopToken);
+                            m_collecting.store(true, std::memory_order_relaxed);
+                            auto const result = m_collector->CollectOnce(stopToken);
+                            m_lastCollectionAt.store(result.completedAt, std::memory_order_relaxed);
+                            m_collectionFailed.store(false, std::memory_order_relaxed);
                             if (firstPass && !stopToken.stop_requested())
                             {
                                 m_database->PruneDetails();
@@ -461,8 +474,10 @@ private:
                         }
                         catch (...)
                         {
+                            m_collectionFailed.store(true, std::memory_order_relaxed);
                             OutputDebugStringW(L"Tokenometer: local usage collection failed.\n");
                         }
+                        m_collecting.store(false, std::memory_order_relaxed);
                         for (int tick = 0; tick < 20 && !stopToken.stop_requested(); ++tick)
                         {
                             std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -478,8 +493,76 @@ private:
         }
         catch (...)
         {
+            m_collectionFailed.store(true, std::memory_order_relaxed);
             OutputDebugStringW(L"Tokenometer: local database initialization failed.\n");
         }
+    }
+
+    void StartDashboardRefresh()
+    {
+        if (m_bubbleMode || !m_dashboard)
+        {
+            return;
+        }
+        m_usageTimer = mux::DispatcherTimer{};
+        m_usageTimer.Interval(std::chrono::seconds(1));
+        m_usageTimer.Tick([this](auto const&, auto const&) { RefreshDashboard(); });
+        RefreshDashboard();
+        m_usageTimer.Start();
+    }
+
+    void RefreshDashboard()
+    {
+        if (!m_dashboard)
+        {
+            return;
+        }
+
+        tokenometer::OverviewViewData snapshot;
+        snapshot.collecting = m_collecting.load(std::memory_order_relaxed);
+        snapshot.lastSync = m_lastCollectionAt.load(std::memory_order_relaxed);
+        if (!m_database)
+        {
+            snapshot.error = L"本地使用数据库不可用";
+            m_dashboard->UpdateOverview(snapshot);
+            return;
+        }
+
+        try
+        {
+            snapshot.total = m_database->GetTotals();
+            snapshot.daily = m_database->GetDailyUsage(30);
+            snapshot.recent = m_database->GetRecentSessions(3);
+            snapshot.codexLimit = m_database->GetLatestRateLimit();
+
+            int64_t const now = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            int64_t const cutoff = now - 86400;
+            for (auto const& hour : m_database->GetHourlyUsage(2))
+            {
+                if (hour.hourStart < cutoff)
+                {
+                    continue;
+                }
+                snapshot.day.counts.input += hour.counts.input;
+                snapshot.day.counts.cachedInput += hour.counts.cachedInput;
+                snapshot.day.counts.cacheWriteInput += hour.counts.cacheWriteInput;
+                snapshot.day.counts.output += hour.counts.output;
+                snapshot.day.counts.reasoningOutput += hour.counts.reasoningOutput;
+                snapshot.day.counts.reportedTotal += hour.counts.reportedTotal;
+                snapshot.day.messages += hour.messages;
+                snapshot.day.toolCalls += hour.toolCalls;
+            }
+            if (m_collectionFailed.load(std::memory_order_relaxed))
+            {
+                snapshot.error = L"最近一次增量采集失败；已保留上次数据";
+            }
+        }
+        catch (...)
+        {
+            snapshot.error = L"读取本地使用快照失败";
+        }
+        m_dashboard->UpdateOverview(snapshot);
     }
 
     void StartBackdrop()
@@ -525,10 +608,14 @@ private:
     controls::Button m_closeButton{ nullptr };
     std::unique_ptr<tokenometer::DashboardView> m_dashboard;
     mux::DispatcherTimer m_statusTimer{ nullptr };
+    mux::DispatcherTimer m_usageTimer{ nullptr };
     std::shared_ptr<CaptureRenderer> m_renderer;
     std::shared_ptr<tokenometer::Database> m_database;
     std::unique_ptr<tokenometer::CodexCollector> m_collector;
     std::jthread m_collectionThread;
+    std::atomic<int64_t> m_lastCollectionAt{};
+    std::atomic_bool m_collecting{};
+    std::atomic_bool m_collectionFailed{};
     HWND m_hwnd{};
     bool m_bubbleMode{};
 };

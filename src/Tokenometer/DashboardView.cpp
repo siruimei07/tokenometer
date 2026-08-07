@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstddef>
+#include <iomanip>
+#include <map>
+#include <sstream>
 #include <string>
 
 #include <winrt/Windows.Foundation.h>
@@ -80,14 +85,30 @@ namespace
         return text;
     }
 
-    controls::Grid Progress(double ratio, winrt::Windows::UI::Color const& color)
+    controls::Grid Progress(
+        double ratio,
+        winrt::Windows::UI::Color const& color,
+        controls::ColumnDefinition* fillDefinition = nullptr,
+        controls::ColumnDefinition* restDefinition = nullptr)
     {
         ratio = std::clamp(ratio, 0.0, 1.0);
 
         controls::Grid track;
         track.Height(8);
-        AddColumn(track, Star(std::max(ratio, 0.001)));
-        AddColumn(track, Star(std::max(1.0 - ratio, 0.001)));
+        controls::ColumnDefinition fillColumn;
+        fillColumn.Width(Star(std::max(ratio, 0.001)));
+        track.ColumnDefinitions().Append(fillColumn);
+        controls::ColumnDefinition restColumn;
+        restColumn.Width(Star(std::max(1.0 - ratio, 0.001)));
+        track.ColumnDefinitions().Append(restColumn);
+        if (fillDefinition)
+        {
+            *fillDefinition = fillColumn;
+        }
+        if (restDefinition)
+        {
+            *restDefinition = restColumn;
+        }
 
         controls::Border background;
         background.Background(Brush(Color(52, 49, 50)));
@@ -101,6 +122,20 @@ namespace
         controls::Grid::SetColumn(fill, 0);
         track.Children().Append(fill);
         return track;
+    }
+
+    void SetProgress(
+        controls::ColumnDefinition const& fill,
+        controls::ColumnDefinition const& rest,
+        double ratio)
+    {
+        if (!fill || !rest)
+        {
+            return;
+        }
+        ratio = std::clamp(ratio, 0.0, 1.0);
+        fill.Width(Star(std::max(ratio, 0.001)));
+        rest.Width(Star(std::max(1.0 - ratio, 0.001)));
     }
 
     controls::Grid StatLine(
@@ -119,6 +154,24 @@ namespace
         valueText.TextAlignment(mux::TextAlignment::Right);
         controls::Grid::SetColumn(valueText, 1);
         row.Children().Append(valueText);
+        return row;
+    }
+
+    controls::Grid DynamicStatLine(
+        std::wstring_view label,
+        controls::TextBlock& valueTarget,
+        std::wstring_view initialValue,
+        winrt::Windows::UI::Color const& valueColor = Color(247, 247, 245))
+    {
+        controls::Grid row;
+        AddColumn(row, Star());
+        AddColumn(row, mux::GridLengthHelper::Auto());
+        row.Children().Append(Text(label, 12, Color(154, 150, 151)));
+
+        valueTarget = Text(initialValue, 12, valueColor, 600, true);
+        valueTarget.TextAlignment(mux::TextAlignment::Right);
+        controls::Grid::SetColumn(valueTarget, 1);
+        row.Children().Append(valueTarget);
         return row;
     }
 
@@ -194,7 +247,10 @@ namespace
         return stack;
     }
 
-    controls::StackPanel Heatmap(int weeks, winrt::Windows::UI::Color const& accent)
+    controls::StackPanel Heatmap(
+        int weeks,
+        winrt::Windows::UI::Color const& accent,
+        std::vector<controls::Border>* cells = nullptr)
     {
         controls::StackPanel map;
         map.Orientation(controls::Orientation::Horizontal);
@@ -215,10 +271,110 @@ namespace
                 cell.Background(Brush(active ? accent : Color(55, 52, 53)));
                 cell.Opacity(active ? 0.42 + 0.08 * ((week + day) % 6) : 0.5);
                 column.Children().Append(cell);
+                if (cells)
+                {
+                    cells->push_back(cell);
+                }
             }
             map.Children().Append(column);
         }
         return map;
+    }
+
+    std::wstring FormatInteger(int64_t value)
+    {
+        auto digits = std::to_wstring(value < 0 ? -value : value);
+        for (std::ptrdiff_t index = static_cast<std::ptrdiff_t>(digits.size()) - 3; index > 0; index -= 3)
+        {
+            digits.insert(static_cast<size_t>(index), 1, L',');
+        }
+        return value < 0 ? L"-" + digits : digits;
+    }
+
+    std::wstring FormatCompact(int64_t value)
+    {
+        double divisor = 1.0;
+        wchar_t suffix = L'\0';
+        if (value >= 1'000'000'000)
+        {
+            divisor = 1'000'000'000.0;
+            suffix = L'B';
+        }
+        else if (value >= 1'000'000)
+        {
+            divisor = 1'000'000.0;
+            suffix = L'M';
+        }
+        else if (value >= 1'000)
+        {
+            divisor = 1'000.0;
+            suffix = L'K';
+        }
+        if (!suffix)
+        {
+            return FormatInteger(value);
+        }
+
+        std::wostringstream stream;
+        stream << std::fixed << std::setprecision(value / divisor >= 100.0 ? 0 : 1)
+               << value / divisor << suffix;
+        return stream.str();
+    }
+
+    std::wstring FormatPercent(double value)
+    {
+        std::wostringstream stream;
+        stream << std::fixed << std::setprecision(1) << value << L'%';
+        return stream.str();
+    }
+
+    int64_t UnixNow()
+    {
+        return std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+
+    std::wstring FormatAge(int64_t timestamp)
+    {
+        if (timestamp <= 0)
+        {
+            return L"尚未同步";
+        }
+        auto const seconds = std::max<int64_t>(UnixNow() - timestamp, 0);
+        if (seconds < 60)
+        {
+            return L"刚刚更新";
+        }
+        if (seconds < 3600)
+        {
+            return std::to_wstring(seconds / 60) + L" 分钟前";
+        }
+        if (seconds < 86400)
+        {
+            return std::to_wstring(seconds / 3600) + L" 小时前";
+        }
+        return std::to_wstring(seconds / 86400) + L" 天前";
+    }
+
+    std::wstring FormatReset(int64_t resetsAt)
+    {
+        auto const seconds = resetsAt - UnixNow();
+        if (resetsAt <= 0 || seconds <= 0)
+        {
+            return L"等待下一次限额刷新";
+        }
+        auto const days = seconds / 86400;
+        auto const hours = (seconds % 86400) / 3600;
+        auto const minutes = (seconds % 3600) / 60;
+        if (days > 0)
+        {
+            return std::to_wstring(days) + L"d " + std::to_wstring(hours) + L"h 后重置";
+        }
+        if (hours > 0)
+        {
+            return std::to_wstring(hours) + L"h " + std::to_wstring(minutes) + L"m 后重置";
+        }
+        return std::to_wstring(std::max<int64_t>(minutes, 1)) + L"m 后重置";
     }
 
     controls::Border Metric(
@@ -235,7 +391,7 @@ namespace
         return SoftPanel(content);
     }
 
-    controls::Border BreakdownRow(
+    controls::Border BreakdownPanel(
         std::wstring_view name,
         std::wstring_view detail,
         std::wstring_view value,
@@ -257,6 +413,30 @@ namespace
         content.Children().Append(Progress(ratio, accent));
         content.Children().Append(Text(detail, 10.5, Color(143, 139, 140)));
         return SoftPanel(content);
+    }
+
+    controls::Border SessionRow(
+        controls::TextBlock& titleTarget,
+        controls::TextBlock& detailTarget,
+        controls::TextBlock& valueTarget)
+    {
+        controls::Grid row;
+        AddColumn(row, Star());
+        AddColumn(row, mux::GridLengthHelper::Auto());
+
+        controls::StackPanel copy;
+        copy.Spacing(2);
+        titleTarget = Text(L"—", 12.5, Color(247, 247, 245), 600);
+        detailTarget = Text(L"", 10, Color(143, 139, 140));
+        copy.Children().Append(titleTarget);
+        copy.Children().Append(detailTarget);
+        row.Children().Append(copy);
+
+        valueTarget = Text(L"0", 12, Color(247, 247, 245), 600, true);
+        valueTarget.VerticalAlignment(mux::VerticalAlignment::Center);
+        controls::Grid::SetColumn(valueTarget, 1);
+        row.Children().Append(valueTarget);
+        return SoftPanel(row);
     }
 
     controls::Border PageIntro(
@@ -328,7 +508,7 @@ namespace tokenometer
 DashboardView::DashboardView()
 {
     BuildShell();
-    SetStatus(L"等待采集器", L"静态界面预览", false);
+    UpdateOverview({});
     ShowPage(DashboardPage::Overview);
 }
 
@@ -356,6 +536,194 @@ void DashboardView::SetStatus(
     m_statusDetail.Text(winrt::hstring{ detail });
     m_statusDetail.Visibility(detail.empty() ? mux::Visibility::Collapsed : mux::Visibility::Visible);
     m_statusDot.Fill(Brush(healthy ? Color(98, 223, 125) : Color(240, 63, 22)));
+}
+
+void DashboardView::UpdateOverview(OverviewViewData const& data)
+{
+    auto const totalTokens = std::max<int64_t>(data.total.counts.DisplayTotal(), 0);
+    auto const outputTokens = std::max<int64_t>(data.total.counts.output, 0);
+    auto const inputTokens = std::max<int64_t>(data.total.counts.input, 0);
+    auto const cachedTokens = std::clamp<int64_t>(
+        data.total.counts.cachedInput,
+        0,
+        inputTokens);
+    auto const cacheRatio = inputTokens > 0
+        ? static_cast<double>(cachedTokens) / static_cast<double>(inputTokens)
+        : 0.0;
+
+    m_totalTokensText.Text(winrt::hstring{ FormatInteger(totalTokens) });
+    m_cacheHitText.Text(winrt::hstring{ FormatPercent(cacheRatio * 100.0) });
+    m_outputTokensText.Text(winrt::hstring{ FormatInteger(outputTokens) });
+    SetProgress(m_cacheProgressFill, m_cacheProgressRest, cacheRatio);
+
+    m_dayTokensText.Text(winrt::hstring{
+        FormatInteger(std::max<int64_t>(data.day.counts.DisplayTotal(), 0)) });
+    m_dayMessagesText.Text(winrt::hstring{ FormatInteger(std::max<int64_t>(data.day.messages, 0)) });
+    m_dayToolCallsText.Text(winrt::hstring{ FormatInteger(std::max<int64_t>(data.day.toolCalls, 0)) });
+    m_activeDaysText.Text(winrt::hstring{ FormatInteger(std::max<int64_t>(data.total.activeDays, 0)) });
+
+    auto const empty = totalTokens == 0 && data.daily.empty() && data.recent.empty();
+    m_overviewEmptyState.Visibility(empty ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    m_overviewMetricsPanel.Visibility(empty ? mux::Visibility::Collapsed : mux::Visibility::Visible);
+    if (!data.error.empty())
+    {
+        m_emptyOverviewTitle.Text(L"暂时无法读取使用记录");
+        m_emptyOverviewDetail.Text(winrt::hstring{ data.error });
+        SetStatus(L"采集失败", data.error, false);
+    }
+    else if (data.collecting)
+    {
+        m_emptyOverviewTitle.Text(L"正在扫描 Codex 记录");
+        m_emptyOverviewDetail.Text(L"首批记录将在采集完成后自动出现。");
+        SetStatus(L"正在采集 Codex", FormatAge(data.lastSync), false);
+    }
+    else if (data.lastSync > 0)
+    {
+        m_emptyOverviewTitle.Text(L"还没有使用记录");
+        m_emptyOverviewDetail.Text(L"当前数据源为空；继续使用 Codex 后会自动刷新。");
+        SetStatus(L"数据已同步", FormatAge(data.lastSync), true);
+    }
+    else
+    {
+        m_emptyOverviewTitle.Text(L"还没有使用记录");
+        m_emptyOverviewDetail.Text(L"打开 Codex 后，首批记录会自动出现在这里。");
+        SetStatus(L"等待首次同步", L"尚未发现 Codex 记录", false);
+    }
+
+    if (data.codexLimit)
+    {
+        auto const& limit = *data.codexLimit;
+        auto const usePrimary = limit.primaryUsedPercent >= 0.0;
+        auto const used = usePrimary ? limit.primaryUsedPercent : limit.secondaryUsedPercent;
+        if (used >= 0.0)
+        {
+            auto const left = 100.0 - std::clamp(used, 0.0, 100.0);
+            auto const resetsAt = usePrimary ? limit.primaryResetsAt : limit.secondaryResetsAt;
+            auto name = limit.limitName.empty() ? std::wstring{ L"Codex" } : limit.limitName;
+            name += usePrimary ? L" · primary" : L" · secondary";
+            m_codexLimitName.Text(winrt::hstring{ name });
+            m_codexLimitValue.Text(winrt::hstring{ FormatPercent(left) + L" left" });
+            m_codexLimitReset.Text(winrt::hstring{ FormatReset(resetsAt) });
+            SetProgress(m_codexProgressFill, m_codexProgressRest, left / 100.0);
+        }
+        else
+        {
+            m_codexLimitName.Text(L"Codex 未提供 used_percent");
+            m_codexLimitValue.Text(L"—");
+            m_codexLimitReset.Text(L"等待下一次限额快照");
+            SetProgress(m_codexProgressFill, m_codexProgressRest, 0.0);
+        }
+    }
+    else
+    {
+        m_codexLimitName.Text(L"等待 Codex 限额快照");
+        m_codexLimitValue.Text(L"—");
+        m_codexLimitReset.Text(L"采集到 used_percent 后显示");
+        SetProgress(m_codexProgressFill, m_codexProgressRest, 0.0);
+    }
+
+    auto const sessionCount = std::min<size_t>(data.recent.size(), m_sessionRows.size());
+    for (size_t index = 0; index < m_sessionRows.size(); ++index)
+    {
+        auto const visible = index < sessionCount;
+        m_sessionRows[index].Visibility(visible ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+        if (!visible)
+        {
+            continue;
+        }
+
+        auto const& session = data.recent[index];
+        auto title = session.title;
+        if (title.empty())
+        {
+            title = !session.project.empty() ? session.project : session.model;
+        }
+        if (title.empty())
+        {
+            title = L"未命名会话";
+        }
+        auto detail = session.model.empty() ? std::wstring{ L"Codex" } : session.model;
+        detail += L" · " + FormatInteger(session.messages) + L" messages";
+        if (session.updatedAt > 0)
+        {
+            detail += L" · " + FormatAge(session.updatedAt);
+        }
+
+        m_sessionTitles[index].Text(winrt::hstring{ title });
+        m_sessionDetails[index].Text(winrt::hstring{ detail });
+        m_sessionValues[index].Text(winrt::hstring{ FormatCompact(session.counts.DisplayTotal()) });
+    }
+    m_recentEmptyState.Visibility(sessionCount == 0 ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    UpdateDailyVisuals(data.daily);
+}
+
+void DashboardView::UpdateDailyVisuals(std::vector<DailyUsage> const& daily)
+{
+    std::map<std::wstring, int64_t> totalsByDay;
+    for (auto const& row : daily)
+    {
+        totalsByDay[row.day] += std::max<int64_t>(row.counts.DisplayTotal(), 0);
+    }
+
+    std::vector<int64_t> values;
+    values.reserve(totalsByDay.size());
+    int64_t peak{};
+    for (auto const& [day, total] : totalsByDay)
+    {
+        (void)day;
+        values.push_back(total);
+        peak = std::max(peak, total);
+    }
+
+    auto const barCount = m_dailyBars.size();
+    auto const visibleBars = std::min(values.size(), barCount);
+    for (size_t index = 0; index < barCount; ++index)
+    {
+        auto const leadingEmpty = barCount - visibleBars;
+        if (index < leadingEmpty || peak <= 0)
+        {
+            m_dailyBars[index].Height(12);
+            m_dailyBars[index].Opacity(0.18);
+            m_dailyBars[index].Background(Brush(Color(55, 52, 53)));
+            continue;
+        }
+
+        auto const valueIndex = values.size() - visibleBars + index - leadingEmpty;
+        auto const ratio = static_cast<double>(values[valueIndex]) / static_cast<double>(peak);
+        m_dailyBars[index].Height(16.0 + 88.0 * ratio);
+        m_dailyBars[index].Opacity(0.42 + 0.48 * ratio);
+        m_dailyBars[index].Background(Brush(
+            valueIndex + 1 == values.size() ? Color(255, 253, 142) : Color(98, 223, 125)));
+    }
+
+    auto const cellCount = m_heatmapCells.size();
+    auto const visibleCells = std::min(values.size(), cellCount);
+    for (size_t index = 0; index < cellCount; ++index)
+    {
+        auto const leadingEmpty = cellCount - visibleCells;
+        if (index < leadingEmpty || peak <= 0)
+        {
+            m_heatmapCells[index].Background(Brush(Color(55, 52, 53)));
+            m_heatmapCells[index].Opacity(0.5);
+            continue;
+        }
+
+        auto const valueIndex = values.size() - visibleCells + index - leadingEmpty;
+        auto const ratio = static_cast<double>(values[valueIndex]) / static_cast<double>(peak);
+        m_heatmapCells[index].Background(Brush(Color(255, 253, 142)));
+        m_heatmapCells[index].Opacity(0.28 + 0.72 * ratio);
+    }
+
+    if (totalsByDay.empty())
+    {
+        m_heatmapCaption.Text(L"尚无活动数据");
+    }
+    else
+    {
+        auto caption = totalsByDay.begin()->first + L" — " + totalsByDay.rbegin()->first;
+        caption += L" · " + FormatInteger(static_cast<int64_t>(totalsByDay.size())) + L" 日有记录";
+        m_heatmapCaption.Text(winrt::hstring{ caption });
+    }
 }
 
 void DashboardView::ShowPage(DashboardPage page)
@@ -484,58 +852,100 @@ controls::Grid DashboardView::BuildOverviewPage()
     AddRow(page, Pixels(254));
     AddRow(page, Pixels(278));
 
-    controls::StackPanel live;
-    live.Spacing(10);
-    live.Children().Append(Text(L"28,436", 38, Color(247, 247, 245), 650, true));
-    live.Children().Append(Text(L"tokens this session · $18.24", 11, Color(143, 139, 140)));
-    live.Children().Append(Progress(0.54, Color(98, 223, 125)));
-    live.Children().Append(StatLine(L"Cache hit", L"71.4%", Color(98, 223, 125)));
-    live.Children().Append(StatLine(L"Output", L"8,126"));
-    auto liveCard = Card(L"实时用量", Color(98, 223, 125), live);
-    page.Children().Append(liveCard);
+    controls::StackPanel overview;
+    overview.Spacing(8);
+    m_totalTokensText = Text(L"0", 38, Color(247, 247, 245), 650, true);
+    overview.Children().Append(m_totalTokensText);
+    overview.Children().Append(Text(L"订阅费用不可用", 11, Color(143, 139, 140)));
+
+    controls::StackPanel emptyCopy;
+    emptyCopy.Spacing(2);
+    m_emptyOverviewTitle = Text(L"还没有使用记录", 11.5, Color(247, 247, 245), 600);
+    m_emptyOverviewDetail = Text(L"打开 Codex 后，首批记录会自动出现在这里。", 9.5, Color(143, 139, 140));
+    emptyCopy.Children().Append(m_emptyOverviewTitle);
+    emptyCopy.Children().Append(m_emptyOverviewDetail);
+    m_overviewEmptyState = SoftPanel(emptyCopy);
+    overview.Children().Append(m_overviewEmptyState);
+
+    m_overviewMetricsPanel = controls::StackPanel{};
+    m_overviewMetricsPanel.Spacing(8);
+    m_overviewMetricsPanel.Children().Append(Progress(
+        0.0,
+        Color(98, 223, 125),
+        &m_cacheProgressFill,
+        &m_cacheProgressRest));
+    m_overviewMetricsPanel.Children().Append(DynamicStatLine(
+        L"Cache hit", m_cacheHitText, L"0.0%", Color(98, 223, 125)));
+    m_overviewMetricsPanel.Children().Append(DynamicStatLine(
+        L"Output", m_outputTokensText, L"0"));
+    overview.Children().Append(m_overviewMetricsPanel);
+    auto overviewCard = Card(L"Token 总览", Color(98, 223, 125), overview);
+    page.Children().Append(overviewCard);
 
     controls::StackPanel activity;
     activity.Spacing(10);
-    activity.Children().Append(StatLine(L"过去 24 小时", L"128.6K", Color(255, 253, 142)));
+    activity.Children().Append(DynamicStatLine(
+        L"过去 24 小时", m_dayTokensText, L"0", Color(255, 253, 142)));
 
     controls::StackPanel bars;
     bars.Height(104);
     bars.Orientation(controls::Orientation::Horizontal);
     bars.Spacing(8);
     bars.VerticalAlignment(mux::VerticalAlignment::Bottom);
-    constexpr std::array heights{ 32.0, 48.0, 42.0, 70.0, 56.0, 86.0, 64.0, 94.0, 78.0, 104.0, 84.0, 96.0 };
-    for (size_t index = 0; index < heights.size(); ++index)
+    for (size_t index = 0; index < 12; ++index)
     {
         controls::Border bar;
         bar.Width(16);
-        bar.Height(heights[index]);
+        bar.Height(12);
         bar.CornerRadius(Radius(8));
-        bar.Background(Brush(index > 8 ? Color(255, 253, 142) : Color(98, 223, 125)));
-        bar.Opacity(0.48 + static_cast<double>(index) * 0.035);
+        bar.Background(Brush(Color(98, 223, 125)));
+        bar.Opacity(0.2);
         bar.VerticalAlignment(mux::VerticalAlignment::Bottom);
         bars.Children().Append(bar);
+        m_dailyBars.push_back(bar);
     }
     activity.Children().Append(bars);
-    activity.Children().Append(StatLine(L"09:00", L"现在"));
+    activity.Children().Append(DynamicStatLine(
+        L"Messages", m_dayMessagesText, L"0"));
+    activity.Children().Append(DynamicStatLine(
+        L"Tool calls", m_dayToolCallsText, L"0"));
     auto activityCard = Card(L"Token 活动", Color(255, 253, 142), activity);
     controls::Grid::SetColumn(activityCard, 1);
     page.Children().Append(activityCard);
 
     controls::StackPanel limits;
-    limits.Spacing(18);
-    limits.Children().Append(ProviderBlock(
-        L"Codex weekly", L"6d 20h 后重置", L"46% left", 0.46, Color(98, 223, 125)));
-    limits.Children().Append(ProviderBlock(
-        L"ChatGPT rolling", L"2h 58m 后重置", L"78% left", 0.78, Color(255, 253, 142)));
-    auto limitsCard = Card(L"账户限额", Color(240, 63, 22), limits);
+    limits.Spacing(10);
+    controls::Grid limitTop;
+    AddColumn(limitTop, Star());
+    AddColumn(limitTop, mux::GridLengthHelper::Auto());
+    m_codexLimitName = Text(L"等待 Codex 限额快照", 13.5, Color(247, 247, 245), 600);
+    limitTop.Children().Append(m_codexLimitName);
+    m_codexLimitValue = Text(L"—", 13, Color(98, 223, 125), 600, true);
+    controls::Grid::SetColumn(m_codexLimitValue, 1);
+    limitTop.Children().Append(m_codexLimitValue);
+    limits.Children().Append(limitTop);
+    limits.Children().Append(Progress(
+        0.0,
+        Color(98, 223, 125),
+        &m_codexProgressFill,
+        &m_codexProgressRest));
+    m_codexLimitReset = Text(L"采集到 used_percent 后显示", 10.5, Color(143, 139, 140));
+    limits.Children().Append(m_codexLimitReset);
+    limits.Children().Append(Text(
+        L"仅展示 Codex 本地记录中实际提供的限额数据。",
+        9.5,
+        Color(143, 139, 140)));
+    auto limitsCard = Card(L"Codex 限额", Color(240, 63, 22), limits);
     controls::Grid::SetRow(limitsCard, 1);
     page.Children().Append(limitsCard);
 
     controls::StackPanel heat;
     heat.Spacing(12);
-    heat.Children().Append(StatLine(L"连续使用", L"18 days", Color(255, 253, 142)));
-    heat.Children().Append(Heatmap(20, Color(255, 253, 142)));
-    heat.Children().Append(Text(L"过去 20 周 · 所有设备", 10.5, Color(143, 139, 140)));
+    heat.Children().Append(DynamicStatLine(
+        L"活跃天数", m_activeDaysText, L"0", Color(255, 253, 142)));
+    heat.Children().Append(Heatmap(20, Color(255, 253, 142), &m_heatmapCells));
+    m_heatmapCaption = Text(L"尚无活动数据", 10.5, Color(143, 139, 140));
+    heat.Children().Append(m_heatmapCaption);
     auto heatCard = Card(L"活动热图", Color(255, 253, 142), heat);
     controls::Grid::SetColumn(heatCard, 1);
     controls::Grid::SetRow(heatCard, 1);
@@ -543,15 +953,33 @@ controls::Grid DashboardView::BuildOverviewPage()
 
     controls::StackPanel accounts;
     accounts.Spacing(12);
-    accounts.Children().Append(BreakdownRow(
-        L"Codex · l***8@gmail.com", L"Plus · 当前账户", L"86% left", 0.86, Color(98, 223, 125)));
-    accounts.Children().Append(BreakdownRow(
-        L"ChatGPT · q***t@icloud.com", L"Plus · 1m ago", L"100%", 1.0, Color(255, 253, 142)));
+    controls::StackPanel chatgptCopy;
+    chatgptCopy.Spacing(3);
+    chatgptCopy.Children().Append(Text(L"ChatGPT", 13, Color(247, 247, 245), 600));
+    chatgptCopy.Children().Append(Text(L"等待官方导出导入", 11, Color(255, 253, 142), 600));
+    chatgptCopy.Children().Append(Text(L"实时 token 不可用", 9.5, Color(143, 139, 140)));
+    accounts.Children().Append(SoftPanel(chatgptCopy));
     accounts.Children().Append(Text(L"近期会话", 12, Color(143, 139, 140), 600));
-    accounts.Children().Append(StatLine(L"gpt-5.6-sol · 57 msgs", L"6.62M"));
-    accounts.Children().Append(StatLine(L"gpt-5.5 · 18 msgs", L"369K"));
-    accounts.Children().Append(StatLine(L"ChatGPT · 12 msgs", L"204K"));
-    auto accountsCard = Card(L"账户与会话", Color(240, 63, 22), accounts);
+    for (int index = 0; index < 3; ++index)
+    {
+        controls::TextBlock title{ nullptr };
+        controls::TextBlock detail{ nullptr };
+        controls::TextBlock value{ nullptr };
+        auto row = SessionRow(title, detail, value);
+        accounts.Children().Append(row);
+        m_sessionRows.push_back(row);
+        m_sessionTitles.push_back(title);
+        m_sessionDetails.push_back(detail);
+        m_sessionValues.push_back(value);
+    }
+
+    controls::StackPanel noSessions;
+    noSessions.Spacing(3);
+    noSessions.Children().Append(Text(L"暂无会话", 11.5, Color(247, 247, 245), 600));
+    noSessions.Children().Append(Text(L"采集完成后最多显示最近 3 条。", 9.5, Color(143, 139, 140)));
+    m_recentEmptyState = SoftPanel(noSessions);
+    accounts.Children().Append(m_recentEmptyState);
+    auto accountsCard = Card(L"ChatGPT 与近期会话", Color(240, 63, 22), accounts);
     controls::Grid::SetColumn(accountsCard, 2);
     controls::Grid::SetRowSpan(accountsCard, 2);
     page.Children().Append(accountsCard);
@@ -581,13 +1009,13 @@ controls::Grid DashboardView::BuildDetailsPage()
 
     controls::StackPanel rows;
     rows.Spacing(10);
-    rows.Children().Append(BreakdownRow(
+    rows.Children().Append(BreakdownPanel(
         L"Codex", L"Cache 71.4% · Output 8.1K", L"3.62B", 0.86, Color(98, 223, 125)));
-    rows.Children().Append(BreakdownRow(
+    rows.Children().Append(BreakdownPanel(
         L"ChatGPT", L"Cache 64.8% · Output 5.4K", L"1.79B", 0.43, Color(255, 253, 142)));
-    rows.Children().Append(BreakdownRow(
+    rows.Children().Append(BreakdownPanel(
         L"gpt-5.6-sol", L"12 sessions · $18.24", L"1.75B", 0.68, Color(98, 223, 125)));
-    rows.Children().Append(BreakdownRow(
+    rows.Children().Append(BreakdownPanel(
         L"Desktop · Windows", L"Synced 1m ago", L"137.6M", 0.22, Color(240, 63, 22)));
     auto listCard = Card(L"使用细分", Color(98, 223, 125), rows);
     content.Children().Append(listCard);

@@ -1,6 +1,10 @@
 #pragma once
 
+#include "UsageModels.h"
+
+#include <optional>
 #include <string_view>
+#include <vector>
 
 #include <winrt/Microsoft.UI.Xaml.Controls.h>
 #include <winrt/Microsoft.UI.Xaml.Shapes.h>
@@ -15,6 +19,18 @@ namespace tokenometer
         Settings,
     };
 
+    struct OverviewViewData
+    {
+        UsageTotals total;
+        UsageTotals day;
+        std::vector<DailyUsage> daily;
+        std::vector<SessionSummary> recent;
+        std::optional<RateLimitSnapshot> codexLimit;
+        int64_t lastSync{};
+        bool collecting{};
+        std::wstring error;
+    };
+
     class DashboardView final
     {
     public:
@@ -27,6 +43,7 @@ namespace tokenometer
             std::wstring_view status,
             std::wstring_view detail = {},
             bool healthy = true);
+        void UpdateOverview(OverviewViewData const& data);
         void ShowPage(DashboardPage page);
 
     private:
@@ -42,6 +59,7 @@ namespace tokenometer
             std::wstring_view label,
             DashboardPage page);
         void UpdateNavigationState();
+        void UpdateDailyVisuals(std::vector<DailyUsage> const& daily);
 
         winrt::Microsoft::UI::Xaml::Controls::Grid m_root{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::Grid m_pageHost{ nullptr };
@@ -60,6 +78,35 @@ namespace tokenometer
         winrt::Microsoft::UI::Xaml::Controls::TextBlock m_statusText{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::TextBlock m_statusDetail{ nullptr };
         winrt::Microsoft::UI::Xaml::Shapes::Ellipse m_statusDot{ nullptr };
+
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_totalTokensText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_cacheHitText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_outputTokensText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_dayTokensText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_dayMessagesText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_dayToolCallsText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_activeDaysText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_heatmapCaption{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_codexLimitName{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_codexLimitValue{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_codexLimitReset{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_emptyOverviewTitle{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_emptyOverviewDetail{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Border m_overviewEmptyState{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::StackPanel m_overviewMetricsPanel{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Border m_recentEmptyState{ nullptr };
+
+        winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition m_cacheProgressFill{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition m_cacheProgressRest{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition m_codexProgressFill{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition m_codexProgressRest{ nullptr };
+
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Border> m_dailyBars;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Border> m_heatmapCells;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Border> m_sessionRows;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::TextBlock> m_sessionTitles;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::TextBlock> m_sessionDetails;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::TextBlock> m_sessionValues;
 
         DashboardPage m_currentPage{ DashboardPage::Overview };
     };
