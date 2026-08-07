@@ -924,10 +924,17 @@ namespace tokenometer
         }
     }
 
-    std::wstring Database::GetOrCreateDeviceId(std::wstring_view displayName)
+    std::wstring Database::GetOrCreateDeviceId(
+        std::wstring_view displayName,
+        std::wstring_view stateKey)
     {
+        if (stateKey.empty() || stateKey.size() > 512)
+        {
+            throw std::invalid_argument("Device state key is invalid");
+        }
         std::scoped_lock lock(m_mutex);
-        Statement existing(m_database, "SELECT value FROM app_state WHERE key='local_device_id';");
+        Statement existing(m_database, "SELECT value FROM app_state WHERE key=?1;");
+        existing.Bind(1, stateKey);
         std::wstring id;
         if (existing.Step())
         {
@@ -944,10 +951,11 @@ namespace tokenometer
             StringFromGUID2(guid, text, 40);
             id = text;
             Statement save(m_database, R"sql(
-                INSERT INTO app_state(key, value) VALUES('local_device_id', ?1)
+                INSERT INTO app_state(key, value) VALUES(?1, ?2)
                 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
             )sql");
-            save.Bind(1, id);
+            save.Bind(1, stateKey);
+            save.Bind(2, id);
             save.Step();
         }
 
@@ -961,6 +969,48 @@ namespace tokenometer
         device.Bind(3, UnixNow());
         device.Step();
         return id;
+    }
+
+    std::optional<std::wstring> Database::GetAppState(std::wstring_view key)
+    {
+        if (key.empty() || key.size() > 512)
+        {
+            throw std::invalid_argument("Application state key is invalid");
+        }
+        std::scoped_lock lock(m_mutex);
+        Statement statement(m_database, "SELECT value FROM app_state WHERE key=?1;");
+        statement.Bind(1, key);
+        if (!statement.Step()) return std::nullopt;
+        return statement.Text(0);
+    }
+
+    void Database::SetAppState(std::wstring_view key, std::wstring_view value)
+    {
+        if (key.empty() || key.size() > 512 || value.size() > 16 * 1024)
+        {
+            throw std::invalid_argument("Application state value is invalid");
+        }
+        std::scoped_lock lock(m_mutex);
+        Statement statement(m_database, R"sql(
+            INSERT INTO app_state(key, value) VALUES(?1, ?2)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+        )sql");
+        statement.Bind(1, key);
+        statement.Bind(2, value);
+        statement.Step();
+    }
+
+    bool Database::HasSessionSource(
+        std::wstring_view sessionId,
+        std::wstring_view sourceKind)
+    {
+        std::scoped_lock lock(m_mutex);
+        Statement statement(m_database, R"sql(
+            SELECT 1 FROM sessions WHERE id=?1 AND source_kind=?2 LIMIT 1;
+        )sql");
+        statement.Bind(1, sessionId);
+        statement.Bind(2, sourceKind);
+        return statement.Step();
     }
 
     void Database::Transaction(std::function<void()> const& work)
@@ -1106,36 +1156,191 @@ namespace tokenometer
             return;
         }
         std::scoped_lock lock(m_mutex);
-        Statement statement(m_database, R"sql(
-            INSERT INTO sessions(
-                id, source_path, source_kind, account_id, title, project, model, device_id,
-                started_at, updated_at, message_count)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
-            ON CONFLICT(id) DO UPDATE SET
-                source_path=excluded.source_path,
-                account_id=CASE WHEN excluded.account_id='' THEN sessions.account_id ELSE excluded.account_id END,
-                title=CASE WHEN excluded.title='' THEN sessions.title ELSE excluded.title END,
-                project=CASE WHEN excluded.project='' THEN sessions.project ELSE excluded.project END,
-                model=CASE WHEN excluded.model='' THEN sessions.model ELSE excluded.model END,
-                device_id=CASE WHEN excluded.device_id='' THEN sessions.device_id ELSE excluded.device_id END,
-                started_at=CASE WHEN sessions.started_at=0 THEN excluded.started_at
-                                WHEN excluded.started_at=0 THEN sessions.started_at
-                                ELSE MIN(sessions.started_at, excluded.started_at) END,
-                updated_at=MAX(sessions.updated_at, excluded.updated_at),
-                message_count=MAX(sessions.message_count, excluded.message_count);
-        )sql");
-        statement.Bind(1, session.id);
-        statement.Bind(2, session.sourcePath);
-        statement.Bind(3, session.sourceKind);
-        statement.Bind(4, session.accountId);
-        statement.Bind(5, session.title);
-        statement.Bind(6, session.project);
-        statement.Bind(7, session.model);
-        statement.Bind(8, session.deviceId);
-        statement.Bind(9, session.startedAt);
-        statement.Bind(10, session.updatedAt);
-        statement.Bind(11, session.messageCount);
-        statement.Step();
+        bool promoteFromWsl{};
+        std::wstring promotedAccount = session.accountId;
+        std::wstring promotedDevice = session.deviceId;
+        std::wstring previousProject;
+        std::wstring previousModel;
+        if (session.sourceKind == L"codex")
+        {
+            Statement existing(m_database, R"sql(
+                SELECT source_kind, account_id, device_id, project, model FROM sessions WHERE id=?1;
+            )sql");
+            existing.Bind(1, session.id);
+            if (existing.Step() && existing.Text(0) == L"codex-wsl")
+            {
+                promoteFromWsl = true;
+                if (promotedAccount.empty()) promotedAccount = existing.Text(1);
+                if (promotedDevice.empty()) promotedDevice = existing.Text(2);
+                previousProject = existing.Text(3);
+                previousModel = existing.Text(4);
+            }
+        }
+
+        if (promoteFromWsl) Execute("SAVEPOINT promote_codex_session;");
+        try
+        {
+            if (promoteFromWsl)
+            {
+                Statement daily(m_database, R"sql(
+                    INSERT INTO daily_usage(
+                        source_path, day, session_id, source_kind, account_id, tool, model,
+                        project, device_id, first_timestamp, last_timestamp, input_tokens,
+                        cached_input_tokens, cache_write_input_tokens, output_tokens,
+                        reasoning_output_tokens, reported_total_tokens, messages, tool_calls)
+                    SELECT ?2, day, session_id, 'codex', ?3, tool,
+                           CASE WHEN ?5<>'' AND model=?7 THEN ?5 ELSE model END,
+                           CASE WHEN ?6<>'' AND project=?8 THEN ?6 ELSE project END, ?4,
+                           first_timestamp, last_timestamp, input_tokens, cached_input_tokens,
+                           cache_write_input_tokens, output_tokens, reasoning_output_tokens,
+                           reported_total_tokens, messages, tool_calls
+                    FROM daily_usage
+                    WHERE session_id=?1 AND source_kind='codex-wsl'
+                    ON CONFLICT(source_path, day, session_id, source_kind, account_id, tool, model, project, device_id)
+                    DO UPDATE SET
+                        first_timestamp=MIN(daily_usage.first_timestamp, excluded.first_timestamp),
+                        last_timestamp=MAX(daily_usage.last_timestamp, excluded.last_timestamp),
+                        input_tokens=daily_usage.input_tokens+excluded.input_tokens,
+                        cached_input_tokens=daily_usage.cached_input_tokens+excluded.cached_input_tokens,
+                        cache_write_input_tokens=daily_usage.cache_write_input_tokens+excluded.cache_write_input_tokens,
+                        output_tokens=daily_usage.output_tokens+excluded.output_tokens,
+                        reasoning_output_tokens=daily_usage.reasoning_output_tokens+excluded.reasoning_output_tokens,
+                        reported_total_tokens=daily_usage.reported_total_tokens+excluded.reported_total_tokens,
+                        messages=daily_usage.messages+excluded.messages,
+                        tool_calls=daily_usage.tool_calls+excluded.tool_calls;
+                )sql");
+                daily.Bind(1, session.id);
+                daily.Bind(2, session.sourcePath);
+                daily.Bind(3, promotedAccount);
+                daily.Bind(4, promotedDevice);
+                daily.Bind(5, session.model);
+                daily.Bind(6, session.project);
+                daily.Bind(7, previousModel);
+                daily.Bind(8, previousProject);
+                daily.Step();
+
+                Statement hourly(m_database, R"sql(
+                    INSERT INTO hourly_usage(
+                        source_path, hour_start, day, session_id, source_kind, account_id, tool,
+                        model, project, device_id, input_tokens, cached_input_tokens,
+                        cache_write_input_tokens, output_tokens, reasoning_output_tokens,
+                        reported_total_tokens, messages, tool_calls)
+                    SELECT ?2, hour_start, day, session_id, 'codex', ?3, tool,
+                           CASE WHEN ?5<>'' AND model=?7 THEN ?5 ELSE model END,
+                           CASE WHEN ?6<>'' AND project=?8 THEN ?6 ELSE project END, ?4,
+                           input_tokens, cached_input_tokens, cache_write_input_tokens,
+                           output_tokens, reasoning_output_tokens, reported_total_tokens,
+                           messages, tool_calls
+                    FROM hourly_usage
+                    WHERE session_id=?1 AND source_kind='codex-wsl'
+                    ON CONFLICT(source_path, hour_start, day, session_id, source_kind, account_id, tool, model, project, device_id)
+                    DO UPDATE SET
+                        input_tokens=hourly_usage.input_tokens+excluded.input_tokens,
+                        cached_input_tokens=hourly_usage.cached_input_tokens+excluded.cached_input_tokens,
+                        cache_write_input_tokens=hourly_usage.cache_write_input_tokens+excluded.cache_write_input_tokens,
+                        output_tokens=hourly_usage.output_tokens+excluded.output_tokens,
+                        reasoning_output_tokens=hourly_usage.reasoning_output_tokens+excluded.reasoning_output_tokens,
+                        reported_total_tokens=hourly_usage.reported_total_tokens+excluded.reported_total_tokens,
+                        messages=hourly_usage.messages+excluded.messages,
+                        tool_calls=hourly_usage.tool_calls+excluded.tool_calls;
+                )sql");
+                hourly.Bind(1, session.id);
+                hourly.Bind(2, session.sourcePath);
+                hourly.Bind(3, promotedAccount);
+                hourly.Bind(4, promotedDevice);
+                hourly.Bind(5, session.model);
+                hourly.Bind(6, session.project);
+                hourly.Bind(7, previousModel);
+                hourly.Bind(8, previousProject);
+                hourly.Step();
+
+                for (auto const* sql : {
+                         "DELETE FROM daily_usage WHERE session_id=?1 AND source_kind='codex-wsl';",
+                         "DELETE FROM hourly_usage WHERE session_id=?1 AND source_kind='codex-wsl';" })
+                {
+                    Statement removeWsl(m_database, sql);
+                    removeWsl.Bind(1, session.id);
+                    removeWsl.Step();
+                }
+                Statement promoteUsageDetails(m_database, R"sql(
+                    UPDATE usage_events
+                    SET source_path=?2,
+                        model=CASE WHEN ?3<>'' AND model=?4 THEN ?3 ELSE model END
+                    WHERE session_id=?1;
+                )sql");
+                promoteUsageDetails.Bind(1, session.id);
+                promoteUsageDetails.Bind(2, session.sourcePath);
+                promoteUsageDetails.Bind(3, session.model);
+                promoteUsageDetails.Bind(4, previousModel);
+                promoteUsageDetails.Step();
+                for (auto const* sql : {
+                         "UPDATE prompt_events SET source_path=?2 WHERE session_id=?1;",
+                         "UPDATE tool_events SET source_path=?2 WHERE session_id=?1;" })
+                {
+                    Statement promoteDetails(m_database, sql);
+                    promoteDetails.Bind(1, session.id);
+                    promoteDetails.Bind(2, session.sourcePath);
+                    promoteDetails.Step();
+                }
+                Statement promoteTurns(m_database, R"sql(
+                    UPDATE turn_usage SET model=?2
+                    WHERE session_id=?1 AND ?2<>'' AND model=?3;
+                )sql");
+                promoteTurns.Bind(1, session.id);
+                promoteTurns.Bind(2, session.model);
+                promoteTurns.Bind(3, previousModel);
+                promoteTurns.Step();
+            }
+
+            Statement statement(m_database, R"sql(
+                INSERT INTO sessions(
+                    id, source_path, source_kind, account_id, title, project, model, device_id,
+                    started_at, updated_at, message_count)
+                VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+                ON CONFLICT(id) DO UPDATE SET
+                    source_path=CASE
+                        WHEN sessions.source_kind='codex' AND excluded.source_kind='codex-wsl'
+                        THEN sessions.source_path ELSE excluded.source_path END,
+                    source_kind=CASE
+                        WHEN sessions.source_kind='codex' OR excluded.source_kind='codex'
+                        THEN 'codex' ELSE excluded.source_kind END,
+                    account_id=CASE WHEN excluded.account_id='' THEN sessions.account_id ELSE excluded.account_id END,
+                    title=CASE WHEN excluded.title='' THEN sessions.title ELSE excluded.title END,
+                    project=CASE WHEN excluded.project='' THEN sessions.project ELSE excluded.project END,
+                    model=CASE WHEN excluded.model='' THEN sessions.model ELSE excluded.model END,
+                    device_id=CASE
+                        WHEN sessions.source_kind='codex' AND excluded.source_kind='codex-wsl'
+                        THEN sessions.device_id
+                        WHEN excluded.device_id='' THEN sessions.device_id ELSE excluded.device_id END,
+                    started_at=CASE WHEN sessions.started_at=0 THEN excluded.started_at
+                                    WHEN excluded.started_at=0 THEN sessions.started_at
+                                    ELSE MIN(sessions.started_at, excluded.started_at) END,
+                    updated_at=MAX(sessions.updated_at, excluded.updated_at),
+                    message_count=MAX(sessions.message_count, excluded.message_count);
+            )sql");
+            statement.Bind(1, session.id);
+            statement.Bind(2, session.sourcePath);
+            statement.Bind(3, session.sourceKind);
+            statement.Bind(4, session.accountId);
+            statement.Bind(5, session.title);
+            statement.Bind(6, session.project);
+            statement.Bind(7, session.model);
+            statement.Bind(8, session.deviceId);
+            statement.Bind(9, session.startedAt);
+            statement.Bind(10, session.updatedAt);
+            statement.Bind(11, session.messageCount);
+            statement.Step();
+            if (promoteFromWsl) Execute("RELEASE promote_codex_session;");
+        }
+        catch (...)
+        {
+            if (promoteFromWsl)
+            {
+                sqlite3_exec(m_database, "ROLLBACK TO promote_codex_session;", nullptr, nullptr, nullptr);
+                sqlite3_exec(m_database, "RELEASE promote_codex_session;", nullptr, nullptr, nullptr);
+            }
+            throw;
+        }
     }
 
     bool Database::InsertUsageEvent(UsageEvent const& event)
@@ -2163,9 +2368,21 @@ namespace tokenometer
             database.Initialize();
             auto const deviceId = database.GetOrCreateDeviceId(L"Test device");
             if (deviceId.empty() || database.GetOrCreateDeviceId(L"Renamed device") != deviceId) return false;
+            auto const wslDeviceId = database.GetOrCreateDeviceId(
+                L"Test device · WSL · Ubuntu",
+                L"wsl_device_id:test-device:Ubuntu");
+            if (wslDeviceId.empty() || wslDeviceId == deviceId ||
+                database.GetOrCreateDeviceId(
+                    L"Renamed WSL device",
+                    L"wsl_device_id:test-device:Ubuntu") != wslDeviceId)
+            {
+                return false;
+            }
             SessionRecord session{ L"session-1", L"fixture.jsonl", L"codex", L"Fixture", L"D:\\work", L"gpt-test", L"test-device", 100, 100, 0 };
             session.accountId = L"account-a";
             database.UpsertSession(session);
+            if (!database.HasSessionSource(session.id, L"codex") ||
+                database.HasSessionSource(session.id, L"codex-wsl")) return false;
 
             PromptEvent prompt{ L"fixture.jsonl", 10, session.id, L"codex", L"Codex", L"",
                                 session.project, session.deviceId, L"turn-1", 1, 100, L"1970-01-01" };
@@ -2305,8 +2522,156 @@ namespace tokenometer
                 firstTurns.size() == 1 && firstTurns.front().tools == L"shell_command";
             if (!groupingValid) return false;
 
+            Database promoted(L":memory:");
+            promoted.Initialize();
+            SessionRecord wslSession{
+                L"wsl-first-session", L"wsl://Ubuntu/home/test/.codex/active.jsonl",
+                L"codex-wsl", L"WSL first", L"/home/test/project", L"gpt-test",
+                L"wsl-device", 200, 200, 0
+            };
+            wslSession.accountId = L"wsl-account";
+            promoted.UpsertSession(wslSession);
+            PromptEvent wslPrompt{
+                wslSession.sourcePath, 10, wslSession.id, wslSession.sourceKind, L"Codex",
+                wslSession.model, wslSession.project, wslSession.deviceId, L"turn-1", 1,
+                200, L"1970-01-01"
+            };
+            wslPrompt.accountId = wslSession.accountId;
+            UsageEvent wslUsage{
+                wslSession.sourcePath, 20, wslSession.id, wslSession.sourceKind, L"Codex",
+                wslSession.model, wslSession.project, wslSession.deviceId, L"turn-1", 1,
+                201, L"1970-01-01", { 1200, 900, 0, 300, 80, 1500 }
+            };
+            wslUsage.accountId = wslSession.accountId;
+            UsageEvent archivedWslUsage = wslUsage;
+            archivedWslUsage.sourcePath = L"wsl://Ubuntu/home/test/.codex/archive.jsonl";
+            archivedWslUsage.sourceOffset = 21;
+            archivedWslUsage.timestamp = 202;
+            archivedWslUsage.counts = { 200, 50, 0, 50, 0, 250 };
+            ToolEvent wslTool{
+                wslSession.sourcePath, 30, wslSession.id, wslSession.sourceKind, L"Codex",
+                wslSession.model, wslSession.project, wslSession.deviceId, L"turn-1", 1,
+                203, L"1970-01-01", L"shell_command", L"wsl-call", 40
+            };
+            wslTool.accountId = wslSession.accountId;
+            if (!promoted.InsertPromptEvent(wslPrompt) ||
+                !promoted.InsertUsageEvent(wslUsage) ||
+                !promoted.InsertUsageEvent(archivedWslUsage) ||
+                !promoted.InsertToolEvent(wslTool))
+            {
+                return false;
+            }
+
+            SessionRecord localSession = wslSession;
+            localSession.sourcePath = L"C:\\Users\\test\\.codex\\session.jsonl";
+            localSession.sourceKind = L"codex";
+            localSession.accountId = L"local-account";
+            localSession.deviceId = L"local-device";
+            localSession.project = L"C:\\work\\project";
+            localSession.model = L"gpt-local";
+            localSession.updatedAt = 300;
+            promoted.Transaction([&] { promoted.UpsertSession(localSession); });
+            promoted.UpsertSession(localSession);
+
+            PromptEvent localPrompt = wslPrompt;
+            localPrompt.sourcePath = localSession.sourcePath;
+            localPrompt.sourceKind = localSession.sourceKind;
+            localPrompt.accountId = localSession.accountId;
+            localPrompt.deviceId = localSession.deviceId;
+            localPrompt.project = localSession.project;
+            localPrompt.model = localSession.model;
+            UsageEvent localUsage = wslUsage;
+            localUsage.sourcePath = localSession.sourcePath;
+            localUsage.sourceKind = localSession.sourceKind;
+            localUsage.accountId = localSession.accountId;
+            localUsage.deviceId = localSession.deviceId;
+            localUsage.project = localSession.project;
+            localUsage.model = localSession.model;
+            UsageEvent localArchivedUsage = archivedWslUsage;
+            localArchivedUsage.sourcePath = localSession.sourcePath;
+            localArchivedUsage.sourceKind = localSession.sourceKind;
+            localArchivedUsage.accountId = localSession.accountId;
+            localArchivedUsage.deviceId = localSession.deviceId;
+            localArchivedUsage.project = localSession.project;
+            localArchivedUsage.model = localSession.model;
+            ToolEvent localTool = wslTool;
+            localTool.sourcePath = localSession.sourcePath;
+            localTool.sourceKind = localSession.sourceKind;
+            localTool.accountId = localSession.accountId;
+            localTool.deviceId = localSession.deviceId;
+            localTool.project = localSession.project;
+            localTool.model = localSession.model;
+            if (promoted.InsertPromptEvent(localPrompt) ||
+                promoted.InsertUsageEvent(localUsage) ||
+                promoted.InsertUsageEvent(localArchivedUsage) ||
+                promoted.InsertToolEvent(localTool))
+            {
+                return false;
+            }
+
+            auto const promotedDays = promoted.GetDailyUsage(0);
+            auto const promotedHours = promoted.GetHourlyUsage(0);
+            auto const promotedTotals = promoted.GetTotals();
+            auto const promotedSessions = promoted.GetRecentSessions();
+            auto const promotedTurns = promoted.GetSessionTurns(localSession.id);
+            auto const promotedTools = promoted.GetToolCalls(localSession.id, 1);
+            Statement promotedDetails(promoted.m_database, R"sql(
+                SELECT COUNT(*), COALESCE(SUM(source_path=?2),0),
+                       (SELECT COUNT(*) FROM usage_events
+                        WHERE session_id=?1 AND model=?3)
+                FROM (
+                    SELECT source_path FROM usage_events WHERE session_id=?1
+                    UNION ALL SELECT source_path FROM prompt_events WHERE session_id=?1
+                    UNION ALL SELECT source_path FROM tool_events WHERE session_id=?1
+                );
+            )sql");
+            promotedDetails.Bind(1, localSession.id);
+            promotedDetails.Bind(2, localSession.sourcePath);
+            promotedDetails.Bind(3, localSession.model);
+            if (!promotedDetails.Step() || promotedDetails.Int64(0) != 4 ||
+                promotedDetails.Int64(1) != 4 || promotedDetails.Int64(2) != 2 ||
+                !promoted.HasSessionSource(localSession.id, L"codex") ||
+                promoted.HasSessionSource(localSession.id, L"codex-wsl") ||
+                promotedDays.size() != 1 ||
+                promotedDays.front().sourceKind != localSession.sourceKind ||
+                promotedDays.front().accountId != localSession.accountId ||
+                promotedDays.front().deviceId != localSession.deviceId ||
+                promotedDays.front().project != localSession.project ||
+                promotedDays.front().model != localSession.model ||
+                promotedDays.front().counts.reportedTotal != 1750 ||
+                promotedDays.front().messages != 1 || promotedDays.front().toolCalls != 1 ||
+                promotedHours.size() != 1 ||
+                promotedHours.front().sourceKind != localSession.sourceKind ||
+                promotedHours.front().accountId != localSession.accountId ||
+                promotedHours.front().deviceId != localSession.deviceId ||
+                promotedHours.front().project != localSession.project ||
+                promotedHours.front().model != localSession.model ||
+                promotedHours.front().counts.reportedTotal != 1750 ||
+                promotedHours.front().messages != 1 || promotedHours.front().toolCalls != 1 ||
+                promotedTotals.counts.reportedTotal != 1750 ||
+                promotedTotals.messages != 1 || promotedTotals.toolCalls != 1 ||
+                promotedSessions.size() != 1 ||
+                promotedSessions.front().accountId != localSession.accountId ||
+                promotedSessions.front().deviceId != localSession.deviceId ||
+                promotedSessions.front().project != localSession.project ||
+                promotedSessions.front().model != localSession.model ||
+                promotedSessions.front().counts.reportedTotal != 1750 ||
+                promotedTurns.size() != 1 || promotedTurns.front().counts.reportedTotal != 1750 ||
+                promotedTurns.front().model != localSession.model ||
+                promotedTurns.front().tools != L"shell_command" ||
+                promotedTools.size() != 1 || promotedTools.front().sourcePath != localSession.sourcePath)
+            {
+                return false;
+            }
+
             Database accountKeys(L":memory:");
             accountKeys.Initialize();
+            accountKeys.SetAppState(L"test_cursor", L"3001");
+            if (accountKeys.GetAppState(L"missing_state") ||
+                accountKeys.GetAppState(L"test_cursor") != std::optional<std::wstring>{L"3001"})
+            {
+                return false;
+            }
             UsageEvent accountAUsage = usage;
             accountAUsage.sourcePath = L"shared.jsonl";
             accountAUsage.sessionId = L"shared-session";

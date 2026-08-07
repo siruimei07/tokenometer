@@ -3,6 +3,7 @@
 #include "UsageModels.h"
 
 #include <filesystem>
+#include <stop_token>
 #include <string>
 
 namespace tokenometer
@@ -18,7 +19,9 @@ namespace tokenometer
     public:
         SourceContentReader();
 
-        [[nodiscard]] ToolCallContent Read(ToolCallDetail const& locator) const;
+        [[nodiscard]] ToolCallContent Read(
+            ToolCallDetail const& locator,
+            std::stop_token stopToken = {}) const;
         [[nodiscard]] static bool SelfTest();
 
     private:

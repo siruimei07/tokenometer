@@ -545,7 +545,14 @@ void DashboardView::UpdateOverview(OverviewViewData const& data)
     {
         m_emptyOverviewTitle.Text(L"还没有使用记录");
         m_emptyOverviewDetail.Text(L"当前数据源为空；继续使用 Codex 后会自动刷新。");
-        SetStatus(L"数据已同步", FormatAge(data.lastSync), true);
+        if (data.warning.empty())
+        {
+            SetStatus(L"数据已同步", FormatAge(data.lastSync), true);
+        }
+        else
+        {
+            SetStatus(L"Windows 数据已同步", data.warning, true);
+        }
     }
     else
     {

@@ -10,6 +10,7 @@
 #include "Database.h"
 #include "SourceContentReader.h"
 #include "TrendAnalytics.h"
+#include "WslCodexCollector.h"
 
 #include <algorithm>
 #include <atomic>
@@ -418,6 +419,7 @@ private:
             {
                 m_selectedToolLocator.clear();
                 m_selectedToolDetails.clear();
+                if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
             }
             else
             {
@@ -703,10 +705,8 @@ private:
             return;
         }
 
-        try
+        auto const render = [](tokenometer::ToolCallContent const& content)
         {
-            tokenometer::SourceContentReader reader;
-            auto const content = reader.Read(match->second);
             std::wstring details;
             details.reserve(std::min<size_t>(
                 content.input.size() + content.output.size() + 32,
@@ -715,11 +715,85 @@ private:
             details += content.input.empty() ? L"（源记录未提供输入）" : ClipToolContent(content.input);
             details += L"\n\n输出\n";
             details += content.output.empty() ? L"（尚未找到输出记录）" : ClipToolContent(content.output);
-            m_selectedToolDetails = std::move(details);
+            return details;
+        };
+
+        if (!match->second.sourcePath.starts_with(L"wsl://"))
+        {
+            try
+            {
+                tokenometer::SourceContentReader reader;
+                m_selectedToolDetails = render(reader.Read(match->second));
+            }
+            catch (...)
+            {
+                m_selectedToolDetails = L"无法安全读取该工具记录；源文件可能已移动、被裁剪或不在允许目录。";
+            }
+            return;
+        }
+
+        if (m_toolContentThread.joinable())
+        {
+            m_toolContentThread.request_stop();
+            m_toolContentThread.join();
+        }
+        m_selectedToolDetails = L"正在从运行中的 WSL 发行版读取已选工具记录…";
+        auto weakThis = get_weak();
+        auto dispatcher = m_window.DispatcherQueue();
+        auto const tool = match->second;
+        try
+        {
+            m_toolContentThread = std::jthread([
+                weakThis,
+                dispatcher,
+                locator,
+                tool,
+                render](std::stop_token stopToken)
+            {
+                std::wstring details;
+                bool apartmentInitialized{};
+                try
+                {
+                    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                    apartmentInitialized = true;
+                    tokenometer::SourceContentReader reader;
+                    details = render(reader.Read(tool, stopToken));
+                }
+                catch (...)
+                {
+                    details = stopToken.stop_requested()
+                        ? L"已取消读取 WSL 工具记录。"
+                        : L"无法安全读取 WSL 工具记录；发行版可能已停止或源文件已移动。";
+                }
+                if (apartmentInitialized) winrt::uninit_apartment();
+                if (stopToken.stop_requested()) return;
+                try
+                {
+                    dispatcher.TryEnqueue([
+                        weakThis,
+                        locator,
+                        details = std::move(details)]() mutable
+                    {
+                        if (auto self = weakThis.get())
+                        {
+                            if (self->m_closing.load(std::memory_order_relaxed) ||
+                                self->m_selectedToolLocator != locator)
+                            {
+                                return;
+                            }
+                            self->m_selectedToolDetails = std::move(details);
+                            self->RefreshDetails();
+                        }
+                    });
+                }
+                catch (...)
+                {
+                }
+            });
         }
         catch (...)
         {
-            m_selectedToolDetails = L"无法安全读取该工具记录；源文件可能已移动、被裁剪或不在允许目录。";
+            m_selectedToolDetails = L"无法启动 WSL 工具记录读取线程。";
         }
     }
 
@@ -762,7 +836,8 @@ private:
                         {
                             break;
                         }
-                        std::wstring locator = L"tool-" + std::to_wstring(toolIndex + 1);
+                        std::wstring locator = L"tool:" + m_selectedSessionId + L":" +
+                            std::to_wstring(tool.inputOffset);
                         tokenometer::ToolCallViewData view;
                         view.locator = locator;
                         view.name = tool.name;
@@ -786,6 +861,19 @@ private:
                     {
                         break;
                     }
+                }
+                if (!m_selectedToolLocator.empty() && std::ranges::none_of(
+                        m_toolLocators,
+                        [this](auto const& item)
+                        {
+                            return item.first == m_selectedToolLocator;
+                        }))
+                {
+                    if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
+                    m_selectedToolLocator.clear();
+                    m_selectedToolDetails.clear();
+                    data.selectedToolCallLocator.clear();
+                    data.selectedToolDetails.clear();
                 }
             }
         }
@@ -1091,6 +1179,8 @@ private:
             }
         };
         stop(m_chatGptImportThread);
+        stop(m_toolContentThread);
+        stop(m_wslCollectionThread);
         stop(m_collectionThread);
     }
 
@@ -1163,6 +1253,7 @@ private:
                             m_collectionFailed.store(true, std::memory_order_relaxed);
                             OutputDebugStringW(L"Tokenometer: local usage collection failed.\n");
                         }
+                        m_initialLocalCollectionComplete.store(true, std::memory_order_release);
                         m_collecting.store(false, std::memory_order_relaxed);
                         for (int tick = 0; tick < 20 && !stopToken.stop_requested(); ++tick)
                         {
@@ -1173,9 +1264,65 @@ private:
                 }
                 catch (...)
                 {
+                    m_initialLocalCollectionComplete.store(true, std::memory_order_release);
                     OutputDebugStringW(L"Tokenometer: collector thread initialization failed.\n");
                 }
             });
+
+            try
+            {
+                m_wslCollector = std::make_unique<tokenometer::WslCodexCollector>(*m_database);
+                m_wslCollectionThread = std::jthread([this](std::stop_token stopToken)
+                {
+                    try
+                    {
+                        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                        while (!stopToken.stop_requested() &&
+                               !m_initialLocalCollectionComplete.load(std::memory_order_acquire))
+                        {
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        }
+                        while (!stopToken.stop_requested())
+                        {
+                            try
+                            {
+                                m_wslCollecting.store(true, std::memory_order_relaxed);
+                                auto const wslResult = m_wslCollector->CollectOnce(stopToken);
+                                bool const failed = !wslResult.discoverySucceeded ||
+                                    wslResult.errors > 0;
+                                m_wslCollectionFailed.store(failed, std::memory_order_relaxed);
+                                if (failed)
+                                {
+                                    OutputDebugStringW(
+                                        L"Tokenometer: WSL discovery or collection is unavailable.\n");
+                                }
+                            }
+                            catch (...)
+                            {
+                                m_wslCollectionFailed.store(true, std::memory_order_relaxed);
+                                OutputDebugStringW(L"Tokenometer: WSL usage collection failed.\n");
+                            }
+                            m_wslCollecting.store(false, std::memory_order_relaxed);
+                            for (int tick = 0; tick < 3'000 && !stopToken.stop_requested(); ++tick)
+                            {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            }
+                        }
+                        winrt::uninit_apartment();
+                    }
+                    catch (...)
+                    {
+                        m_wslCollecting.store(false, std::memory_order_relaxed);
+                        m_wslCollectionFailed.store(true, std::memory_order_relaxed);
+                        OutputDebugStringW(L"Tokenometer: WSL collector thread initialization failed.\n");
+                    }
+                });
+            }
+            catch (...)
+            {
+                m_wslCollectionFailed.store(true, std::memory_order_relaxed);
+                OutputDebugStringW(L"Tokenometer: WSL collector initialization failed.\n");
+            }
         }
         catch (...)
         {
@@ -1204,8 +1351,14 @@ private:
             return;
         }
         tokenometer::OverviewViewData snapshot;
-        snapshot.collecting = m_collecting.load(std::memory_order_relaxed);
+        snapshot.collecting = m_collecting.load(std::memory_order_relaxed) ||
+            m_wslCollecting.load(std::memory_order_relaxed);
         snapshot.lastSync = m_lastCollectionAt.load(std::memory_order_relaxed);
+        if (m_wslCollectionFailed.load(std::memory_order_relaxed))
+        {
+            snapshot.warning =
+                L"WSL 暂不可用或部分发行版扫描失败；Windows 数据仍在实时更新";
+        }
         if (!m_database)
         {
             snapshot.error = L"本地使用数据库不可用";
@@ -1316,10 +1469,16 @@ private:
     std::shared_ptr<CaptureRenderer> m_renderer;
     std::shared_ptr<tokenometer::Database> m_database;
     std::unique_ptr<tokenometer::CodexCollector> m_collector;
+    std::unique_ptr<tokenometer::WslCodexCollector> m_wslCollector;
     std::jthread m_collectionThread;
+    std::jthread m_wslCollectionThread;
+    std::jthread m_toolContentThread;
     std::jthread m_chatGptImportThread;
     std::atomic<int64_t> m_lastCollectionAt{};
     std::atomic_bool m_collecting{};
+    std::atomic_bool m_wslCollecting{};
+    std::atomic_bool m_wslCollectionFailed{};
+    std::atomic_bool m_initialLocalCollectionComplete{};
     std::atomic_bool m_collectionFailed{};
     std::atomic_bool m_chatGptImporting{};
     std::atomic_bool m_closing{};
@@ -1349,6 +1508,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         if (!tokenometer::TestSourceContentReader()) return 13;
         if (!tokenometer::TestTrendAnalytics()) return 14;
         if (!tokenometer::ChatGPTExportImporter::SelfTest()) return 15;
+        if (!tokenometer::WslProcessRunner::SelfTest()) return 16;
+        if (!tokenometer::WslCodexCollector::SelfTest()) return 17;
         return 0;
     }
 

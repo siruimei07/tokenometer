@@ -30,6 +30,7 @@ namespace tokenometer
         int64_t lastSync{};
         bool collecting{};
         std::wstring error;
+        std::wstring warning;
     };
 
     enum class DetailsDimension

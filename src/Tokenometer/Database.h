@@ -26,7 +26,15 @@ namespace tokenometer
 
         void Initialize();
         void Transaction(std::function<void()> const& work);
-        [[nodiscard]] std::wstring GetOrCreateDeviceId(std::wstring_view displayName);
+        [[nodiscard]] std::wstring GetOrCreateDeviceId(
+            std::wstring_view displayName,
+            std::wstring_view stateKey = L"local_device_id");
+        [[nodiscard]] std::optional<std::wstring> GetAppState(
+            std::wstring_view key);
+        void SetAppState(std::wstring_view key, std::wstring_view value);
+        [[nodiscard]] bool HasSessionSource(
+            std::wstring_view sessionId,
+            std::wstring_view sourceKind);
 
         [[nodiscard]] std::optional<SourceProgress> GetSourceProgress(
             std::wstring_view path,

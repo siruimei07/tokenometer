@@ -20,6 +20,17 @@ The Codex collector only reads these allowlisted files:
 
 When `CODEX_HOME` is not set, `%USERPROFILE%\.codex` is used. Tokenometer does not read `auth.json`, browser profiles, cookies, the Codex internal SQLite database, or prompt history in global state files.
 
+On Windows, Tokenometer also discovers only currently running WSL distributions about every five minutes. It invokes the system `wsl.exe` directly with bounded output, cancellation, and timeouts; no `cmd.exe`, PowerShell, UNC traversal, or login shell is used. Inside each running distribution it allowlists only:
+
+```text
+${CODEX_HOME:-$HOME/.codex}/sessions/**/rollout-*.jsonl
+${CODEX_HOME:-$HOME/.codex}/archived_sessions/**/rollout-*.jsonl
+```
+
+Only changed byte ranges are streamed into the same Codex parser. WSL transcripts are never copied into the application data directory. Active SQLite/WAL files are deliberately excluded; tools such as OpenCode or Hermes require a future read-only agent running inside WSL and must not be reported by both that agent and the Windows scanner.
+
+Metadata enumeration requires Bash, GNU findutils/coreutils/`sed`, and util-linux `setsid`. Tokenometer checks the exact `find`, `sort`, `sed`, `dd`, `stat`, `readlink`, `timeout`, and `setsid` capabilities it uses, and reports that distribution as unavailable instead of accepting a partial pipeline result. Each remote command runs in a unique Linux process group with a bounded `timeout`; Windows cancellation rechecks that the distribution is still running, then sends TERM and KILL to that group without terminating the distribution. The newest active page is scanned first on every pass; older active and archived pages use bounded round-robin cursors persisted in `app_state`, so a restart or a large long-lived archive cannot starve older files or grow the Windows process without limit.
+
 The database stores normalized token counters, model/tool/session metadata, quota snapshots, and byte offsets for on-demand tool detail. It never copies prompt text, model responses, tool arguments, tool output, or credentials.
 
 ## Retention and growth
@@ -42,6 +53,8 @@ Permanent tables are compact numerical aggregates. Source JSONL is never mirrore
 - Active files moved into `archived_sessions` keep the same logical session and do not increment totals again.
 - A compact permanent processed-record ledger prevents double counting even after detailed event rows expire.
 - Incomplete JSONL tails never advance the source cursor; a complete final JSON record is accepted even before its trailing newline arrives.
+- WSL distributions receive stable per-distribution device IDs, and moving a transcript from active to archived storage preserves the logical file identity.
+- WSL quota snapshots are ignored so an unknown remote account cannot overwrite the current Windows Codex account's limit state.
 - Heatmap days are assigned using the collecting device's local date. Raw timestamps remain Unix UTC seconds.
 
 ## ChatGPT boundary

@@ -13,6 +13,7 @@
 #include <fstream>
 #include <limits>
 #include <optional>
+#include <sstream>
 #include <string_view>
 #include <vector>
 
@@ -360,6 +361,46 @@ namespace tokenometer
         return result;
     }
 
+    CollectionResult CodexCollector::CollectExternal(
+        ExternalCodexTranscript const& transcript,
+        std::stop_token stopToken)
+    {
+        CollectionResult result;
+        ++result.filesVisited;
+        if (stopToken.stop_requested() || transcript.sourcePath.empty() ||
+            transcript.fileIdentity.empty() || transcript.sessionId.empty() ||
+            transcript.sourceKind.empty() || transcript.size < 0 ||
+            transcript.contentOffset < 0 || transcript.contentOffset > transcript.size ||
+            static_cast<uint64_t>(transcript.content.size()) >
+                static_cast<uint64_t>(transcript.size - transcript.contentOffset) ||
+            (transcript.content.empty() && transcript.contentOffset < transcript.size))
+        {
+            result.completedAt = UnixNow();
+            return result;
+        }
+
+        SourceProgress current;
+        SessionRecord session;
+        if (!PrepareTranscript(transcript, true, current, session))
+        {
+            result.completedAt = UnixNow();
+            return result;
+        }
+
+        std::istringstream stream(transcript.content, std::ios::in | std::ios::binary);
+        CollectStream(
+            transcript,
+            current,
+            session,
+            stream,
+            transcript.contentOffset,
+            transcript.contentOffset + static_cast<int64_t>(transcript.content.size()),
+            result,
+            stopToken);
+        result.completedAt = UnixNow();
+        return result;
+    }
+
     bool CodexCollector::SelfTest()
     {
         auto const root = std::filesystem::temp_directory_path() /
@@ -428,6 +469,94 @@ namespace tokenometer
             auto const withoutNewline = collector.CollectOnce();
             valid = valid && withoutNewline.usageEvents == 1 &&
                     database.GetTotals().counts.reportedTotal == 210;
+
+            Database externalDatabase(L":memory:");
+            externalDatabase.Initialize();
+            CodexCollector externalCollector(externalDatabase, root / L"external-unused");
+            std::string const externalHead =
+                R"({"timestamp":"2026-01-02T00:00:00.000Z","type":"session_meta","payload":{"id":"22222222-2222-2222-2222-222222222222","cwd":"/home/test/project"}})" "\n"
+                R"({"timestamp":"2026-01-02T00:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-wsl","model":"gpt-wsl","cwd":"/home/test/project"}})" "\n"
+                R"({"timestamp":"2026-01-02T00:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"not persisted"}})" "\n";
+            std::string const externalTail =
+                R"({"timestamp":"2026-01-02T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":42},"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":42}},"rate_limits":{"limit_id":"remote","limit_name":"Remote","primary":{"used_percent":90,"window_minutes":300,"resets_at":1767315600}}}})" "\n";
+            std::string const externalContent = externalHead + externalTail;
+            ExternalCodexTranscript external;
+            external.sourcePath = L"wsl://Ubuntu/home/test/.codex/sessions/rollout.jsonl";
+            external.fileIdentity = L"Ubuntu:fixture:22222222-2222-2222-2222-222222222222";
+            external.sessionId = L"22222222-2222-2222-2222-222222222222";
+            external.deviceId = L"wsl-device";
+            external.sourceKind = L"codex-wsl";
+            external.accountId = L"wsl-unknown:wsl-device";
+            external.size = static_cast<int64_t>(externalContent.size());
+            external.modifiedAt = 1767312003;
+            external.trailingNewline = true;
+            external.content = externalHead;
+            external.collectRateLimits = false;
+
+            auto const externalFirst = externalCollector.CollectExternal(external);
+            auto const firstProgress = externalDatabase.GetSourceProgress(
+                external.sourcePath,
+                external.fileIdentity);
+            auto staleChunk = external;
+            staleChunk.content = externalTail;
+            auto const externalStale = externalCollector.CollectExternal(staleChunk);
+            auto externalSecond = external;
+            externalSecond.contentOffset = static_cast<int64_t>(externalHead.size());
+            externalSecond.content = externalTail;
+            auto const externalCompleted = externalCollector.CollectExternal(externalSecond);
+            auto const finalProgress = externalDatabase.GetSourceProgress(
+                external.sourcePath,
+                external.fileIdentity);
+            auto const externalTotals = externalDatabase.GetTotals();
+            auto const externalSources = externalDatabase.GetBreakdown(L"source");
+            auto const externalDevices = externalDatabase.GetBreakdown(L"device");
+            auto const externalAccounts = externalDatabase.GetBreakdown(L"account");
+            valid = valid && externalFirst.promptEvents == 1 && externalFirst.usageEvents == 0 &&
+                    firstProgress && firstProgress->offset == static_cast<int64_t>(externalHead.size()) &&
+                    externalStale.filesChanged == 0 && externalStale.usageEvents == 0 &&
+                    externalCompleted.usageEvents == 1 && finalProgress &&
+                    finalProgress->offset == static_cast<int64_t>(externalContent.size()) &&
+                    externalTotals.counts.reportedTotal == 42 && externalTotals.messages == 1 &&
+                    !externalDatabase.GetLatestRateLimit().has_value() &&
+                    std::ranges::any_of(externalSources, [](auto const& row)
+                    {
+                        return row.key == L"codex-wsl" && row.counts.reportedTotal == 42;
+                    }) &&
+                    std::ranges::any_of(externalDevices, [](auto const& row)
+                    {
+                        return row.key == L"wsl-device" && row.counts.reportedTotal == 42;
+                    }) &&
+                    std::ranges::any_of(externalAccounts, [](auto const& row)
+                    {
+                        return row.key == L"wsl-unknown:wsl-device" &&
+                            row.counts.reportedTotal == 42;
+                    });
+
+            Database shadowedDatabase(L":memory:");
+            shadowedDatabase.Initialize();
+            CodexCollector shadowedCollector(shadowedDatabase, root / L"shadowed-unused");
+            ExternalCodexTranscript shadowed = external;
+            auto const shadowedFirst = shadowedCollector.CollectExternal(shadowed);
+            SessionRecord localSession{
+                shadowed.sessionId, L"C:\\fixture\\rollout.jsonl", L"codex", L"Local",
+                L"C:\\fixture", L"gpt-wsl", L"local-device", 1767312000, 1767312002, 1
+            };
+            localSession.accountId = L"current";
+            shadowedDatabase.Transaction([&] { shadowedDatabase.UpsertSession(localSession); });
+            auto shadowedTail = shadowed;
+            shadowedTail.contentOffset = static_cast<int64_t>(externalHead.size());
+            shadowedTail.content = externalTail;
+            auto const shadowedSecond = shadowedCollector.CollectExternal(shadowedTail);
+            auto const shadowedProgress = shadowedDatabase.GetSourceProgress(
+                shadowed.sourcePath,
+                shadowed.fileIdentity);
+            auto const shadowedTotals = shadowedDatabase.GetTotals();
+            valid = valid && shadowedFirst.promptEvents == 1 &&
+                shadowedSecond.usageEvents == 0 && shadowedProgress &&
+                shadowedProgress->offset == static_cast<int64_t>(externalContent.size()) &&
+                shadowedTotals.counts.reportedTotal == 0 && shadowedTotals.messages == 1 &&
+                shadowedDatabase.HasSessionSource(shadowed.sessionId, L"codex") &&
+                !shadowedDatabase.HasSessionSource(shadowed.sessionId, L"codex-wsl");
             std::filesystem::remove_all(root, cleanupError);
             return valid;
         }
@@ -513,55 +642,22 @@ namespace tokenometer
             return;
         }
 
-        std::wstring const sourcePath = path.lexically_normal().wstring();
-        std::wstring const fileSessionId = SessionIdFromPath(path);
-        std::wstring const fileIdentity = state->identity + L":" + fileSessionId;
-        auto progress = m_database.GetSourceProgress(sourcePath, fileIdentity);
-        if (progress &&
-            (progress->fileIdentity != fileIdentity || state->size < progress->offset))
-        {
-            auto const stalePath = progress->path;
-            m_database.Transaction([&] { m_database.ResetSourceFile(stalePath); });
-            progress.reset();
-        }
-        if (progress && progress->path != sourcePath)
-        {
-            progress->path = sourcePath;
-            progress->size = state->size;
-            progress->modifiedAt = state->modifiedAt;
-            SessionRecord relocated{
-                fileSessionId, sourcePath, L"codex", {}, progress->project, progress->model,
-                m_deviceId, 0, 0, progress->promptIndex
-            };
-            if (auto const title = m_titles.find(fileSessionId); title != m_titles.end())
-            {
-                relocated.title = title->second;
-            }
-            m_database.Transaction([&]
-            {
-                m_database.SaveSourceProgress(*progress);
-                m_database.UpsertSession(relocated);
-            });
-        }
-        if (progress && progress->offset >= state->size &&
-            progress->size == state->size && progress->modifiedAt == state->modifiedAt)
+        ExternalCodexTranscript transcript;
+        transcript.sourcePath = path.lexically_normal().wstring();
+        transcript.sessionId = SessionIdFromPath(path);
+        transcript.fileIdentity = state->identity + L":" + transcript.sessionId;
+        transcript.deviceId = m_deviceId;
+        transcript.sourceKind = L"codex";
+        transcript.size = state->size;
+        transcript.modifiedAt = state->modifiedAt;
+        transcript.trailingNewline = state->trailingNewline;
+
+        SourceProgress current;
+        SessionRecord session;
+        if (!PrepareTranscript(transcript, false, current, session))
         {
             return;
         }
-
-        SourceProgress current = progress.value_or(SourceProgress{});
-        current.path = sourcePath;
-        current.fileIdentity = fileIdentity;
-        if (!progress)
-        {
-            current.trackingStarted = false;
-        }
-        bool sessionMetaLocked = current.offset > 0;
-        if (current.sessionId.empty())
-        {
-            current.sessionId = SessionIdFromPath(path);
-        }
-        current.sessionId = fileSessionId;
 
         std::ifstream stream(path, std::ios::binary);
         if (!stream)
@@ -574,17 +670,111 @@ namespace tokenometer
             return;
         }
 
-        SessionRecord session;
-        session.id = current.sessionId;
-        session.sourcePath = sourcePath;
+        CollectStream(
+            transcript,
+            current,
+            session,
+            stream,
+            0,
+            transcript.size,
+            result,
+            stopToken);
+    }
+
+    bool CodexCollector::PrepareTranscript(
+        ExternalCodexTranscript const& transcript,
+        bool requireExpectedOffset,
+        SourceProgress& current,
+        SessionRecord& session)
+    {
+        auto progress = m_database.GetSourceProgress(transcript.sourcePath, transcript.fileIdentity);
+        bool const needsReset = progress &&
+            (progress->fileIdentity != transcript.fileIdentity || transcript.size < progress->offset);
+        int64_t const expectedOffset = needsReset || !progress ? 0 : progress->offset;
+        if (requireExpectedOffset && transcript.contentOffset != expectedOffset)
+        {
+            return false;
+        }
+        if (needsReset)
+        {
+            auto const stalePath = progress->path;
+            m_database.Transaction([&] { m_database.ResetSourceFile(stalePath); });
+            progress.reset();
+        }
+
+        auto const deviceId = transcript.deviceId.empty() ? m_deviceId : transcript.deviceId;
+        if (progress && progress->path != transcript.sourcePath)
+        {
+            progress->path = transcript.sourcePath;
+            progress->size = transcript.size;
+            progress->modifiedAt = transcript.modifiedAt;
+            SessionRecord relocated{
+                transcript.sessionId,
+                transcript.sourcePath,
+                transcript.sourceKind,
+                {},
+                progress->project,
+                progress->model,
+                deviceId,
+                0,
+                0,
+                progress->promptIndex
+            };
+            relocated.accountId = transcript.accountId.empty() ? L"current" : transcript.accountId;
+            if (auto const title = m_titles.find(transcript.sessionId); title != m_titles.end())
+            {
+                relocated.title = title->second;
+            }
+            m_database.Transaction([&]
+            {
+                m_database.SaveSourceProgress(*progress);
+                m_database.UpsertSession(relocated);
+            });
+        }
+        if (progress && progress->offset >= transcript.size &&
+            progress->size == transcript.size && progress->modifiedAt == transcript.modifiedAt)
+        {
+            return false;
+        }
+
+        current = progress.value_or(SourceProgress{});
+        current.path = transcript.sourcePath;
+        current.fileIdentity = transcript.fileIdentity;
+        current.sessionId = transcript.sessionId;
+        if (!progress)
+        {
+            current.trackingStarted = false;
+        }
+
+        session.id = transcript.sessionId;
+        session.sourcePath = transcript.sourcePath;
+        session.sourceKind = transcript.sourceKind;
+        session.accountId = transcript.accountId.empty() ? L"current" : transcript.accountId;
         session.project = current.project;
         session.model = current.model;
-        session.deviceId = m_deviceId;
+        session.deviceId = deviceId;
         session.messageCount = current.promptIndex;
         if (auto const title = m_titles.find(session.id); title != m_titles.end())
         {
             session.title = title->second;
         }
+        return true;
+    }
+
+    void CodexCollector::CollectStream(
+        ExternalCodexTranscript const& transcript,
+        SourceProgress& current,
+        SessionRecord& session,
+        std::istream& stream,
+        int64_t streamBaseOffset,
+        int64_t availableEnd,
+        CollectionResult& result,
+        std::stop_token stopToken)
+    {
+        auto const& sourcePath = transcript.sourcePath;
+        auto const& fileSessionId = transcript.sessionId;
+        auto const deviceId = transcript.deviceId.empty() ? m_deviceId : transcript.deviceId;
+        bool sessionMetaLocked = current.offset > 0;
 
         std::vector<UsageEvent> usageBatch;
         std::vector<PromptEvent> promptBatch;
@@ -595,31 +785,39 @@ namespace tokenometer
 
         auto flush = [&]
         {
-            current.size = state->size;
-            current.modifiedAt = state->modifiedAt;
+            current.size = transcript.size;
+            current.modifiedAt = transcript.modifiedAt;
             int addedUsage{};
             int addedPrompts{};
             int addedTools{};
             m_database.Transaction([&]
             {
-                m_database.UpsertSession(session);
-                for (auto const& event : promptBatch)
+                bool const shadowedByLocal = transcript.sourceKind == L"codex-wsl" &&
+                    m_database.HasSessionSource(session.id, L"codex");
+                if (!shadowedByLocal)
                 {
-                    if (m_database.InsertPromptEvent(event)) ++addedPrompts;
+                    m_database.UpsertSession(session);
+                    for (auto const& event : promptBatch)
+                    {
+                        if (m_database.InsertPromptEvent(event)) ++addedPrompts;
+                    }
+                    for (auto const& event : usageBatch)
+                    {
+                        if (m_database.InsertUsageEvent(event)) ++addedUsage;
+                    }
+                    for (auto const& event : toolBatch)
+                    {
+                        if (m_database.InsertToolEvent(event)) ++addedTools;
+                    }
+                    for (auto const& event : toolOutputBatch)
+                    {
+                        m_database.AttachToolOutput(event);
+                    }
+                    if (transcript.collectRateLimits && limitBatch)
+                    {
+                        m_database.UpsertRateLimit(*limitBatch);
+                    }
                 }
-                for (auto const& event : usageBatch)
-                {
-                    if (m_database.InsertUsageEvent(event)) ++addedUsage;
-                }
-                for (auto const& event : toolBatch)
-                {
-                    if (m_database.InsertToolEvent(event)) ++addedTools;
-                }
-                for (auto const& event : toolOutputBatch)
-                {
-                    m_database.AttachToolOutput(event);
-                }
-                if (limitBatch) m_database.UpsertRateLimit(*limitBatch);
                 m_database.SaveSourceProgress(current);
             });
             result.usageEvents += addedUsage;
@@ -647,60 +845,71 @@ namespace tokenometer
         while (true)
         {
             if (stopToken.stop_requested()) break;
-                auto const before = stream.tellg();
-                if (before < 0)
+            auto const before = stream.tellg();
+            if (before < 0)
+            {
+                break;
+            }
+            int64_t const sourceOffset = streamBaseOffset + static_cast<int64_t>(before);
+            stream.getline(recordBuffer.data(), static_cast<std::streamsize>(recordBuffer.size()));
+            std::streamsize const extracted = stream.gcount();
+            if (stream.bad() || (extracted == 0 && stream.eof()))
+            {
+                break;
+            }
+            if (stream.fail() && !stream.eof())
+            {
+                stream.clear();
+                stream.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+                auto const after = stream.tellg();
+                if (after < 0 && availableEnd < transcript.size)
                 {
+                    current.offset = sourceOffset;
                     break;
                 }
-                int64_t const sourceOffset = static_cast<int64_t>(before);
-                stream.getline(recordBuffer.data(), static_cast<std::streamsize>(recordBuffer.size()));
-                std::streamsize const extracted = stream.gcount();
-                if (stream.bad() || (extracted == 0 && stream.eof()))
+                int64_t const nextOffset = after >= 0
+                    ? streamBaseOffset + static_cast<int64_t>(after)
+                    : availableEnd;
+                if (nextOffset > availableEnd)
                 {
+                    current.offset = sourceOffset;
                     break;
                 }
-                if (stream.fail() && !stream.eof())
-                {
-                    stream.clear();
-                    stream.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
-                    auto const after = stream.tellg();
-                    int64_t const nextOffset = after >= 0
-                        ? static_cast<int64_t>(after)
-                        : state->size;
-                    if (nextOffset > state->size)
-                    {
-                        current.offset = sourceOffset;
-                        break;
-                    }
-                    current.offset = nextOffset;
-                    result.bytesRead += nextOffset - sourceOffset;
-                    batchBytes += nextOffset - sourceOffset;
-                    ++result.oversizedRecords;
-                    flushIfNeeded();
-                    continue;
-                }
+                current.offset = nextOffset;
+                result.bytesRead += nextOffset - sourceOffset;
+                batchBytes += nextOffset - sourceOffset;
+                ++result.oversizedRecords;
+                flushIfNeeded();
+                continue;
+            }
 
-                bool const finalWithoutNewline = stream.eof() && !state->trailingNewline;
-                size_t const lineBytes = static_cast<size_t>(extracted) -
-                    (finalWithoutNewline ? 0u : 1u);
-                line.assign(recordBuffer.data(), lineBytes);
-                int64_t const recordBytes = static_cast<int64_t>(lineBytes) +
-                    (finalWithoutNewline ? 0 : 1);
-                int64_t const nextOffset = sourceOffset + recordBytes;
-                if (nextOffset > state->size)
-                {
-                    current.offset = sourceOffset;
-                    break;
-                }
-                if (finalWithoutNewline &&
-                    (line.size() > maximumRecordBytes || !Parse(line).has_value()))
-                {
-                    current.offset = sourceOffset;
-                    break;
-                }
-                current.offset = std::min(nextOffset, state->size);
-                result.bytesRead += recordBytes;
-                batchBytes += recordBytes;
+            bool const finalWithoutNewline = stream.eof() &&
+                availableEnd == transcript.size && !transcript.trailingNewline;
+            if (stream.eof() && !finalWithoutNewline)
+            {
+                current.offset = sourceOffset;
+                break;
+            }
+            size_t const lineBytes = static_cast<size_t>(extracted) -
+                (finalWithoutNewline ? 0u : 1u);
+            line.assign(recordBuffer.data(), lineBytes);
+            int64_t const recordBytes = static_cast<int64_t>(lineBytes) +
+                (finalWithoutNewline ? 0 : 1);
+            int64_t const nextOffset = sourceOffset + recordBytes;
+            if (nextOffset > availableEnd)
+            {
+                current.offset = sourceOffset;
+                break;
+            }
+            if (finalWithoutNewline &&
+                (line.size() > maximumRecordBytes || !Parse(line).has_value()))
+            {
+                current.offset = sourceOffset;
+                break;
+            }
+            current.offset = std::min(nextOffset, transcript.size);
+            result.bytesRead += recordBytes;
+            batchBytes += recordBytes;
                 if (!IsInteresting(line))
                 {
                     flushIfNeeded();
@@ -784,9 +993,9 @@ namespace tokenometer
                     ++current.promptIndex;
                     session.messageCount = current.promptIndex;
                     promptBatch.push_back({
-                        sourcePath, sourceOffset, current.sessionId, L"codex", L"Codex",
-                        current.model, current.project, m_deviceId, current.turnId,
-                        current.promptIndex, timestamp, LocalDay(timestamp)
+                        sourcePath, sourceOffset, current.sessionId, transcript.sourceKind, L"Codex",
+                        current.model, current.project, deviceId, current.turnId,
+                        current.promptIndex, timestamp, LocalDay(timestamp), session.accountId
                     });
                 }
                 else if (outerType == L"event_msg" && payloadType == L"token_count")
@@ -815,35 +1024,40 @@ namespace tokenometer
                                 if (HasUsage(delta))
                                 {
                                     usageBatch.push_back({
-                                        sourcePath, sourceOffset, current.sessionId, L"codex", L"Codex",
-                                        current.model, current.project, m_deviceId, current.turnId,
-                                        current.promptIndex, timestamp, LocalDay(timestamp), delta
+                                        sourcePath, sourceOffset, current.sessionId,
+                                        transcript.sourceKind, L"Codex",
+                                        current.model, current.project, deviceId, current.turnId,
+                                        current.promptIndex, timestamp, LocalDay(timestamp), delta,
+                                        session.accountId
                                     });
                                 }
                             }
                         }
                     }
 
-                    if (auto const limits = Object(*payload, L"rate_limits"))
+                    if (transcript.collectRateLimits)
                     {
-                        RateLimitSnapshot snapshot;
-                        snapshot.limitId = String(*limits, L"limit_id");
-                        snapshot.limitName = String(*limits, L"limit_name");
-                        snapshot.planType = String(*limits, L"plan_type");
-                        snapshot.capturedAt = timestamp;
-                        if (auto const primary = Object(*limits, L"primary"))
+                        if (auto const limits = Object(*payload, L"rate_limits"))
                         {
-                            snapshot.primaryUsedPercent = Number(*primary, L"used_percent");
-                            snapshot.primaryWindowMinutes = static_cast<int>(Integer(*primary, L"window_minutes"));
-                            snapshot.primaryResetsAt = Integer(*primary, L"resets_at");
+                            RateLimitSnapshot snapshot;
+                            snapshot.limitId = String(*limits, L"limit_id");
+                            snapshot.limitName = String(*limits, L"limit_name");
+                            snapshot.planType = String(*limits, L"plan_type");
+                            snapshot.capturedAt = timestamp;
+                            if (auto const primary = Object(*limits, L"primary"))
+                            {
+                                snapshot.primaryUsedPercent = Number(*primary, L"used_percent");
+                                snapshot.primaryWindowMinutes = static_cast<int>(Integer(*primary, L"window_minutes"));
+                                snapshot.primaryResetsAt = Integer(*primary, L"resets_at");
+                            }
+                            if (auto const secondary = Object(*limits, L"secondary"))
+                            {
+                                snapshot.secondaryUsedPercent = Number(*secondary, L"used_percent");
+                                snapshot.secondaryWindowMinutes = static_cast<int>(Integer(*secondary, L"window_minutes"));
+                                snapshot.secondaryResetsAt = Integer(*secondary, L"resets_at");
+                            }
+                            limitBatch = std::move(snapshot);
                         }
-                        if (auto const secondary = Object(*limits, L"secondary"))
-                        {
-                            snapshot.secondaryUsedPercent = Number(*secondary, L"used_percent");
-                            snapshot.secondaryWindowMinutes = static_cast<int>(Integer(*secondary, L"window_minutes"));
-                            snapshot.secondaryResetsAt = Integer(*secondary, L"resets_at");
-                        }
-                        limitBatch = std::move(snapshot);
                     }
                 }
                 else if (outerType == L"response_item" &&
@@ -853,10 +1067,11 @@ namespace tokenometer
                     if (!name.empty())
                     {
                         toolBatch.push_back({
-                            sourcePath, sourceOffset, current.sessionId, L"codex", L"Codex",
-                            current.model, current.project, m_deviceId, current.turnId,
+                            sourcePath, sourceOffset, current.sessionId,
+                            transcript.sourceKind, L"Codex",
+                            current.model, current.project, deviceId, current.turnId,
                             current.promptIndex, timestamp, LocalDay(timestamp), name,
-                            String(*payload, L"call_id"), recordBytes
+                            String(*payload, L"call_id"), recordBytes, session.accountId
                         });
                     }
                 }

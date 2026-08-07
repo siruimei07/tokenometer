@@ -1,4 +1,5 @@
 #include "SourceContentReader.h"
+#include "WslCodexCollector.h"
 
 #include <windows.h>
 #include <shlobj.h>
@@ -443,10 +444,39 @@ namespace tokenometer
     {
     }
 
-    ToolCallContent SourceContentReader::Read(ToolCallDetail const& locator) const
+    ToolCallContent SourceContentReader::Read(
+        ToolCallDetail const& locator,
+        std::stop_token stopToken) const
     {
         ValidateRange(locator.inputOffset, locator.inputLength);
         ValidateRange(locator.outputOffset, locator.outputLength);
+        if (locator.sourcePath.starts_with(L"wsl://"))
+        {
+            auto read = [&](int64_t offset, int64_t length)
+            {
+                auto content = WslCodexCollector::ReadSourceRange(
+                    locator.sourcePath,
+                    offset,
+                    length,
+                    stopToken);
+                if (!content)
+                {
+                    throw std::runtime_error("The WSL transcript range is unavailable");
+                }
+                return std::move(*content);
+            };
+
+            ToolCallContent result;
+            if (locator.inputLength > 0)
+            {
+                result.input = ExtractInput(read(locator.inputOffset, locator.inputLength), locator);
+            }
+            if (locator.outputLength > 0)
+            {
+                result.output = ExtractOutput(read(locator.outputOffset, locator.outputLength), locator);
+            }
+            return result;
+        }
         auto const sourcePath = CanonicalAllowedPath(m_codexRoot, locator.sourcePath);
 
         FileHandle file(CreateFileW(

@@ -77,6 +77,8 @@
     <ClCompile Include="Database.cpp" />
     <ClCompile Include="SourceContentReader.cpp" />
     <ClCompile Include="TrendAnalytics.cpp" />
+    <ClCompile Include="WslCodexCollector.cpp" />
+    <ClCompile Include="WslProcessRunner.cpp" />
     <ClCompile Include="CaptureRenderer.cpp" />
     <ClCompile Include="main.cpp" />
     <ClInclude Include="ChatGPTExportImporter.h" />
@@ -87,6 +89,8 @@
     <ClInclude Include="SourceContentReader.h" />
     <ClInclude Include="TrendAnalytics.h" />
     <ClInclude Include="UsageModels.h" />
+    <ClInclude Include="WslCodexCollector.h" />
+    <ClInclude Include="WslProcessRunner.h" />
     <Manifest Include="app.manifest" />
     <None Include="Glass.hlsl" />
   </ItemGroup>
