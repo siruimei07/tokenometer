@@ -30,9 +30,9 @@ namespace windowing = winrt::Microsoft::UI::Windowing;
 
 namespace
 {
-    constexpr int widgetWidthDip = 850;
-    constexpr int widgetHeightDip = 384;
-    constexpr int cornerRadiusDip = 44;
+    constexpr int widgetWidthDip = 300;
+    constexpr int widgetHeightDip = 150;
+    constexpr int cornerRadiusDip = 18;
 
     winrt::Windows::UI::Color Color(uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha = 255)
     {
@@ -72,9 +72,9 @@ namespace
         double glyphSize)
     {
         controls::Border icon;
-        icon.Width(44);
-        icon.Height(44);
-        icon.CornerRadius({ 10 });
+        icon.Width(18);
+        icon.Height(18);
+        icon.CornerRadius({ 5 });
         icon.Background(Brush(background));
 
         auto label = Text(glyph, glyphSize, Color(247, 247, 247), 600);
@@ -129,97 +129,97 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
 private:
     void BuildContent()
     {
-        auto usageIcon = Icon(L"✳", Color(204, 113, 82), 27);
-        Place(usageIcon, 36, 44);
+        auto usageIcon = Icon(L"✳", Color(204, 113, 82), 12);
+        Place(usageIcon, 13, 15);
         m_root.Children().Append(usageIcon);
 
-        auto title = Text(L"Token Usage", 28, Color(242, 242, 244), 600);
-        Place(title, 92, 47);
+        auto title = Text(L"Token Usage", 11.5, Color(242, 242, 244), 600);
+        Place(title, 38, 15);
         m_root.Children().Append(title);
 
-        auto percent = Text(L"53,8%", 32, Color(242, 242, 244), 500);
-        percent.Width(178);
+        auto percent = Text(L"53,8%", 13, Color(242, 242, 244), 500);
+        percent.Width(78);
         percent.TextAlignment(mux::TextAlignment::Right);
-        Place(percent, 636, 39);
+        Place(percent, 209, 12);
         m_root.Children().Append(percent);
 
         controls::Border track;
-        track.Width(780);
-        track.Height(14);
-        track.CornerRadius({ 7 });
+        track.Width(274);
+        track.Height(6);
+        track.CornerRadius({ 3 });
         track.Background(Brush(Color(42, 45, 74)));
         track.BorderBrush(Brush(Color(67, 70, 99)));
-        track.BorderThickness({ 1 });
-        Place(track, 35, 116);
+        track.BorderThickness({ 0.5 });
+        Place(track, 13, 44);
         m_root.Children().Append(track);
 
         controls::Border fill;
-        fill.Width(414);
-        fill.Height(8);
-        fill.CornerRadius({ 4 });
+        fill.Width(146);
+        fill.Height(4);
+        fill.CornerRadius({ 2 });
         fill.Background(Brush(Color(15, 91, 235)));
-        Place(fill, 39, 119);
+        Place(fill, 14, 45);
         m_root.Children().Append(fill);
 
-        auto used = Text(L"18,838", 24, Color(240, 240, 242), 600);
-        Place(used, 36, 142);
+        auto used = Text(L"18,838", 9.5, Color(240, 240, 242), 600);
+        Place(used, 13, 54);
         m_root.Children().Append(used);
 
-        auto total = Text(L"/ 35,000", 24, Color(151, 153, 174));
-        Place(total, 135, 142);
+        auto total = Text(L"/ 35,000", 9.5, Color(151, 153, 174));
+        Place(total, 50, 54);
         m_root.Children().Append(total);
 
-        auto left = Text(L"16,162 left", 24, Color(151, 153, 174));
-        left.Width(220);
+        auto left = Text(L"16,162 left", 9.5, Color(151, 153, 174));
+        left.Width(78);
         left.TextAlignment(mux::TextAlignment::Right);
-        Place(left, 594, 142);
+        Place(left, 209, 54);
         m_root.Children().Append(left);
 
         shapes::Rectangle divider;
-        divider.Width(778);
-        divider.Height(1);
+        divider.Width(274);
+        divider.Height(0.5);
         divider.Fill(Brush(Color(57, 59, 104)));
-        Place(divider, 36, 215);
+        Place(divider, 13, 80);
         m_root.Children().Append(divider);
 
-        auto resetIcon = Icon(L"⌛", Color(14, 133, 237), 24);
-        Place(resetIcon, 36, 251);
+        auto resetIcon = Icon(L"⌛", Color(14, 133, 237), 11);
+        Place(resetIcon, 13, 92);
         m_root.Children().Append(resetIcon);
 
-        auto reset = Text(L"Reset Time", 28, Color(240, 240, 242), 600);
-        Place(reset, 92, 254);
+        auto reset = Text(L"Reset Time", 11.5, Color(240, 240, 242), 600);
+        Place(reset, 38, 92);
         m_root.Children().Append(reset);
 
-        auto remaining = Text(L"2h 58m", 32, Color(242, 242, 244), 500);
-        remaining.Width(220);
+        auto remaining = Text(L"2h 58m", 13, Color(242, 242, 244), 500);
+        remaining.Width(78);
         remaining.TextAlignment(mux::TextAlignment::Right);
-        Place(remaining, 594, 247);
+        Place(remaining, 209, 89);
         m_root.Children().Append(remaining);
 
-        auto refresh = Text(L"↻", 19, Color(154, 155, 174), 600);
-        Place(refresh, 36, 334);
+        auto refresh = Text(L"↻", 8.5, Color(154, 155, 174), 600);
+        Place(refresh, 13, 130);
         m_root.Children().Append(refresh);
 
-        auto updated = Text(L"Updated: Just Now", 16, Color(154, 155, 174));
-        Place(updated, 57, 336);
+        auto updated = Text(L"Updated: Just Now", 8, Color(154, 155, 174));
+        Place(updated, 24, 131);
         m_root.Children().Append(updated);
 
         m_closeButton = controls::Button{};
-        m_closeButton.Width(32);
-        m_closeButton.Height(32);
-        m_closeButton.Padding({ 10 });
+        m_closeButton.Width(18);
+        m_closeButton.Height(18);
+        m_closeButton.Padding({ 5.5 });
         m_closeButton.Background(Brush(Color(0, 0, 0, 0)));
         m_closeButton.BorderThickness({ 0 });
         m_closeButton.Opacity(0);
 
         shapes::Ellipse dot;
-        dot.Width(12);
-        dot.Height(12);
+        dot.Width(7);
+        dot.Height(7);
         dot.Fill(Brush(Color(255, 95, 87)));
         m_closeButton.Content(dot);
         controls::ToolTipService::SetToolTip(m_closeButton, winrt::box_value(L"Close"));
         automation::AutomationProperties::SetName(m_closeButton, L"Close Tokenometer");
-        Place(m_closeButton, 8, 8);
+        Place(m_closeButton, 3, 3);
         m_root.Children().Append(m_closeButton);
     }
 
