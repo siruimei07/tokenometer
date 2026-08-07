@@ -234,6 +234,20 @@ private:
         presenter.IsAlwaysOnTop(true);
         appWindow.IsShownInSwitchers(false);
 
+        auto const style = GetWindowLongPtrW(m_hwnd, GWL_STYLE);
+        winrt::check_bool(SetWindowLongPtrW(
+            m_hwnd,
+            GWL_STYLE,
+            (style & ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU |
+                       WS_MINIMIZEBOX | WS_MAXIMIZEBOX)) |
+                WS_POPUP));
+        auto const extendedStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
+        winrt::check_bool(SetWindowLongPtrW(
+            m_hwnd,
+            GWL_EXSTYLE,
+            extendedStyle & ~(WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE |
+                              WS_EX_DLGMODALFRAME | WS_EX_STATICEDGE)));
+
         UINT const dpi = GetDpiForWindow(m_hwnd);
         int const width = MulDiv(widgetWidthDip, dpi, 96);
         int const height = MulDiv(widgetHeightDip, dpi, 96);
