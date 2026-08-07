@@ -26,23 +26,23 @@
     <SolidColorBrush x:Key="LightGlassTintBrush" Color="#20FFFFFF" />
 
     <LinearGradientBrush x:Key="LiquidEdgeBrush" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="#92FFFFFF" Offset="0" />
-        <GradientStop Color="#50FFFFFF" Offset="0.2" />
-        <GradientStop Color="#22FFFFFF" Offset="0.56" />
-        <GradientStop Color="#12FFFFFF" Offset="0.82" />
-        <GradientStop Color="#0AFFFFFF" Offset="1" />
+        <GradientStop Color="#78FFFFFF" Offset="0" />
+        <GradientStop Color="#3CFFFFFF" Offset="0.2" />
+        <GradientStop Color="#18FFFFFF" Offset="0.56" />
+        <GradientStop Color="#0BFFFFFF" Offset="0.82" />
+        <GradientStop Color="#05FFFFFF" Offset="1" />
     </LinearGradientBrush>
 
     <LinearGradientBrush x:Key="LiquidInnerHighlightBrush" StartPoint="0,0" EndPoint="0.88,1">
-        <GradientStop Color="#98FFFFFF" Offset="0" />
-        <GradientStop Color="#34FFFFFF" Offset="0.27" />
-        <GradientStop Color="#0EFFFFFF" Offset="0.72" />
-        <GradientStop Color="#04FFFFFF" Offset="1" />
+        <GradientStop Color="#C8FFFFFF" Offset="0" />
+        <GradientStop Color="#48FFFFFF" Offset="0.27" />
+        <GradientStop Color="#10FFFFFF" Offset="0.72" />
+        <GradientStop Color="#02FFFFFF" Offset="1" />
     </LinearGradientBrush>
 
     <!-- Neutral density only: the system backdrop supplies every visible hue. -->
     <SolidColorBrush x:Key="LiquidRegularTintBrush" Color="#18FFFFFF" />
-    <SolidColorBrush x:Key="LiquidContentTintBrush" Color="#10000000" />
+    <SolidColorBrush x:Key="LiquidContentTintBrush" Color="#10FFFFFF" />
 
     <Style x:Key="LiquidGlassSurfaceStyle" TargetType="controls:BackdropGlass">
         <Setter Property="CornerRadius" Value="26" />
@@ -59,7 +59,7 @@
         <Setter Property="SnapsToDevicePixels" Value="True" />
         <Setter Property="Effect">
             <Setter.Value>
-                <DropShadowEffect Color="#020711" BlurRadius="42" ShadowDepth="16" Opacity="0.43" />
+                <DropShadowEffect Color="#020507" BlurRadius="46" ShadowDepth="16" Opacity="0.5" />
             </Setter.Value>
         </Setter>
     </Style>
@@ -69,15 +69,15 @@
            BasedOn="{StaticResource LiquidGlassSurfaceStyle}">
         <Setter Property="CornerRadius" Value="24" />
         <Setter Property="BlurRadius" Value="27" />
-        <Setter Property="LensWidth" Value="6" />
+        <Setter Property="LensWidth" Value="5" />
         <Setter Property="RefractionDepth" Value="2.2" />
-        <Setter Property="RefractionOpacity" Value="0.48" />
+        <Setter Property="RefractionOpacity" Value="0.42" />
         <Setter Property="PointerGlowOpacity" Value="0.06" />
         <Setter Property="TintBrush" Value="{StaticResource LiquidContentTintBrush}" />
         <Setter Property="SaturationTint" Value="Transparent" />
         <Setter Property="Effect">
             <Setter.Value>
-                <DropShadowEffect Color="#020711" BlurRadius="34" ShadowDepth="12" Opacity="0.34" />
+                <DropShadowEffect Color="#020507" BlurRadius="28" ShadowDepth="9" Opacity="0.25" />
             </Setter.Value>
         </Setter>
     </Style>

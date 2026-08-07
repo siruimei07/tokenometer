@@ -37,7 +37,11 @@ public partial class MainWindow : Window
     public void CaptureSnapshot(string path)
     {
         var liveBackdrop = BackdropScene.Background;
-        BackdropScene.Background = new SolidColorBrush(Color.FromRgb(78, 88, 82));
+        BackdropScene.Background = new LinearGradientBrush(
+            Color.FromRgb(116, 101, 91),
+            Color.FromRgb(65, 86, 80),
+            new Point(0, 0),
+            new Point(1, 1));
         try
         {
             SnapshotService.Capture(WindowShell, path);

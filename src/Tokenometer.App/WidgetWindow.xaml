@@ -74,6 +74,7 @@
                                     LensWidth="10"
                                     RefractionDepth="3.6"
                                     RefractionOpacity="0.78"
+                                    HoverScale="1"
                                     Padding="15,13">
                 <Grid>
                     <Image x:Name="SkinDecorationSlot" Opacity="0.16" Stretch="Uniform" Visibility="Collapsed"

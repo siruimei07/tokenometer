@@ -163,7 +163,7 @@
     </Window.Resources>
 
     <Border x:Name="WindowShell"
-            Background="#18000000"
+            Background="#10000000"
             BorderBrush="{StaticResource LiquidEdgeBrush}"
             BorderThickness="1"
             CornerRadius="32"

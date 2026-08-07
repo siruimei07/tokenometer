@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
 using System.Windows.Threading;
 
@@ -92,11 +93,19 @@ public sealed class BackdropGlass : ContentControl
         Changed(.085d),
         value => IsFiniteRange(value, 0, .3));
 
+    public static readonly DependencyProperty HoverScaleProperty = DependencyProperty.Register(
+        nameof(HoverScale),
+        typeof(double),
+        typeof(BackdropGlass),
+        new FrameworkPropertyMetadata(1.007d),
+        value => IsFiniteRange(value, 1, 1.03));
+
     private BackdropLayer? _backdropLayer;
     private LensLayer? _lensLayer;
     private ChromeLayer? _chromeLayer;
     private GlassRoot? _root;
     private readonly DispatcherTimer _interactionTimer;
+    private readonly ScaleTransform _hoverTransform = new(1, 1);
     private Point _pointerPosition = new(.5, 0);
     private double _pointerEnergy;
     private double _pointerTarget;
@@ -115,6 +124,8 @@ public sealed class BackdropGlass : ContentControl
         SetValue(TemplateProperty, DefaultTemplate);
         HorizontalContentAlignment = HorizontalAlignment.Stretch;
         VerticalContentAlignment = VerticalAlignment.Stretch;
+        RenderTransformOrigin = new Point(.5, .5);
+        RenderTransform = _hoverTransform;
         _interactionTimer = new DispatcherTimer(
             TimeSpan.FromMilliseconds(16),
             DispatcherPriority.Render,
@@ -185,6 +196,12 @@ public sealed class BackdropGlass : ContentControl
         set => SetValue(PointerGlowOpacityProperty, value);
     }
 
+    public double HoverScale
+    {
+        get => (double)GetValue(HoverScaleProperty);
+        set => SetValue(HoverScaleProperty, value);
+    }
+
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
@@ -206,6 +223,7 @@ public sealed class BackdropGlass : ContentControl
         base.OnMouseEnter(e);
         _pointerTarget = 1;
         _interactionTimer.Start();
+        AnimateScale(HoverScale, 160);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -223,6 +241,19 @@ public sealed class BackdropGlass : ContentControl
         base.OnMouseLeave(e);
         _pointerTarget = 0;
         _interactionTimer.Start();
+        AnimateScale(1, 180);
+    }
+
+    protected override void OnPreviewMouseLeftButtonDown(MouseButtonEventArgs e)
+    {
+        base.OnPreviewMouseLeftButtonDown(e);
+        AnimateScale(.994, 90);
+    }
+
+    protected override void OnPreviewMouseLeftButtonUp(MouseButtonEventArgs e)
+    {
+        base.OnPreviewMouseLeftButtonUp(e);
+        AnimateScale(IsMouseOver ? HoverScale : 1, 150);
     }
 
     private void RefreshLayers()
@@ -242,6 +273,25 @@ public sealed class BackdropGlass : ContentControl
             _interactionTimer.Stop();
         }
         _chromeLayer?.InvalidateVisual();
+    }
+
+    private void AnimateScale(double target, int milliseconds)
+    {
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            _hoverTransform.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            _hoverTransform.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            _hoverTransform.ScaleX = target;
+            _hoverTransform.ScaleY = target;
+            return;
+        }
+
+        var animation = new DoubleAnimation(target, TimeSpan.FromMilliseconds(milliseconds))
+        {
+            EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut }
+        };
+        _hoverTransform.BeginAnimation(ScaleTransform.ScaleXProperty, animation, HandoffBehavior.SnapshotAndReplace);
+        _hoverTransform.BeginAnimation(ScaleTransform.ScaleYProperty, animation, HandoffBehavior.SnapshotAndReplace);
     }
 
     private bool IsSafeSource(Visual? source) =>
@@ -638,8 +688,21 @@ public sealed class BackdropGlass : ContentControl
             }
             if (owner.HighlightBrush is not null)
             {
-                DrawStroke(drawingContext, bounds, owner.CornerRadius, owner.HighlightBrush, .8, borderWidth + 1.1);
+                drawingContext.DrawGeometry(
+                    null,
+                    new Pen(owner.HighlightBrush, .9) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round },
+                    TopLeftEdge(bounds, owner.CornerRadius, borderWidth + 1.15));
             }
+
+
+            drawingContext.DrawGeometry(
+                null,
+                new Pen(new SolidColorBrush(Color.FromArgb(38, 0, 0, 0)), .9)
+                {
+                    StartLineCap = PenLineCap.Round,
+                    EndLineCap = PenLineCap.Round
+                },
+                BottomRightEdge(bounds, owner.CornerRadius, borderWidth + .55));
 
             if (owner._pointerEnergy > 0)
             {
@@ -658,5 +721,44 @@ public sealed class BackdropGlass : ContentControl
                 DrawStroke(drawingContext, bounds, owner.CornerRadius, edge, 1.15, borderWidth + .25);
             }
         }
+    }
+
+
+    private static Geometry TopLeftEdge(Rect bounds, CornerRadius radius, double inset)
+    {
+        var rect = bounds;
+        rect.Inflate(-inset, -inset);
+        var topLeft = Math.Min(Math.Max(0, radius.TopLeft - inset), Math.Min(rect.Width, rect.Height) / 2);
+        var topRight = Math.Min(Math.Max(0, radius.TopRight - inset), Math.Min(rect.Width, rect.Height) / 2);
+        var bottomLeft = Math.Min(Math.Max(0, radius.BottomLeft - inset), Math.Min(rect.Width, rect.Height) / 2);
+        var geometry = new StreamGeometry();
+        using (var context = geometry.Open())
+        {
+            context.BeginFigure(new Point(rect.Left, rect.Bottom - bottomLeft), false, false);
+            context.LineTo(new Point(rect.Left, rect.Top + topLeft), true, false);
+            context.ArcTo(new Point(rect.Left + topLeft, rect.Top), new Size(topLeft, topLeft), 0, false, SweepDirection.Clockwise, true, false);
+            context.LineTo(new Point(rect.Right - topRight, rect.Top), true, false);
+        }
+        geometry.Freeze();
+        return geometry;
+    }
+
+    private static Geometry BottomRightEdge(Rect bounds, CornerRadius radius, double inset)
+    {
+        var rect = bounds;
+        rect.Inflate(-inset, -inset);
+        var topRight = Math.Min(Math.Max(0, radius.TopRight - inset), Math.Min(rect.Width, rect.Height) / 2);
+        var bottomRight = Math.Min(Math.Max(0, radius.BottomRight - inset), Math.Min(rect.Width, rect.Height) / 2);
+        var bottomLeft = Math.Min(Math.Max(0, radius.BottomLeft - inset), Math.Min(rect.Width, rect.Height) / 2);
+        var geometry = new StreamGeometry();
+        using (var context = geometry.Open())
+        {
+            context.BeginFigure(new Point(rect.Right, rect.Top + topRight), false, false);
+            context.LineTo(new Point(rect.Right, rect.Bottom - bottomRight), true, false);
+            context.ArcTo(new Point(rect.Right - bottomRight, rect.Bottom), new Size(bottomRight, bottomRight), 0, false, SweepDirection.Clockwise, true, false);
+            context.LineTo(new Point(rect.Left + bottomLeft, rect.Bottom), true, false);
+        }
+        geometry.Freeze();
+        return geometry;
     }
 }
