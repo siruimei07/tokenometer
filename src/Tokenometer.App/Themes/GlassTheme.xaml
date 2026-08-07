@@ -41,15 +41,15 @@
     </LinearGradientBrush>
 
     <LinearGradientBrush x:Key="LiquidRegularTintBrush" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="#2EFFFFFF" Offset="0" />
-        <GradientStop Color="#2C172A3B" Offset="0.38" />
-        <GradientStop Color="#3B0C1725" Offset="1" />
+        <GradientStop Color="#54FFFFFF" Offset="0" />
+        <GradientStop Color="#65182C40" Offset="0.42" />
+        <GradientStop Color="#7A0C1725" Offset="1" />
     </LinearGradientBrush>
 
     <LinearGradientBrush x:Key="LiquidContentTintBrush" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="#1EFFFFFF" Offset="0" />
-        <GradientStop Color="#26111E2D" Offset="0.5" />
-        <GradientStop Color="#30101A27" Offset="1" />
+        <GradientStop Color="#46FFFFFF" Offset="0" />
+        <GradientStop Color="#50172B3E" Offset="0.48" />
+        <GradientStop Color="#65101C2A" Offset="1" />
     </LinearGradientBrush>
 
     <Style x:Key="LiquidGlassSurfaceStyle" TargetType="controls:BackdropGlass">
@@ -67,7 +67,7 @@
         <Setter Property="SnapsToDevicePixels" Value="True" />
         <Setter Property="Effect">
             <Setter.Value>
-                <DropShadowEffect Color="#020711" BlurRadius="38" ShadowDepth="14" Opacity="0.34" />
+                <DropShadowEffect Color="#020711" BlurRadius="42" ShadowDepth="16" Opacity="0.43" />
             </Setter.Value>
         </Setter>
     </Style>
@@ -85,7 +85,7 @@
         <Setter Property="SaturationTint" Value="#0A6ED6FF" />
         <Setter Property="Effect">
             <Setter.Value>
-                <DropShadowEffect Color="#020711" BlurRadius="30" ShadowDepth="10" Opacity="0.26" />
+                <DropShadowEffect Color="#020711" BlurRadius="34" ShadowDepth="12" Opacity="0.34" />
             </Setter.Value>
         </Setter>
     </Style>

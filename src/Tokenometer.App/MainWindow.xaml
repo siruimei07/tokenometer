@@ -4,433 +4,574 @@
         xmlns:controls="clr-namespace:Tokenometer.Controls"
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         Title="Tokenometer"
-        Width="1220"
-        Height="790"
-        MinWidth="980"
-        MinHeight="680"
+        Width="1280"
+        Height="820"
+        MinWidth="1080"
+        MinHeight="720"
         WindowStartupLocation="CenterScreen"
         WindowStyle="None"
         ResizeMode="CanResize"
         AllowsTransparency="False"
-        Background="#01FFFFFF"
+        Background="#0107121E"
+        FontFamily="{StaticResource AppFont}"
+        Foreground="{StaticResource InkBrush}"
         TextOptions.TextFormattingMode="Display"
-        UseLayoutRounding="True">
+        TextOptions.TextHintingMode="Animated"
+        UseLayoutRounding="True"
+        RenderOptions.BitmapScalingMode="HighQuality">
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="0"
                             ResizeBorderThickness="7"
-                            CornerRadius="30"
+                            CornerRadius="32"
                             GlassFrameThickness="0"
                             UseAeroCaptionButtons="False" />
     </shell:WindowChrome.WindowChrome>
 
-    <Grid Background="{StaticResource CanvasBrush}">
-        <Ellipse Width="540" Height="540" Margin="-210,-220,0,0" HorizontalAlignment="Left" VerticalAlignment="Top" IsHitTestVisible="False">
-            <Ellipse.Fill>
-                <RadialGradientBrush>
-                    <GradientStop Color="#78A9B5FF" Offset="0" />
-                    <GradientStop Color="#00A9B5FF" Offset="1" />
-                </RadialGradientBrush>
-            </Ellipse.Fill>
-        </Ellipse>
-        <Ellipse Width="620" Height="620" Margin="0,0,-260,-330" HorizontalAlignment="Right" VerticalAlignment="Bottom" IsHitTestVisible="False">
-            <Ellipse.Fill>
-                <RadialGradientBrush>
-                    <GradientStop Color="#68FFD1DA" Offset="0" />
-                    <GradientStop Color="#00FFD1DA" Offset="1" />
-                </RadialGradientBrush>
-            </Ellipse.Fill>
-        </Ellipse>
-        <Ellipse Width="420" Height="420" Margin="0,40,140,0" HorizontalAlignment="Right" VerticalAlignment="Top" IsHitTestVisible="False">
-            <Ellipse.Fill>
-                <RadialGradientBrush>
-                    <GradientStop Color="#5BC9F4E8" Offset="0" />
-                    <GradientStop Color="#00C9F4E8" Offset="1" />
-                </RadialGradientBrush>
-            </Ellipse.Fill>
-        </Ellipse>
+    <Window.Resources>
+        <LinearGradientBrush x:Key="SelectedNavBrush" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#FFFF9275" Offset="0" />
+            <GradientStop Color="#FFFF6444" Offset="0.46" />
+            <GradientStop Color="#FFD946FF" Offset="1" />
+        </LinearGradientBrush>
 
-        <Border x:Name="WindowShell"
-                Margin="16"
-                Background="{StaticResource ShellBrush}"
-                BorderBrush="#DFFFFFFF"
-                BorderThickness="1"
-                CornerRadius="30"
-                ClipToBounds="True">
-            <Border.Effect>
-                <DropShadowEffect Color="#5E6E91" BlurRadius="36" ShadowDepth="10" Opacity="0.22" />
-            </Border.Effect>
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="76" />
-                    <ColumnDefinition Width="*" />
-                </Grid.ColumnDefinitions>
-
-                <Border Grid.Column="0" Background="#4AFFFFFF" BorderBrush="#72FFFFFF" BorderThickness="0,0,1,0">
-                    <Grid Margin="0,16,0,14">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
-
-                        <Border Width="46" Height="46" CornerRadius="17" Background="{StaticResource AccentBrush}"
-                                HorizontalAlignment="Center" ToolTip="Tokenometer">
-                            <Grid>
-                                <Ellipse Width="20" Height="20" Stroke="White" StrokeThickness="2.2" />
-                                <Ellipse Width="4" Height="4" Fill="White" Margin="0,-11,0,0" />
-                                <Ellipse Width="4" Height="4" Fill="White" Margin="-10,7,0,0" />
-                                <Ellipse Width="4" Height="4" Fill="White" Margin="10,7,0,0" />
-                            </Grid>
+        <Style x:Key="NavButtonStyle" TargetType="Button">
+            <Setter Property="Height" Value="38" />
+            <Setter Property="MinWidth" Value="92" />
+            <Setter Property="Margin" Value="3,0" />
+            <Setter Property="Padding" Value="17,0" />
+            <Setter Property="Foreground" Value="#DDE9F4FF" />
+            <Setter Property="Background" Value="#0CFFFFFF" />
+            <Setter Property="BorderBrush" Value="#38FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="Medium" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Surface"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="19"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Surface" Property="Background" Value="#30FFFFFF" />
+                                <Setter TargetName="Surface" Property="BorderBrush" Value="#9AFFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Surface" Property="Opacity" Value="0.72" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
-                        <StackPanel Grid.Row="1" VerticalAlignment="Center">
-                            <RadioButton Style="{StaticResource SidebarRadioStyle}" IsChecked="True" GroupName="Navigation" ToolTip="用量概览">
-                                <TextBlock FontFamily="{StaticResource IconFont}" FontSize="18" Text="&#xE80F;" />
-                            </RadioButton>
-                            <RadioButton Style="{StaticResource SidebarRadioStyle}" GroupName="Navigation" ToolTip="会话记录" Checked="ReservedNavigation_Checked">
-                                <TextBlock FontFamily="{StaticResource IconFont}" FontSize="18" Text="&#xE8A5;" />
-                            </RadioButton>
-                            <RadioButton Style="{StaticResource SidebarRadioStyle}" GroupName="Navigation" ToolTip="模型分析" Checked="ReservedNavigation_Checked">
-                                <TextBlock FontFamily="{StaticResource IconFont}" FontSize="18" Text="&#xE9D2;" />
-                            </RadioButton>
-                            <RadioButton Style="{StaticResource SidebarRadioStyle}" GroupName="Navigation" ToolTip="数据源" Checked="ReservedNavigation_Checked">
-                                <TextBlock FontFamily="{StaticResource IconFont}" FontSize="18" Text="&#xE8B7;" />
-                            </RadioButton>
-                        </StackPanel>
+        <Style x:Key="SelectedNavButtonStyle" TargetType="Button" BasedOn="{StaticResource NavButtonStyle}">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="Background" Value="{StaticResource SelectedNavBrush}" />
+            <Setter Property="BorderBrush" Value="#D8FFFFFF" />
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <DropShadowEffect Color="#FF694B" BlurRadius="20" ShadowDepth="5" Opacity="0.42" />
+                </Setter.Value>
+            </Setter>
+        </Style>
 
-                        <StackPanel Grid.Row="2">
-                            <Button Style="{StaticResource IconButtonStyle}" Width="46" Height="46" Margin="15,0"
-                                    Background="Transparent" BorderBrush="Transparent" ToolTip="外观与设置"
-                                    Click="ReservedButton_Click" Content="&#xE713;" />
-                            <Border Width="32" Height="1" Background="#60919AAD" Margin="0,10" />
-                            <Border Width="34" Height="34" CornerRadius="17" Background="#CFFFFFFF" HorizontalAlignment="Center"
-                                    BorderBrush="#F4FFFFFF" BorderThickness="1" ToolTip="本地用户">
-                                <TextBlock Text="S" FontFamily="{StaticResource AppFont}" FontSize="13" FontWeight="SemiBold"
-                                           Foreground="{StaticResource AccentBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                            </Border>
-                        </StackPanel>
-                    </Grid>
-                </Border>
+        <Style x:Key="HeaderIconButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="36" />
+            <Setter Property="Height" Value="36" />
+            <Setter Property="Background" Value="#12FFFFFF" />
+            <Setter Property="BorderBrush" Value="#42FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="#E8F6FFFF" />
+            <Setter Property="FontFamily" Value="{StaticResource IconFont}" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Surface" Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="18">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Surface" Property="Background" Value="#34FFFFFF" />
+                                <Setter TargetName="Surface" Property="BorderBrush" Value="#A8FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Surface" Property="Opacity" Value="0.7" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
 
-                <Grid Grid.Column="1" Margin="22,12,16,18">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="66" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
+        <Style x:Key="SegmentButtonStyle" TargetType="Button" BasedOn="{StaticResource NavButtonStyle}">
+            <Setter Property="Height" Value="32" />
+            <Setter Property="MinWidth" Value="52" />
+            <Setter Property="Margin" Value="1" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+        </Style>
 
-                    <Grid Grid.Row="0" Background="Transparent" MouseLeftButtonDown="DragRegion_MouseLeftButtonDown">
+        <Style x:Key="SelectedSegmentButtonStyle" TargetType="Button" BasedOn="{StaticResource SegmentButtonStyle}">
+            <Setter Property="Background" Value="#D8F8FBFF" />
+            <Setter Property="Foreground" Value="#122236" />
+            <Setter Property="BorderBrush" Value="#F4FFFFFF" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style x:Key="InnerMetricStyle" TargetType="Border">
+            <Setter Property="Background" Value="#16FFFFFF" />
+            <Setter Property="BorderBrush" Value="#38FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="16" />
+            <Setter Property="Padding" Value="13,11" />
+        </Style>
+    </Window.Resources>
+
+    <Border x:Name="WindowShell"
+            Background="#07111E"
+            BorderBrush="{StaticResource LiquidEdgeBrush}"
+            BorderThickness="1"
+            CornerRadius="32"
+            ClipToBounds="True">
+        <Grid>
+            <!-- The glass surfaces sample this one continuous scene. -->
+            <Grid x:Name="BackdropScene" IsHitTestVisible="False">
+                <Image Source="/Tokenometer;component/Assets/liquid-flow-bg.png"
+                       Stretch="UniformToFill" />
+                <Rectangle>
+                    <Rectangle.Fill>
+                        <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                            <GradientStop Color="#58101C2B" Offset="0" />
+                            <GradientStop Color="#24101A29" Offset="0.42" />
+                            <GradientStop Color="#5007111E" Offset="1" />
+                        </LinearGradientBrush>
+                    </Rectangle.Fill>
+                </Rectangle>
+                <Rectangle Opacity="0.34">
+                    <Rectangle.Fill>
+                        <RadialGradientBrush Center="0.5,0.2" GradientOrigin="0.5,0.2" RadiusX="0.72" RadiusY="0.64">
+                            <GradientStop Color="#00294D69" Offset="0" />
+                            <GradientStop Color="#6A07111E" Offset="1" />
+                        </RadialGradientBrush>
+                    </Rectangle.Fill>
+                </Rectangle>
+            </Grid>
+
+            <Grid Margin="24,22,24,22">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="64" />
+                    <RowDefinition Height="82" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <controls:BackdropGlass Grid.Row="0"
+                                        Style="{StaticResource LiquidGlassSurfaceStyle}"
+                                        BackdropVisual="{Binding ElementName=BackdropScene}"
+                                        CornerRadius="28"
+                                        LensWidth="9"
+                                        RefractionDepth="3.2"
+                                        Padding="17,0"
+                                        MouseLeftButtonDown="DragRegion_MouseLeftButtonDown">
+                    <Grid>
                         <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="245" />
                             <ColumnDefinition Width="*" />
                             <ColumnDefinition Width="Auto" />
                         </Grid.ColumnDefinitions>
-                        <StackPanel VerticalAlignment="Center">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="用量概览" FontFamily="{StaticResource AppFont}" FontSize="25" FontWeight="SemiBold"
-                                           Foreground="{StaticResource InkBrush}" />
-                                <Border Margin="12,4,0,0" Padding="8,3" Height="24" Background="#BCFFFFFF"
-                                        BorderBrush="#EFFFFFFF" BorderThickness="1" CornerRadius="12">
-                                    <StackPanel Orientation="Horizontal">
-                                        <Ellipse Width="6" Height="6" Fill="{StaticResource MintBrush}" Margin="0,0,6,0" />
-                                        <TextBlock Text="{Binding SourceBadge}" FontFamily="{StaticResource AppFont}" FontSize="10.5"
-                                                   FontWeight="SemiBold" Foreground="{StaticResource SecondaryInkBrush}" />
-                                    </StackPanel>
-                                </Border>
+
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border Width="38" Height="38" CornerRadius="19"
+                                    Background="#26FFFFFF" BorderBrush="#A6FFFFFF" BorderThickness="1">
+                                <Grid>
+                                    <Ellipse Width="23" Height="23" Stroke="#F4FFFFFF" StrokeThickness="1.6" />
+                                    <Path Data="M 8,18 C 11,9 20,8 27,15 C 31,19 29,27 23,29"
+                                          Stretch="Uniform" Stroke="#70D7FF" StrokeThickness="2.2"
+                                          StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                                    <Ellipse Width="5" Height="5" Fill="#FF8468" Margin="14,-13,0,0" />
+                                </Grid>
+                            </Border>
+                            <StackPanel Margin="11,0,0,0" VerticalAlignment="Center">
+                                <TextBlock Text="Tokenometer" FontSize="17" FontWeight="SemiBold" Foreground="White" />
+                                <TextBlock Text="CODEX USAGE GLASS" FontSize="9" FontWeight="SemiBold" Foreground="#9FC7D9EA" />
                             </StackPanel>
-                            <TextBlock Margin="0,2,0,0" Text="Codex 使用节奏、会话上下文与配额状态" FontFamily="{StaticResource AppFont}"
-                                       FontSize="12.5" Foreground="{StaticResource SecondaryInkBrush}" />
                         </StackPanel>
 
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" shell:WindowChrome.IsHitTestVisibleInChrome="True">
-                            <Border Margin="0,0,10,0" Padding="12,7" Background="#72FFFFFF" BorderBrush="#AFFFFFFF"
-                                    BorderThickness="1" CornerRadius="16">
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                    shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                            <Button Style="{StaticResource SelectedNavButtonStyle}" Content="Overview" />
+                            <Button Style="{StaticResource NavButtonStyle}" Content="Sessions" Click="ReservedButton_Click" />
+                            <Button Style="{StaticResource NavButtonStyle}" Content="Models" Click="ReservedButton_Click" />
+                            <Button Style="{StaticResource NavButtonStyle}" Content="Sources" Click="ReservedButton_Click" />
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center"
+                                    shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                            <Border Margin="0,0,8,0" Padding="12,6" Background="#18FFFFFF" BorderBrush="#46FFFFFF"
+                                    BorderThickness="1" CornerRadius="18">
                                 <StackPanel Orientation="Horizontal">
-                                    <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE895;" FontSize="13" Foreground="{StaticResource AccentBrush}" Margin="0,0,7,0" />
+                                    <Ellipse Width="7" Height="7" Fill="{StaticResource LimeBrush}" Margin="0,0,7,0" />
                                     <StackPanel>
-                                        <TextBlock Text="{Binding SourceLabel}" FontFamily="{StaticResource AppFont}" FontWeight="SemiBold" FontSize="11.5" Foreground="{StaticResource InkBrush}" />
-                                        <TextBlock Text="{Binding UpdatedDisplay}" FontFamily="{StaticResource AppFont}" FontSize="9.5" Foreground="{StaticResource TertiaryInkBrush}" />
+                                        <TextBlock Text="{Binding SourceLabel}" FontSize="11" FontWeight="SemiBold" Foreground="White" />
+                                        <TextBlock Text="{Binding UpdatedDisplay}" FontSize="9" Foreground="#AFC6D4E2" />
                                     </StackPanel>
                                 </StackPanel>
                             </Border>
-                            <Button Style="{StaticResource IconButtonStyle}" Margin="0,0,8,0" ToolTip="立即刷新" Click="Refresh_Click" Content="&#xE72C;" />
-                            <Button Style="{StaticResource WindowButtonStyle}" ToolTip="最小化" Click="Minimize_Click" Content="&#xE921;" />
-                            <Button Style="{StaticResource WindowButtonStyle}" ToolTip="最大化" Click="Maximize_Click" Content="&#xE922;" />
-                            <Button Style="{StaticResource WindowButtonStyle}" ToolTip="关闭" Click="Close_Click" Content="&#xE8BB;" />
+                            <Button Style="{StaticResource HeaderIconButtonStyle}" ToolTip="立即刷新" Click="Refresh_Click" Content="&#xE72C;" />
+                            <Button Style="{StaticResource HeaderIconButtonStyle}" Margin="6,0,0,0" ToolTip="最小化" Click="Minimize_Click" Content="&#xE921;" />
+                            <Button Style="{StaticResource HeaderIconButtonStyle}" Margin="6,0,0,0" ToolTip="最大化" Click="Maximize_Click" Content="&#xE922;" />
+                            <Button Style="{StaticResource HeaderIconButtonStyle}" Margin="6,0,0,0" ToolTip="关闭" Click="Close_Click" Content="&#xE8BB;" />
                         </StackPanel>
                     </Grid>
+                </controls:BackdropGlass>
 
-                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,2,8,0">
-                        <Grid x:Name="DashboardGrid">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="1.02*" MinWidth="245" />
-                                <ColumnDefinition Width="1.58*" MinWidth="360" />
-                                <ColumnDefinition Width="1.08*" MinWidth="265" />
-                            </Grid.ColumnDefinitions>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="238" />
-                                <RowDefinition Height="292" />
-                                <RowDefinition Height="116" />
-                            </Grid.RowDefinitions>
-
-                            <Border Grid.Row="0" Grid.Column="0" Style="{StaticResource GlassCardStyle}" Margin="0,0,14,14">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <Grid>
-                                        <TextBlock Text="配额余量" Style="{StaticResource CardTitleStyle}" />
-                                        <Border HorizontalAlignment="Right" Padding="8,3" Background="#60FFFFFF" CornerRadius="10">
-                                            <TextBlock Text="{Binding AllowanceWindowLabel}" Style="{StaticResource MetricLabelStyle}" FontSize="10.5" />
-                                        </Border>
-                                    </Grid>
-                                    <Grid Grid.Row="1" Width="140" Height="140" HorizontalAlignment="Center" Margin="0,0,0,-4">
-                                        <controls:QuotaRing Value="{Binding AllowanceRemainingRatio}" />
-                                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,8,0,0">
-                                            <TextBlock Text="{Binding RemainingDisplay}" FontFamily="{StaticResource AppFont}" FontSize="31" FontWeight="SemiBold"
-                                                       Foreground="{StaticResource InkBrush}" HorizontalAlignment="Center" />
-                                            <TextBlock Text="剩余" FontFamily="{StaticResource AppFont}" FontSize="11.5" Foreground="{StaticResource SecondaryInkBrush}"
-                                                       HorizontalAlignment="Center" />
-                                        </StackPanel>
-                                    </Grid>
-                                    <Grid Grid.Row="2">
-                                        <TextBlock Text="{Binding ResetDisplay}" Style="{StaticResource MetricLabelStyle}" />
-                                        <TextBlock Text="演示值" Style="{StaticResource MetricLabelStyle}" FontSize="10" HorizontalAlignment="Right" Foreground="{StaticResource TertiaryInkBrush}" />
-                                    </Grid>
-                                </Grid>
-                            </Border>
-
-                            <Border Grid.Row="0" Grid.Column="1" Style="{StaticResource GlassCardStyle}" Margin="0,0,14,14">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <Grid>
-                                        <StackPanel Orientation="Horizontal">
-                                            <Ellipse Width="7" Height="7" Fill="{StaticResource MintBrush}" Margin="0,0,7,0" />
-                                            <TextBlock Text="当前会话" Style="{StaticResource CardTitleStyle}" />
-                                        </StackPanel>
-                                        <Border HorizontalAlignment="Right" Padding="9,4" Background="#66FFFFFF" CornerRadius="11">
-                                            <TextBlock Text="{Binding CurrentModel}" FontFamily="{StaticResource AppFont}" FontSize="10.5" FontWeight="SemiBold"
-                                                       Foreground="{StaticResource AccentBrush}" />
-                                        </Border>
-                                    </Grid>
-                                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,8,0,1">
-                                        <TextBlock Text="{Binding CurrentTotalDisplay}" FontFamily="{StaticResource AppFont}" FontSize="31" FontWeight="SemiBold"
-                                                   Foreground="{StaticResource InkBrush}" />
-                                        <TextBlock Text=" tokens" FontFamily="{StaticResource AppFont}" FontSize="12" Margin="4,14,0,0"
-                                                   Foreground="{StaticResource SecondaryInkBrush}" />
-                                    </StackPanel>
-                                    <controls:TokenTrendChart Grid.Row="2" Values="{Binding Trend}" Margin="-4,0,-4,0" />
-                                    <Grid Grid.Row="3" Margin="4,1,4,0">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition />
-                                            <ColumnDefinition />
-                                            <ColumnDefinition />
-                                        </Grid.ColumnDefinitions>
-                                        <StackPanel Grid.Column="0" Orientation="Horizontal">
-                                            <Ellipse Width="6" Height="6" Fill="{StaticResource CyanBrush}" Margin="0,0,5,0" />
-                                            <TextBlock Text="输入 " Style="{StaticResource MetricLabelStyle}" FontSize="10.5" />
-                                            <TextBlock Text="{Binding InputDisplay}" Style="{StaticResource MetricLabelStyle}" FontSize="10.5" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" />
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center">
-                                            <Ellipse Width="6" Height="6" Fill="{StaticResource MintBrush}" Margin="0,0,5,0" />
-                                            <TextBlock Text="缓存 " Style="{StaticResource MetricLabelStyle}" FontSize="10.5" />
-                                            <TextBlock Text="{Binding CachedDisplay}" Style="{StaticResource MetricLabelStyle}" FontSize="10.5" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" />
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
-                                            <Ellipse Width="6" Height="6" Fill="{StaticResource VioletBrush}" Margin="0,0,5,0" />
-                                            <TextBlock Text="输出 " Style="{StaticResource MetricLabelStyle}" FontSize="10.5" />
-                                            <TextBlock Text="{Binding OutputDisplay}" Style="{StaticResource MetricLabelStyle}" FontSize="10.5" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" />
-                                        </StackPanel>
-                                    </Grid>
-                                </Grid>
-                            </Border>
-
-                            <Border Grid.Row="0" Grid.Column="2" Style="{StaticResource GlassCardStyle}" Margin="0,0,0,14">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                    </Grid.RowDefinitions>
-                                    <Grid>
-                                        <TextBlock Text="今日用量" Style="{StaticResource CardTitleStyle}" />
-                                        <TextBlock Text="{Binding TodayChangeDisplay, StringFormat=↑ {0}}" HorizontalAlignment="Right" FontFamily="{StaticResource AppFont}" FontSize="10.5"
-                                                   Foreground="{StaticResource MintBrush}" FontWeight="SemiBold" />
-                                    </Grid>
-                                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,17,0,12">
-                                        <TextBlock Text="{Binding TodayTotalDisplay}" FontFamily="{StaticResource AppFont}" FontSize="31" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" />
-                                        <TextBlock Text=" tokens" FontFamily="{StaticResource AppFont}" FontSize="12" Margin="4,14,0,0" Foreground="{StaticResource SecondaryInkBrush}" />
-                                    </StackPanel>
-                                    <controls:TokenCompositionBar Grid.Row="2" Height="10" Input="{Binding CurrentInputTokens, FallbackValue=68440}"
-                                                                  Cached="{Binding CurrentCachedInputTokens, FallbackValue=41760}"
-                                                                  Output="{Binding CurrentOutputTokens, FallbackValue=16180}" />
-                                    <StackPanel Grid.Row="3" Margin="0,15,0,0">
-                                        <Grid Margin="0,0,0,9">
-                                            <StackPanel Orientation="Horizontal"><Ellipse Width="7" Height="7" Fill="{StaticResource CyanBrush}" Margin="0,0,7,0" /><TextBlock Text="输入" Style="{StaticResource MetricLabelStyle}" /></StackPanel>
-                                            <TextBlock Text="{Binding InputDisplay}" Style="{StaticResource MetricLabelStyle}" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" HorizontalAlignment="Right" />
-                                        </Grid>
-                                        <Grid Margin="0,0,0,9">
-                                            <StackPanel Orientation="Horizontal"><Ellipse Width="7" Height="7" Fill="{StaticResource MintBrush}" Margin="0,0,7,0" /><TextBlock Text="缓存输入" Style="{StaticResource MetricLabelStyle}" /></StackPanel>
-                                            <TextBlock Text="{Binding CachedDisplay}" Style="{StaticResource MetricLabelStyle}" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" HorizontalAlignment="Right" />
-                                        </Grid>
-                                        <Grid>
-                                            <StackPanel Orientation="Horizontal"><Ellipse Width="7" Height="7" Fill="{StaticResource VioletBrush}" Margin="0,0,7,0" /><TextBlock Text="输出" Style="{StaticResource MetricLabelStyle}" /></StackPanel>
-                                            <TextBlock Text="{Binding OutputDisplay}" Style="{StaticResource MetricLabelStyle}" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" HorizontalAlignment="Right" />
-                                        </Grid>
-                                    </StackPanel>
-                                </Grid>
-                            </Border>
-
-                            <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Style="{StaticResource GlassCardStyle}" Margin="0,0,14,14">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <Grid>
-                                        <StackPanel>
-                                            <TextBlock Text="Token pulse" Style="{StaticResource CardTitleStyle}" />
-                                            <TextBlock Text="最近 5 分钟 · 悬停查看精确用量" Style="{StaticResource MetricLabelStyle}" Margin="0,3,0,0" />
-                                        </StackPanel>
-                                        <Border HorizontalAlignment="Right" VerticalAlignment="Top" Background="#66FFFFFF" CornerRadius="14" Padding="4">
-                                            <StackPanel Orientation="Horizontal">
-                                                <Border Background="#E8FFFFFF" BorderBrush="#F9FFFFFF" BorderThickness="1" CornerRadius="10" Padding="10,5">
-                                                    <TextBlock Text="5 分钟" FontFamily="{StaticResource AppFont}" FontSize="10.5" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" />
-                                                </Border>
-                                                <Button Style="{StaticResource BaseButtonStyle}" Tag="10" BorderThickness="0" Background="Transparent" Padding="10,5"
-                                                        FontSize="10.5" Content="1 分钟" Click="ReservedButton_Click" />
-                                            </StackPanel>
-                                        </Border>
-                                    </Grid>
-                                    <Border Grid.Row="1" Style="{StaticResource GlassInnerStyle}" Margin="0,14,0,12" Padding="13,12">
-                                        <controls:TokenPulseChart Values="{Binding Pulse}" />
-                                    </Border>
-                                    <Grid Grid.Row="2">
-                                        <StackPanel Orientation="Horizontal">
-                                            <StackPanel Orientation="Horizontal" Margin="0,0,18,0"><Ellipse Width="7" Height="7" Fill="{StaticResource CyanBrush}" Margin="0,0,6,0" /><TextBlock Text="输入" Style="{StaticResource MetricLabelStyle}" FontSize="10.5" /></StackPanel>
-                                            <StackPanel Orientation="Horizontal"><Ellipse Width="7" Height="7" Fill="{StaticResource VioletBrush}" Margin="0,0,6,0" /><TextBlock Text="输出" Style="{StaticResource MetricLabelStyle}" FontSize="10.5" /></StackPanel>
-                                        </StackPanel>
-                                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                            <TextBlock Text="上下文 " Style="{StaticResource MetricLabelStyle}" FontSize="10.5" />
-                                            <TextBlock Text="{Binding ContextDisplay}" Style="{StaticResource MetricLabelStyle}" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" FontSize="10.5" />
-                                            <ProgressBar Width="74" Margin="8,0,0,0" Style="{StaticResource SmallProgressStyle}" Value="{Binding ContextRatio, Mode=OneWay}" Maximum="1" />
-                                        </StackPanel>
-                                    </Grid>
-                                </Grid>
-                            </Border>
-
-                            <Border Grid.Row="1" Grid.Column="2" Style="{StaticResource GlassCardStyle}" Margin="0,0,0,14">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-                                    <Grid>
-                                        <StackPanel>
-                                            <TextBlock Text="最近会话" Style="{StaticResource CardTitleStyle}" />
-                                            <TextBlock Text="按更新时间排序" Style="{StaticResource MetricLabelStyle}" Margin="0,3,0,0" />
-                                        </StackPanel>
-                                        <Button HorizontalAlignment="Right" VerticalAlignment="Top" Style="{StaticResource IconButtonStyle}" Width="32" Height="32"
-                                                Background="#54FFFFFF" ToolTip="查看全部" Click="ReservedButton_Click" Content="&#xE72A;" />
-                                    </Grid>
-                                    <ItemsControl Grid.Row="1" ItemsSource="{Binding RecentSessions}" Margin="0,11,0,7">
-                                        <ItemsControl.ItemTemplate>
-                                            <DataTemplate>
-                                                <Border Background="#42FFFFFF" BorderBrush="#62FFFFFF" BorderThickness="1" CornerRadius="13" Padding="9,6" Margin="0,0,0,5">
-                                                    <Grid>
-                                                        <Grid.ColumnDefinitions>
-                                                            <ColumnDefinition Width="28" />
-                                                            <ColumnDefinition Width="*" />
-                                                            <ColumnDefinition Width="Auto" />
-                                                        </Grid.ColumnDefinitions>
-                                                        <Border Width="22" Height="22" CornerRadius="7" Background="{Binding Accent}" VerticalAlignment="Center">
-                                                            <Ellipse Width="6" Height="6" Fill="White" />
-                                                        </Border>
-                                                        <StackPanel Grid.Column="1" Margin="7,0,5,0">
-                                                            <TextBlock Text="{Binding Title}" FontFamily="{StaticResource AppFont}" FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" TextTrimming="CharacterEllipsis" />
-                                                            <TextBlock Text="{Binding Model}" FontFamily="{StaticResource AppFont}" FontSize="9.5" Foreground="{StaticResource TertiaryInkBrush}" />
-                                                        </StackPanel>
-                                                        <StackPanel Grid.Column="2" HorizontalAlignment="Right">
-                                                            <TextBlock Text="{Binding TotalTokens, StringFormat={}{0:N0}}" FontFamily="{StaticResource AppFont}" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" HorizontalAlignment="Right" />
-                                                            <TextBlock Text="tokens" FontFamily="{StaticResource AppFont}" FontSize="9" Foreground="{StaticResource TertiaryInkBrush}" HorizontalAlignment="Right" />
-                                                        </StackPanel>
-                                                    </Grid>
-                                                </Border>
-                                            </DataTemplate>
-                                        </ItemsControl.ItemTemplate>
-                                    </ItemsControl>
-                                    <Button Grid.Row="2" Style="{StaticResource PillButtonStyle}" Height="34" FontSize="11" Content="打开会话记录" Click="ReservedButton_Click" />
-                                </Grid>
-                            </Border>
-
-                            <Border Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" Style="{StaticResource GlassCardStyle}" Padding="16,14">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="1.1*" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="1.15*" />
-                                    </Grid.ColumnDefinitions>
-                                    <StackPanel VerticalAlignment="Center">
-                                        <TextBlock Text="数据源就绪度" Style="{StaticResource CardTitleStyle}" FontSize="13.5" />
-                                        <TextBlock Text="真实值接入前保持明确的可用状态" Style="{StaticResource MetricLabelStyle}" FontSize="10.5" Margin="0,3,12,0" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Style="{StaticResource GlassInnerStyle}" Margin="4,0,8,0" Padding="11,9">
-                                        <Grid>
-                                            <Border Width="28" Height="28" CornerRadius="9" Background="#AEECF8FF" HorizontalAlignment="Left">
-                                                <TextBlock Text="&#xE8B7;" FontFamily="{StaticResource IconFont}" Foreground="{StaticResource CyanBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                            </Border>
-                                            <StackPanel Margin="38,0,0,0">
-                                                <TextBlock Text="本地会话" FontFamily="{StaticResource AppFont}" FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" />
-                                                <TextBlock Text="JSONL 接口已保留" FontFamily="{StaticResource AppFont}" FontSize="9.5" Foreground="{StaticResource SecondaryInkBrush}" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </Border>
-                                    <Border Grid.Column="2" Style="{StaticResource GlassInnerStyle}" Margin="0,0,8,0" Padding="11,9">
-                                        <Grid>
-                                            <Border Width="28" Height="28" CornerRadius="9" Background="#AEF0ECFF" HorizontalAlignment="Left">
-                                                <TextBlock Text="&#xE950;" FontFamily="{StaticResource IconFont}" Foreground="{StaticResource VioletBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                            </Border>
-                                            <StackPanel Margin="38,0,0,0">
-                                                <TextBlock Text="配额窗口" FontFamily="{StaticResource AppFont}" FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" />
-                                                <TextBlock Text="app-server 可选" FontFamily="{StaticResource AppFont}" FontSize="9.5" Foreground="{StaticResource SecondaryInkBrush}" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </Border>
-                                    <Border Grid.Column="3" Style="{StaticResource GlassInnerStyle}" Padding="11,9">
-                                        <Grid>
-                                            <Border Width="28" Height="28" CornerRadius="9" Background="#AEECFAF4" HorizontalAlignment="Left">
-                                                <TextBlock Text="&#xE72E;" FontFamily="{StaticResource IconFont}" Foreground="{StaticResource MintBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                            </Border>
-                                            <StackPanel Margin="38,0,0,0">
-                                                <TextBlock Text="隐私保护" FontFamily="{StaticResource AppFont}" FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource InkBrush}" />
-                                                <TextBlock Text="不读取会话正文与凭据" FontFamily="{StaticResource AppFont}" FontSize="9.5" Foreground="{StaticResource SecondaryInkBrush}" />
-                                            </StackPanel>
-                                        </Grid>
-                                    </Border>
-                                </Grid>
-                            </Border>
-                        </Grid>
-                    </ScrollViewer>
-
-                    <Border x:Name="FeatureToast" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,14"
-                            Padding="14,9" Background="#EB172033" BorderBrush="#55FFFFFF" BorderThickness="1" CornerRadius="16"
-                            Opacity="0" IsHitTestVisible="False">
+                <Grid Grid.Row="1" Margin="6,10,6,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center">
                         <StackPanel Orientation="Horizontal">
-                            <TextBlock FontFamily="{StaticResource IconFont}" Text="&#xE946;" Foreground="White" Margin="0,0,8,0" />
-                            <TextBlock x:Name="FeatureToastText" Text="数据接入后启用" FontFamily="{StaticResource AppFont}" FontSize="12" Foreground="White" />
+                            <Ellipse Width="7" Height="7" Fill="{StaticResource CyanBrush}" Margin="0,0,8,0" />
+                            <TextBlock Text="LIVE TOKEN FIELD" FontSize="10.5" FontWeight="SemiBold" Foreground="#BFD5E7F5" />
                         </StackPanel>
-                    </Border>
+                        <TextBlock Margin="0,3,0,0" Text="Codex 实时用量" FontSize="30" FontWeight="SemiBold" Foreground="White" />
+                    </StackPanel>
+
+                    <controls:BackdropGlass Grid.Column="1"
+                                            Width="224" Height="44"
+                                            Style="{StaticResource LiquidCapsuleSurfaceStyle}"
+                                            BackdropVisual="{Binding ElementName=BackdropScene}"
+                                            Padding="5"
+                                            VerticalAlignment="Center">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <Button Style="{StaticResource SelectedSegmentButtonStyle}" Content="1 MIN" />
+                            <Button Style="{StaticResource SegmentButtonStyle}" Content="5 MIN" Click="ReservedButton_Click" />
+                            <Button Style="{StaticResource SegmentButtonStyle}" Content="SESSION" Click="ReservedButton_Click" />
+                        </StackPanel>
+                    </controls:BackdropGlass>
                 </Grid>
+
+                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <Grid x:Name="DashboardGrid" Margin="0,0,6,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="252" />
+                            <ColumnDefinition Width="*" MinWidth="430" />
+                            <ColumnDefinition Width="292" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="222" />
+                            <RowDefinition Height="16" />
+                            <RowDefinition Height="246" />
+                            <RowDefinition Height="16" />
+                            <RowDefinition Height="108" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Allowance lens -->
+                        <controls:BackdropGlass Grid.Row="0" Grid.Column="0"
+                                                Style="{StaticResource LiquidContentSurfaceStyle}"
+                                                BackdropVisual="{Binding ElementName=BackdropScene}"
+                                                Padding="18">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid>
+                                    <TextBlock Text="配额窗口" FontSize="15.5" FontWeight="SemiBold" Foreground="White" />
+                                    <Border HorizontalAlignment="Right" Padding="8,3" Background="#1CFFFFFF" CornerRadius="10">
+                                        <TextBlock Text="{Binding SourceBadge}" FontSize="9.5" FontWeight="SemiBold" Foreground="{StaticResource LimeBrush}" />
+                                    </Border>
+                                </Grid>
+                                <Grid Grid.Row="1" Margin="0,2,0,-3">
+                                    <controls:QuotaRing Width="142" Height="126" Value="{Binding AllowanceRemainingRatio}" />
+                                    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,8,0,0">
+                                        <TextBlock Text="{Binding RemainingDisplay}" FontSize="35" FontWeight="SemiBold" Foreground="White" HorizontalAlignment="Center" />
+                                        <TextBlock Text="REMAINING" FontSize="9" FontWeight="SemiBold" Foreground="#9FC8D7E5" HorizontalAlignment="Center" />
+                                    </StackPanel>
+                                </Grid>
+                                <Border Grid.Row="2" Style="{StaticResource InnerMetricStyle}" Padding="11,7">
+                                    <Grid>
+                                        <TextBlock Text="{Binding AllowanceWindowLabel}" FontSize="10.5" Foreground="#C6D8E6F2" />
+                                        <TextBlock Text="{Binding ResetDisplay}" HorizontalAlignment="Right" FontSize="10.5" FontWeight="SemiBold" Foreground="White" />
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </controls:BackdropGlass>
+
+                        <!-- Current session lens -->
+                        <controls:BackdropGlass Grid.Row="0" Grid.Column="1" Margin="16,0,16,0"
+                                                Style="{StaticResource LiquidContentSurfaceStyle}"
+                                                BackdropVisual="{Binding ElementName=BackdropScene}"
+                                                Padding="20,17">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <Grid>
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="当前会话" FontSize="16" FontWeight="SemiBold" Foreground="White" />
+                                        <Border Margin="10,0,0,0" Padding="9,3" Background="#1E70D7FF" BorderBrush="#5870D7FF" BorderThickness="1" CornerRadius="11">
+                                            <TextBlock Text="{Binding CurrentModel}" FontSize="9.5" FontWeight="SemiBold" Foreground="#DFF7FFFF" />
+                                        </Border>
+                                    </StackPanel>
+                                    <TextBlock HorizontalAlignment="Right" Text="实时累计" FontSize="10.5" Foreground="#A9C5D5E4" />
+                                </Grid>
+                                <Grid Grid.Row="1" Margin="0,8,0,1">
+                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom">
+                                        <TextBlock Text="{Binding CurrentTotalDisplay}" FontSize="39" FontWeight="SemiBold" Foreground="White" />
+                                        <TextBlock Text=" tokens" Margin="5,0,0,8" FontSize="12" Foreground="#B9CFDDEA" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                        <StackPanel Margin="0,0,18,0">
+                                            <TextBlock Text="INPUT" FontSize="9" Foreground="#9CBCCDDD" />
+                                            <TextBlock Text="{Binding InputDisplay}" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource CyanBrush}" />
+                                        </StackPanel>
+                                        <StackPanel Margin="0,0,18,0">
+                                            <TextBlock Text="CACHE" FontSize="9" Foreground="#9CBCCDDD" />
+                                            <TextBlock Text="{Binding CachedDisplay}" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource MintBrush}" />
+                                        </StackPanel>
+                                        <StackPanel>
+                                            <TextBlock Text="OUTPUT" FontSize="9" Foreground="#9CBCCDDD" />
+                                            <TextBlock Text="{Binding OutputDisplay}" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource VioletBrush}" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Grid>
+                                <controls:TokenTrendChart Grid.Row="2" Values="{Binding Trend}" Margin="-5,0,-4,-3" />
+                            </Grid>
+                        </controls:BackdropGlass>
+
+                        <!-- Source / recent sessions lens -->
+                        <controls:BackdropGlass Grid.Row="0" Grid.RowSpan="5" Grid.Column="2"
+                                                Style="{StaticResource LiquidGlassSurfaceStyle}"
+                                                BackdropVisual="{Binding ElementName=BackdropScene}"
+                                                BlurRadius="34"
+                                                Padding="18">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="126" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid>
+                                    <StackPanel>
+                                        <TextBlock Text="数据运行状态" FontSize="16" FontWeight="SemiBold" Foreground="White" />
+                                        <TextBlock Margin="0,3,0,0" Text="可获取字段优先展示" FontSize="10.5" Foreground="#A9C4D5E3" />
+                                    </StackPanel>
+                                    <Border HorizontalAlignment="Right" VerticalAlignment="Top" Width="32" Height="32" CornerRadius="16"
+                                            Background="#24FFFFFF" BorderBrush="#5CFFFFFF" BorderThickness="1">
+                                        <TextBlock Text="&#xE895;" FontFamily="{StaticResource IconFont}" FontSize="13" Foreground="{StaticResource CyanBrush}"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                    </Border>
+                                </Grid>
+
+                                <Grid Grid.Row="1" Margin="0,15,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="10" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <Border Style="{StaticResource InnerMetricStyle}">
+                                        <StackPanel>
+                                            <TextBlock Text="CONTEXT" FontSize="9" Foreground="#9DBDCDDB" />
+                                            <TextBlock Margin="0,5,0,1" Text="{Binding ContextDisplay}" FontSize="24" FontWeight="SemiBold" Foreground="White" />
+                                            <ProgressBar Margin="0,7,0,0" Style="{StaticResource SmallProgressStyle}" Maximum="1" Value="{Binding ContextRatio, Mode=OneWay}" />
+                                        </StackPanel>
+                                    </Border>
+                                    <Border Grid.Column="2" Style="{StaticResource InnerMetricStyle}">
+                                        <StackPanel>
+                                            <TextBlock Text="TODAY" FontSize="9" Foreground="#9DBDCDDB" />
+                                            <TextBlock Margin="0,5,0,1" Text="{Binding TodayTotalDisplay}" FontSize="24" FontWeight="SemiBold" Foreground="White" />
+                                            <TextBlock Margin="0,7,0,0" Text="{Binding TodayChangeDisplay}" FontSize="10" FontWeight="SemiBold" Foreground="{StaticResource LimeBrush}" />
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <Grid Grid.Row="2" Margin="0,3,0,10">
+                                    <TextBlock Text="最近会话" FontSize="13.5" FontWeight="SemiBold" Foreground="White" />
+                                    <Button HorizontalAlignment="Right" Padding="10,4" Background="#14FFFFFF" BorderBrush="#36FFFFFF"
+                                            BorderThickness="1" Foreground="#BDD2DFEA" FontSize="10" Cursor="Hand" Click="ReservedButton_Click">
+                                        <Button.Template>
+                                            <ControlTemplate TargetType="Button">
+                                                <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="12" Padding="{TemplateBinding Padding}">
+                                                    <ContentPresenter />
+                                                </Border>
+                                            </ControlTemplate>
+                                        </Button.Template>
+                                        <TextBlock Text="查看全部  ›" />
+                                    </Button>
+                                </Grid>
+
+                                <ItemsControl Grid.Row="3" ItemsSource="{Binding RecentSessions}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Margin="0,0,0,8" Padding="11,9" Background="#14FFFFFF"
+                                                    BorderBrush="#32FFFFFF" BorderThickness="1" CornerRadius="15">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="32" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Border Width="27" Height="27" CornerRadius="10" Background="#2A70D7FF" BorderBrush="#5870D7FF" BorderThickness="1">
+                                                        <Ellipse Width="7" Height="7" Fill="#F4FFFFFF" />
+                                                    </Border>
+                                                    <StackPanel Grid.Column="1" Margin="8,0,8,0">
+                                                        <TextBlock Text="{Binding Title}" FontSize="11.5" FontWeight="SemiBold" Foreground="White" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Text="{Binding Model}" FontSize="9.5" Foreground="#9CB8CAD9" />
+                                                    </StackPanel>
+                                                    <StackPanel Grid.Column="2" HorizontalAlignment="Right">
+                                                        <TextBlock Text="{Binding TotalTokens, StringFormat={}{0:N0}}" FontSize="11" FontWeight="SemiBold" Foreground="White" HorizontalAlignment="Right" />
+                                                        <TextBlock Text="TOKENS" FontSize="8.5" Foreground="#86A9BECE" HorizontalAlignment="Right" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <Border Grid.Row="4" Style="{StaticResource InnerMetricStyle}" Padding="12,10">
+                                    <Grid>
+                                        <StackPanel>
+                                            <TextBlock Text="SOURCE" FontSize="9" Foreground="#8FADBFCE" />
+                                            <TextBlock Margin="0,2,0,0" Text="{Binding SourceLabel}" FontSize="11.5" FontWeight="SemiBold" Foreground="White" />
+                                        </StackPanel>
+                                        <Border HorizontalAlignment="Right" VerticalAlignment="Center" Padding="9,4" Background="#22C9F37A" CornerRadius="11">
+                                            <StackPanel Orientation="Horizontal">
+                                                <Ellipse Width="6" Height="6" Fill="{StaticResource LimeBrush}" Margin="0,0,6,0" />
+                                                <TextBlock Text="READY" FontSize="9" FontWeight="SemiBold" Foreground="{StaticResource LimeBrush}" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+                                </Border>
+                            </Grid>
+                        </controls:BackdropGlass>
+
+                        <!-- Short-window pulse -->
+                        <controls:BackdropGlass Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,16,0"
+                                                Style="{StaticResource LiquidContentSurfaceStyle}"
+                                                BackdropVisual="{Binding ElementName=BackdropScene}"
+                                                Padding="20,17">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="205" />
+                                    <ColumnDefinition Width="18" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Token pulse" FontSize="16" FontWeight="SemiBold" Foreground="White" />
+                                    <TextBlock Margin="0,3,0,0" Text="短时间窗口的增量采样" FontSize="10.5" Foreground="#A9C4D4E2" />
+                                    <StackPanel Margin="0,18,0,0" Orientation="Horizontal" VerticalAlignment="Bottom">
+                                        <TextBlock Text="{Binding TodayTotalDisplay}" FontSize="34" FontWeight="SemiBold" Foreground="White" />
+                                        <TextBlock Text=" today" Margin="5,0,0,7" FontSize="11" Foreground="#AFC8D7E4" />
+                                    </StackPanel>
+                                    <StackPanel Margin="0,17,0,0">
+                                        <StackPanel Orientation="Horizontal">
+                                            <Ellipse Width="7" Height="7" Fill="{StaticResource CyanBrush}" Margin="0,0,7,0" />
+                                            <TextBlock Text="输入 / 缓存" FontSize="10.5" Foreground="#C6D9E7F2" />
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                            <Ellipse Width="7" Height="7" Fill="{StaticResource VioletBrush}" Margin="0,0,7,0" />
+                                            <TextBlock Text="模型输出" FontSize="10.5" Foreground="#C6D9E7F2" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                    <Border Margin="0,18,0,0" Padding="10,7" Background="#12FFFFFF" BorderBrush="#32FFFFFF" BorderThickness="1" CornerRadius="13">
+                                        <TextBlock Text="悬停查看精确时间点" FontSize="9.5" Foreground="#A9C1D1DF" />
+                                    </Border>
+                                </StackPanel>
+                                <Border Grid.Column="1" Width="1" Background="#32FFFFFF" HorizontalAlignment="Center" Margin="0,8" />
+                                <Grid Grid.Column="2">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+                                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                        <Border Padding="9,4" Background="#20FFFFFF" BorderBrush="#3CFFFFFF" BorderThickness="1" CornerRadius="12">
+                                            <TextBlock Text="ROLLING · 60s" FontSize="9" FontWeight="SemiBold" Foreground="#D4E6F2FA" />
+                                        </Border>
+                                    </StackPanel>
+                                    <controls:TokenPulseChart Grid.Row="1" Values="{Binding Pulse}" Margin="2,10,0,0" />
+                                </Grid>
+                            </Grid>
+                        </controls:BackdropGlass>
+
+                        <!-- Compact breakdown strip -->
+                        <controls:BackdropGlass Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,0,16,0"
+                                                Style="{StaticResource LiquidContentSurfaceStyle}"
+                                                BackdropVisual="{Binding ElementName=BackdropScene}"
+                                                CornerRadius="22"
+                                                Padding="18,13">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1.1*" />
+                                    <ColumnDefinition Width="1" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="1" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="Token composition" FontSize="12.5" FontWeight="SemiBold" Foreground="White" />
+                                    <controls:TokenCompositionBar Margin="0,10,24,0" Height="7"
+                                                                  Input="{Binding CurrentInputTokens}"
+                                                                  Cached="{Binding CurrentCachedInputTokens}"
+                                                                  Output="{Binding CurrentOutputTokens}" />
+                                </StackPanel>
+                                <Border Grid.Column="1" Background="#32FFFFFF" />
+                                <Grid Grid.Column="2" Margin="18,0">
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="CONTEXT WINDOW" FontSize="9" Foreground="#92B1C4D3" />
+                                        <TextBlock Margin="0,4,0,0" Text="{Binding ContextDisplay}" FontSize="22" FontWeight="SemiBold" Foreground="White" />
+                                    </StackPanel>
+                                    <ProgressBar Width="84" HorizontalAlignment="Right" VerticalAlignment="Center"
+                                                 Style="{StaticResource SmallProgressStyle}" Maximum="1" Value="{Binding ContextRatio, Mode=OneWay}" />
+                                </Grid>
+                                <Border Grid.Column="3" Background="#32FFFFFF" />
+                                <Grid Grid.Column="4" Margin="18,0,0,0">
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="DESKTOP WIDGET" FontSize="9" Foreground="#92B1C4D3" />
+                                        <TextBlock Margin="0,4,0,0" Text="置顶组件已预留" FontSize="12" FontWeight="SemiBold" Foreground="White" />
+                                    </StackPanel>
+                                    <Button HorizontalAlignment="Right" VerticalAlignment="Center" Style="{StaticResource HeaderIconButtonStyle}"
+                                            ToolTip="打开桌面组件" Click="ReservedButton_Click" Content="&#xE7F4;" />
+                                </Grid>
+                            </Grid>
+                        </controls:BackdropGlass>
+                    </Grid>
+                </ScrollViewer>
             </Grid>
-        </Border>
-    </Grid>
+
+            <controls:BackdropGlass x:Name="FeatureToast"
+                                    Width="330" Height="48"
+                                    HorizontalAlignment="Center" VerticalAlignment="Bottom"
+                                    Margin="0,0,0,24" Opacity="0"
+                                    Style="{StaticResource LiquidCapsuleSurfaceStyle}"
+                                    BackdropVisual="{Binding ElementName=BackdropScene}"
+                                    Padding="16,0"
+                                    IsHitTestVisible="False">
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Ellipse Width="7" Height="7" Fill="{StaticResource CyanBrush}" Margin="0,0,9,0" />
+                    <TextBlock x:Name="FeatureToastText" Text="接口已保留" FontSize="11.5" FontWeight="SemiBold" Foreground="White" />
+                </StackPanel>
+            </controls:BackdropGlass>
+        </Grid>
+    </Border>
 </Window>
