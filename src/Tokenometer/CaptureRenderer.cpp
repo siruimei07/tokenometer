@@ -72,6 +72,7 @@ namespace
         }
         return bytecode;
     }
+
 }
 
 std::shared_ptr<CaptureRenderer> CaptureRenderer::Create(HWND window, SwapChainPanel const& panel)
@@ -237,8 +238,10 @@ void CaptureRenderer::CreateSizeResources(uint32_t width, uint32_t height)
 {
     m_width = std::max(width, 1u);
     m_height = std::max(height, 1u);
-    m_scratchA = CreateRenderTexture(m_width, m_height);
-    m_scratchB = CreateRenderTexture(m_width, m_height);
+    m_effectWidth = std::max((m_width + 1u) / 2u, 1u);
+    m_effectHeight = std::max((m_height + 1u) / 2u, 1u);
+    m_scratchA = CreateRenderTexture(m_effectWidth, m_effectHeight);
+    m_scratchB = CreateRenderTexture(m_effectWidth, m_effectHeight);
 }
 
 void CaptureRenderer::StartCapture()
@@ -336,12 +339,12 @@ CaptureRenderer::ShaderParams CaptureRenderer::CropParams() const
     params.sourceScale[1] = static_cast<float>(m_height) / captureHeight;
     params.sourceOffset[0] = static_cast<float>(clientOrigin.x - monitorInfo.rcMonitor.left) / captureWidth;
     params.sourceOffset[1] = static_cast<float>(clientOrigin.y - monitorInfo.rcMonitor.top) / captureHeight;
-    params.texelSize[0] = 1.0f / static_cast<float>(m_width);
-    params.texelSize[1] = 1.0f / static_cast<float>(m_height);
-    params.tint[0] = 0.82f;
-    params.tint[1] = 0.90f;
-    params.tint[2] = 1.00f;
-    params.tint[3] = 0.94f;
+    params.texelSize[0] = 1.0f / static_cast<float>(m_effectWidth);
+    params.texelSize[1] = 1.0f / static_cast<float>(m_effectHeight);
+    params.tint[0] = 0.008f;
+    params.tint[1] = 0.012f;
+    params.tint[2] = 0.035f;
+    params.tint[3] = 1.0f;
     params.outputSize[0] = static_cast<float>(m_width);
     params.outputSize[1] = static_cast<float>(m_height);
     params.cornerRadius = 18.0f * static_cast<float>(GetDpiForWindow(m_window)) / 96.0f;
@@ -358,8 +361,9 @@ void CaptureRenderer::Render(com_ptr<ID3D11Texture2D> const& capturedTexture)
     DrawPass(
         m_prefilterShader.get(),
         capturedView.get(),
-        nullptr,
         m_scratchA.target.get(),
+        m_effectWidth,
+        m_effectHeight,
         params);
 
     params.sourceScale[0] = 1.0f;
@@ -369,14 +373,16 @@ void CaptureRenderer::Render(com_ptr<ID3D11Texture2D> const& capturedTexture)
     DrawPass(
         m_blurHShader.get(),
         m_scratchA.view.get(),
-        nullptr,
         m_scratchB.target.get(),
+        m_effectWidth,
+        m_effectHeight,
         params);
     DrawPass(
         m_blurVShader.get(),
         m_scratchB.view.get(),
-        nullptr,
         m_scratchA.target.get(),
+        m_effectWidth,
+        m_effectHeight,
         params);
 
     params = CropParams();
@@ -387,8 +393,9 @@ void CaptureRenderer::Render(com_ptr<ID3D11Texture2D> const& capturedTexture)
     DrawPass(
         m_glassShader.get(),
         m_scratchA.view.get(),
-        capturedView.get(),
         backBufferTarget.get(),
+        m_width,
+        m_height,
         params);
 
     check_hresult(m_swapChain->Present(1, 0));
@@ -398,8 +405,9 @@ void CaptureRenderer::Render(com_ptr<ID3D11Texture2D> const& capturedTexture)
 void CaptureRenderer::DrawPass(
     ID3D11PixelShader* shader,
     ID3D11ShaderResourceView* source0,
-    ID3D11ShaderResourceView* source1,
     ID3D11RenderTargetView* target,
+    uint32_t viewportWidth,
+    uint32_t viewportHeight,
     ShaderParams const& params)
 {
     D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -408,11 +416,11 @@ void CaptureRenderer::DrawPass(
     m_context->Unmap(m_paramsBuffer.get(), 0);
 
     D3D11_VIEWPORT viewport{};
-    viewport.Width = static_cast<float>(m_width);
-    viewport.Height = static_cast<float>(m_height);
+    viewport.Width = static_cast<float>(viewportWidth);
+    viewport.Height = static_cast<float>(viewportHeight);
     viewport.MaxDepth = 1.0f;
 
-    ID3D11ShaderResourceView* sources[]{ source0, source1 };
+    ID3D11ShaderResourceView* sources[]{ source0 };
     ID3D11SamplerState* samplers[]{ m_sampler.get() };
     ID3D11Buffer* constants[]{ m_paramsBuffer.get() };
 
@@ -422,13 +430,13 @@ void CaptureRenderer::DrawPass(
     m_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_context->VSSetShader(m_vertexShader.get(), nullptr, 0);
     m_context->PSSetShader(shader, nullptr, 0);
-    m_context->PSSetShaderResources(0, 2, sources);
+    m_context->PSSetShaderResources(0, 1, sources);
     m_context->PSSetSamplers(0, 1, samplers);
     m_context->PSSetConstantBuffers(0, 1, constants);
     m_context->Draw(3, 0);
 
-    ID3D11ShaderResourceView* emptySources[]{ nullptr, nullptr };
-    m_context->PSSetShaderResources(0, 2, emptySources);
+    ID3D11ShaderResourceView* emptySources[]{ nullptr };
+    m_context->PSSetShaderResources(0, 1, emptySources);
     m_context->OMSetRenderTargets(0, nullptr, nullptr);
 }
 

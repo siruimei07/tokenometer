@@ -69,8 +69,9 @@ private:
     void DrawPass(
         ID3D11PixelShader* shader,
         ID3D11ShaderResourceView* source0,
-        ID3D11ShaderResourceView* source1,
         ID3D11RenderTargetView* target,
+        uint32_t viewportWidth,
+        uint32_t viewportHeight,
         ShaderParams const& params);
     ShaderParams CropParams() const;
 
@@ -94,6 +95,8 @@ private:
     RenderTexture m_scratchB;
     uint32_t m_width{};
     uint32_t m_height{};
+    uint32_t m_effectWidth{};
+    uint32_t m_effectHeight{};
 
     HMONITOR m_monitor{};
     winrt::Windows::Graphics::Capture::GraphicsCaptureItem m_captureItem{ nullptr };
