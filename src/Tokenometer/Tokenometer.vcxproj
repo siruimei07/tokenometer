@@ -58,17 +58,24 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <WarningLevel>Level4</WarningLevel>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalOptions>/utf-8 /bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;runtimeobject.lib;user32.lib;gdi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <PostBuildEvent>
+      <Command>copy /Y "$(ProjectDir)Glass.hlsl" "$(OutDir)Glass.hlsl"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
 
   <ItemGroup>
+    <ClCompile Include="CaptureRenderer.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClInclude Include="CaptureRenderer.h" />
     <Manifest Include="app.manifest" />
+    <None Include="Glass.hlsl" />
   </ItemGroup>
 
   <ItemGroup>

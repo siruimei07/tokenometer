@@ -1,7 +1,10 @@
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
 #include <windows.h>
 #undef GetCurrentTime
+
+#include "CaptureRenderer.h"
+
+#include <chrono>
+#include <memory>
 
 #include <microsoft.ui.xaml.window.h>
 #include <winrt/base.h>
@@ -88,7 +91,20 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
     void OnLaunched(mux::LaunchActivatedEventArgs const&)
     {
         m_root = controls::Canvas{};
-        m_root.Background(Brush(Color(16, 19, 43)));
+        m_root.Background(Brush(Color(0, 0, 0, 0)));
+
+        controls::Border fallback;
+        fallback.Width(widgetWidthDip);
+        fallback.Height(widgetHeightDip);
+        fallback.Background(Brush(Color(16, 19, 43)));
+        Place(fallback, 0, 0);
+        m_root.Children().Append(fallback);
+
+        m_swapChainPanel = controls::SwapChainPanel{};
+        m_swapChainPanel.Width(widgetWidthDip);
+        m_swapChainPanel.Height(widgetHeightDip);
+        Place(m_swapChainPanel, 0, 0);
+        m_root.Children().Append(m_swapChainPanel);
         BuildContent();
 
         m_window = mux::Window{};
@@ -99,6 +115,14 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
         winrt::check_hresult(nativeWindow->get_WindowHandle(&m_hwnd));
         m_window.Activate();
         ConfigureWindow();
+        if (m_swapChainPanel.IsLoaded())
+        {
+            StartBackdrop();
+        }
+        else
+        {
+            m_swapChainPanel.Loaded([this](auto const&, auto const&) { StartBackdrop(); });
+        }
         WireInteractions();
     }
 
@@ -254,11 +278,64 @@ private:
                 args.Handled(true);
             }
         });
+
+        m_window.Closed([this](auto const&, auto const&)
+        {
+            if (m_statusTimer)
+            {
+                m_statusTimer.Stop();
+            }
+            if (m_renderer)
+            {
+                m_renderer->Stop();
+                m_renderer.reset();
+            }
+        });
+    }
+
+    void StartBackdrop()
+    {
+        if (!SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE))
+        {
+            OutputDebugStringW(L"Tokenometer: capture exclusion unavailable; using static background.\n");
+            return;
+        }
+
+        try
+        {
+            m_renderer = CaptureRenderer::Create(m_hwnd, m_swapChainPanel);
+        }
+        catch (winrt::hresult_error const& error)
+        {
+            OutputDebugStringW(error.message().c_str());
+            OutputDebugStringW(L"\nTokenometer: capture renderer unavailable; using static background.\n");
+            return;
+        }
+        catch (...)
+        {
+            OutputDebugStringW(L"Tokenometer: capture renderer unavailable; using static background.\n");
+            return;
+        }
+
+        m_statusTimer = mux::DispatcherTimer{};
+        m_statusTimer.Interval(std::chrono::milliseconds(250));
+        m_statusTimer.Tick([this](auto const&, auto const&)
+        {
+            if (m_renderer && m_renderer->PresentedFrames() > 0)
+            {
+                m_window.Title(L"Tokenometer [presenting]");
+                m_statusTimer.Stop();
+            }
+        });
+        m_statusTimer.Start();
     }
 
     mux::Window m_window{ nullptr };
     controls::Canvas m_root{ nullptr };
+    controls::SwapChainPanel m_swapChainPanel{ nullptr };
     controls::Button m_closeButton{ nullptr };
+    mux::DispatcherTimer m_statusTimer{ nullptr };
+    std::shared_ptr<CaptureRenderer> m_renderer;
     HWND m_hwnd{};
 };
 
