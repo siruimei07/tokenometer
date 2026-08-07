@@ -37,11 +37,8 @@ public partial class MainWindow : Window
     public void CaptureSnapshot(string path)
     {
         var liveBackdrop = BackdropScene.Background;
-        BackdropScene.Background = new LinearGradientBrush(
-            Color.FromRgb(116, 101, 91),
-            Color.FromRgb(65, 86, 80),
-            new Point(0, 0),
-            new Point(1, 1));
+        BackdropScene.Background = SnapshotService.CreateProofBackdrop();
+        TrendGlass.SetInteractionPreview(new Point(.73, .12));
         try
         {
             SnapshotService.Capture(WindowShell, path);
@@ -49,6 +46,7 @@ public partial class MainWindow : Window
         finally
         {
             BackdropScene.Background = liveBackdrop;
+            TrendGlass.SetInteractionPreview(null);
         }
     }
 

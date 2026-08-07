@@ -202,6 +202,17 @@ public sealed class BackdropGlass : ContentControl
         set => SetValue(HoverScaleProperty, value);
     }
 
+    internal void SetInteractionPreview(Point? position)
+    {
+        _pointerEnergy = position.HasValue ? 1 : 0;
+        _pointerTarget = _pointerEnergy;
+        if (position is { } point)
+        {
+            _pointerPosition = new Point(Math.Clamp(point.X, 0, 1), Math.Clamp(point.Y, 0, 1));
+        }
+        _chromeLayer?.InvalidateVisual();
+    }
+
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
@@ -411,6 +422,38 @@ public sealed class BackdropGlass : ContentControl
             RoundedRect(innerBounds, innerRadius));
     }
 
+    private static Geometry RoundedBand(Rect bounds, CornerRadius radius, double outerInset, double innerInset)
+    {
+        var outerBounds = bounds;
+        outerBounds.Inflate(-outerInset, -outerInset);
+        var innerBounds = bounds;
+        innerBounds.Inflate(-innerInset, -innerInset);
+        if (outerBounds.Width <= 0 || outerBounds.Height <= 0)
+        {
+            return Geometry.Empty;
+        }
+
+        var outerRadius = new CornerRadius(
+            Math.Max(0, radius.TopLeft - outerInset),
+            Math.Max(0, radius.TopRight - outerInset),
+            Math.Max(0, radius.BottomRight - outerInset),
+            Math.Max(0, radius.BottomLeft - outerInset));
+        if (innerBounds.Width <= 0 || innerBounds.Height <= 0)
+        {
+            return RoundedRect(outerBounds, outerRadius);
+        }
+
+        var innerRadius = new CornerRadius(
+            Math.Max(0, radius.TopLeft - innerInset),
+            Math.Max(0, radius.TopRight - innerInset),
+            Math.Max(0, radius.BottomRight - innerInset),
+            Math.Max(0, radius.BottomLeft - innerInset));
+        return new CombinedGeometry(
+            GeometryCombineMode.Exclude,
+            RoundedRect(outerBounds, outerRadius),
+            RoundedRect(innerBounds, innerRadius));
+    }
+
     private static bool NearlyEquals(Rect left, Rect right) =>
         !left.IsEmpty && !right.IsEmpty &&
         Math.Abs(left.X - right.X) < .05 &&
@@ -567,26 +610,33 @@ public sealed class BackdropGlass : ContentControl
             }
 
             _lastViewbox = viewbox;
-            var refracted = viewbox;
             var depth = Math.Min(owner.RefractionDepth, Math.Min(viewbox.Width, viewbox.Height) * .16);
-            refracted.Inflate(-depth, -depth);
-            if (refracted.Width <= 1 || refracted.Height <= 1)
-            {
-                return;
-            }
-
             _brush.Visual = owner.BackdropVisual;
-            _brush.Viewbox = refracted;
 
             var bounds = new Rect(RenderSize);
             var inset = Math.Min(owner.LensWidth, Math.Min(bounds.Width, bounds.Height) * .45);
-            var ring = RoundedRing(bounds, owner.CornerRadius, inset);
+            const int bandCount = 4;
+            var bandWidth = inset / bandCount;
+            for (var band = 0; band < bandCount; band++)
+            {
+                var refracted = viewbox;
+                refracted.Inflate(-depth * (1 - band * .18), -depth * (1 - band * .18));
+                if (refracted.Width <= 1 || refracted.Height <= 1)
+                {
+                    continue;
+                }
 
-            drawingContext.PushClip(ring);
-            drawingContext.PushOpacity(owner.RefractionOpacity);
-            drawingContext.DrawRectangle(_brush, null, bounds);
-            drawingContext.Pop();
-            drawingContext.Pop();
+                _brush.Viewbox = refracted;
+                drawingContext.PushClip(RoundedBand(
+                    bounds,
+                    owner.CornerRadius,
+                    band * bandWidth,
+                    (band + 1) * bandWidth));
+                drawingContext.PushOpacity(owner.RefractionOpacity * (1 - band * .075));
+                drawingContext.DrawRectangle(_brush, null, bounds);
+                drawingContext.Pop();
+                drawingContext.Pop();
+            }
         }
 
         private void OnLayoutUpdated(object? sender, EventArgs e)
@@ -645,12 +695,25 @@ public sealed class BackdropGlass : ContentControl
                 StartPoint = new Point(0, 0),
                 EndPoint = new Point(1, 1)
             };
-            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(38, 255, 255, 255), 0));
-            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(14, 255, 255, 255), .26));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(28, 255, 255, 255), 0));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(9, 255, 255, 255), .26));
             opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(2, 255, 255, 255), .58));
-            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(8, 255, 255, 255), .84));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(5, 255, 255, 255), .84));
             opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(6, 0, 0, 0), 1));
             drawingContext.DrawGeometry(opticalEdge, null, RoundedRing(bounds, owner.CornerRadius, opticalThickness));
+
+            var cornerGlint = new RadialGradientBrush
+            {
+                MappingMode = BrushMappingMode.RelativeToBoundingBox,
+                Center = new Point(.08, .02),
+                GradientOrigin = new Point(.08, .02),
+                RadiusX = .32,
+                RadiusY = .22
+            };
+            cornerGlint.GradientStops.Add(new GradientStop(Color.FromArgb(86, 255, 255, 255), 0));
+            cornerGlint.GradientStops.Add(new GradientStop(Color.FromArgb(18, 255, 255, 255), .48));
+            cornerGlint.GradientStops.Add(new GradientStop(Colors.Transparent, 1));
+            drawingContext.DrawGeometry(cornerGlint, null, RoundedRing(bounds, owner.CornerRadius, Math.Max(2.8, opticalThickness * .58)));
 
             var surfaceSheen = new LinearGradientBrush
             {
@@ -697,7 +760,7 @@ public sealed class BackdropGlass : ContentControl
 
             drawingContext.DrawGeometry(
                 null,
-                new Pen(new SolidColorBrush(Color.FromArgb(38, 0, 0, 0)), .9)
+                new Pen(new SolidColorBrush(Color.FromArgb(56, 0, 0, 0)), .9)
                 {
                     StartLineCap = PenLineCap.Round,
                     EndLineCap = PenLineCap.Round

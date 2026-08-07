@@ -41,20 +41,20 @@
     </LinearGradientBrush>
 
     <!-- Neutral density only: the system backdrop supplies every visible hue. -->
-    <SolidColorBrush x:Key="LiquidRegularTintBrush" Color="#18FFFFFF" />
-    <SolidColorBrush x:Key="LiquidContentTintBrush" Color="#10FFFFFF" />
+    <SolidColorBrush x:Key="LiquidRegularTintBrush" Color="#0DFFFFFF" />
+    <SolidColorBrush x:Key="LiquidContentTintBrush" Color="#06FFFFFF" />
 
     <Style x:Key="LiquidGlassSurfaceStyle" TargetType="controls:BackdropGlass">
         <Setter Property="CornerRadius" Value="26" />
-        <Setter Property="BlurRadius" Value="32" />
-        <Setter Property="LensWidth" Value="10" />
-        <Setter Property="RefractionDepth" Value="3.8" />
-        <Setter Property="RefractionOpacity" Value="0.62" />
+        <Setter Property="BlurRadius" Value="20" />
+        <Setter Property="LensWidth" Value="12" />
+        <Setter Property="RefractionDepth" Value="8" />
+        <Setter Property="RefractionOpacity" Value="0.86" />
         <Setter Property="PointerGlowOpacity" Value="0.09" />
         <Setter Property="TintBrush" Value="{StaticResource LiquidRegularTintBrush}" />
         <Setter Property="SaturationTint" Value="Transparent" />
         <Setter Property="BorderBrush" Value="{StaticResource LiquidEdgeBrush}" />
-        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="BorderThickness" Value="0.42" />
         <Setter Property="HighlightBrush" Value="{StaticResource LiquidInnerHighlightBrush}" />
         <Setter Property="SnapsToDevicePixels" Value="True" />
         <Setter Property="Effect">
@@ -68,16 +68,17 @@
            TargetType="controls:BackdropGlass"
            BasedOn="{StaticResource LiquidGlassSurfaceStyle}">
         <Setter Property="CornerRadius" Value="24" />
-        <Setter Property="BlurRadius" Value="27" />
-        <Setter Property="LensWidth" Value="5" />
-        <Setter Property="RefractionDepth" Value="2.2" />
-        <Setter Property="RefractionOpacity" Value="0.42" />
+        <Setter Property="BlurRadius" Value="14" />
+        <Setter Property="LensWidth" Value="6" />
+        <Setter Property="RefractionDepth" Value="3.2" />
+        <Setter Property="RefractionOpacity" Value="0.52" />
         <Setter Property="PointerGlowOpacity" Value="0.06" />
         <Setter Property="TintBrush" Value="{StaticResource LiquidContentTintBrush}" />
         <Setter Property="SaturationTint" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0.3" />
         <Setter Property="Effect">
             <Setter.Value>
-                <DropShadowEffect Color="#020507" BlurRadius="28" ShadowDepth="9" Opacity="0.25" />
+                <DropShadowEffect Color="#020507" BlurRadius="24" ShadowDepth="8" Opacity="0.2" />
             </Setter.Value>
         </Setter>
     </Style>

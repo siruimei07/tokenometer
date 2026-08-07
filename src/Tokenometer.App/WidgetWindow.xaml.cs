@@ -43,11 +43,8 @@ public partial class WidgetWindow : Window
     public void CaptureSnapshot(string path)
     {
         var liveBackdrop = WidgetBackdropScene.Background;
-        WidgetBackdropScene.Background = new LinearGradientBrush(
-            Color.FromRgb(116, 101, 91),
-            Color.FromRgb(65, 86, 80),
-            new Point(0, 0),
-            new Point(1, 1));
+        WidgetBackdropScene.Background = SnapshotService.CreateProofBackdrop();
+        WidgetShell.SetInteractionPreview(new Point(.18, .08));
         try
         {
             SnapshotService.Capture(WidgetRoot, path);
@@ -55,6 +52,7 @@ public partial class WidgetWindow : Window
         finally
         {
             WidgetBackdropScene.Background = liveBackdrop;
+            WidgetShell.SetInteractionPreview(null);
         }
     }
 

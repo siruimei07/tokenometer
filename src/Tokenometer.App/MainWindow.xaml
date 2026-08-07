@@ -266,8 +266,8 @@
                         </controls:BackdropGlass>
 
                         <!-- Center / top: primary trend -->
-                        <controls:BackdropGlass Grid.Row="0" Grid.Column="1" Margin="16,0"
-                                                Style="{StaticResource LiquidContentSurfaceStyle}"
+                        <controls:BackdropGlass x:Name="TrendGlass" Grid.Row="0" Grid.Column="1" Margin="16,0"
+                                                Style="{StaticResource LiquidGlassSurfaceStyle}"
                                                 BackdropVisual="{Binding ElementName=BackdropScene}"
                                                 Padding="20,17">
                             <Grid>
