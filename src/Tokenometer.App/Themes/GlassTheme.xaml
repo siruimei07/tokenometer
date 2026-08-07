@@ -1,34 +1,121 @@
 <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:controls="clr-namespace:Tokenometer.Controls">
     <FontFamily x:Key="AppFont">Segoe UI Variable Text, Microsoft YaHei UI</FontFamily>
     <FontFamily x:Key="IconFont">Segoe Fluent Icons</FontFamily>
 
-    <Color x:Key="InkColor">#172033</Color>
-    <Color x:Key="SecondaryInkColor">#626C80</Color>
-    <Color x:Key="AccentColor">#6C75F6</Color>
+    <Color x:Key="InkColor">#F4F8FC</Color>
+    <Color x:Key="SecondaryInkColor">#C1CDDA</Color>
+    <Color x:Key="AccentColor">#70D7FF</Color>
     <SolidColorBrush x:Key="InkBrush" Color="{StaticResource InkColor}" />
     <SolidColorBrush x:Key="SecondaryInkBrush" Color="{StaticResource SecondaryInkColor}" />
-    <SolidColorBrush x:Key="TertiaryInkBrush" Color="#8A94A7" />
+    <SolidColorBrush x:Key="TertiaryInkBrush" Color="#8FA0B2" />
     <SolidColorBrush x:Key="AccentBrush" Color="{StaticResource AccentColor}" />
-    <SolidColorBrush x:Key="CyanBrush" Color="#39B8D8" />
-    <SolidColorBrush x:Key="MintBrush" Color="#58C7A1" />
-    <SolidColorBrush x:Key="VioletBrush" Color="#9A6AF2" />
-    <SolidColorBrush x:Key="GlassBrush" Color="#AFFFFFFF" />
-    <SolidColorBrush x:Key="GlassSoftBrush" Color="#78FFFFFF" />
-    <SolidColorBrush x:Key="GlassHoverBrush" Color="#D4FFFFFF" />
-    <SolidColorBrush x:Key="GlassStrokeBrush" Color="#CFFFFFFF" />
-    <SolidColorBrush x:Key="GlassCoolStrokeBrush" Color="#609AA7C1" />
+    <SolidColorBrush x:Key="CyanBrush" Color="#70D7FF" />
+    <SolidColorBrush x:Key="MintBrush" Color="#B9EE9B" />
+    <SolidColorBrush x:Key="VioletBrush" Color="#B5A2FF" />
+    <SolidColorBrush x:Key="CoralBrush" Color="#FF704F" />
+    <SolidColorBrush x:Key="LimeBrush" Color="#C9F37A" />
+    <SolidColorBrush x:Key="GlassBrush" Color="#36121D2C" />
+    <SolidColorBrush x:Key="GlassSoftBrush" Color="#24FFFFFF" />
+    <SolidColorBrush x:Key="GlassHoverBrush" Color="#6B1D2B3B" />
+    <SolidColorBrush x:Key="GlassStrokeBrush" Color="#70FFFFFF" />
+    <SolidColorBrush x:Key="GlassCoolStrokeBrush" Color="#647AD7FF" />
+    <SolidColorBrush x:Key="DeepGlassTintBrush" Color="#66101A29" />
+    <SolidColorBrush x:Key="MediumGlassTintBrush" Color="#48142031" />
+    <SolidColorBrush x:Key="LightGlassTintBrush" Color="#20FFFFFF" />
+
+    <LinearGradientBrush x:Key="LiquidEdgeBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#DCFFFFFF" Offset="0" />
+        <GradientStop Color="#8FFFFFFF" Offset="0.18" />
+        <GradientStop Color="#3D9DE5FF" Offset="0.55" />
+        <GradientStop Color="#25FFB38F" Offset="0.82" />
+        <GradientStop Color="#20FFFFFF" Offset="1" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="LiquidInnerHighlightBrush" StartPoint="0,0" EndPoint="0.88,1">
+        <GradientStop Color="#E6FFFFFF" Offset="0" />
+        <GradientStop Color="#68FFFFFF" Offset="0.27" />
+        <GradientStop Color="#1870D7FF" Offset="0.72" />
+        <GradientStop Color="#09FFFFFF" Offset="1" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="LiquidRegularTintBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#2EFFFFFF" Offset="0" />
+        <GradientStop Color="#2C172A3B" Offset="0.38" />
+        <GradientStop Color="#3B0C1725" Offset="1" />
+    </LinearGradientBrush>
+
+    <LinearGradientBrush x:Key="LiquidContentTintBrush" StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="#1EFFFFFF" Offset="0" />
+        <GradientStop Color="#26111E2D" Offset="0.5" />
+        <GradientStop Color="#30101A27" Offset="1" />
+    </LinearGradientBrush>
+
+    <Style x:Key="LiquidGlassSurfaceStyle" TargetType="controls:BackdropGlass">
+        <Setter Property="CornerRadius" Value="26" />
+        <Setter Property="BlurRadius" Value="32" />
+        <Setter Property="LensWidth" Value="10" />
+        <Setter Property="RefractionDepth" Value="3.8" />
+        <Setter Property="RefractionOpacity" Value="0.76" />
+        <Setter Property="PointerGlowOpacity" Value="0.09" />
+        <Setter Property="TintBrush" Value="{StaticResource LiquidRegularTintBrush}" />
+        <Setter Property="SaturationTint" Value="#0E71D7FF" />
+        <Setter Property="BorderBrush" Value="{StaticResource LiquidEdgeBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="HighlightBrush" Value="{StaticResource LiquidInnerHighlightBrush}" />
+        <Setter Property="SnapsToDevicePixels" Value="True" />
+        <Setter Property="Effect">
+            <Setter.Value>
+                <DropShadowEffect Color="#020711" BlurRadius="38" ShadowDepth="14" Opacity="0.34" />
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="LiquidContentSurfaceStyle"
+           TargetType="controls:BackdropGlass"
+           BasedOn="{StaticResource LiquidGlassSurfaceStyle}">
+        <Setter Property="CornerRadius" Value="24" />
+        <Setter Property="BlurRadius" Value="27" />
+        <Setter Property="LensWidth" Value="6" />
+        <Setter Property="RefractionDepth" Value="2.2" />
+        <Setter Property="RefractionOpacity" Value="0.58" />
+        <Setter Property="PointerGlowOpacity" Value="0.06" />
+        <Setter Property="TintBrush" Value="{StaticResource LiquidContentTintBrush}" />
+        <Setter Property="SaturationTint" Value="#0A6ED6FF" />
+        <Setter Property="Effect">
+            <Setter.Value>
+                <DropShadowEffect Color="#020711" BlurRadius="30" ShadowDepth="10" Opacity="0.26" />
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="LiquidCapsuleSurfaceStyle"
+           TargetType="controls:BackdropGlass"
+           BasedOn="{StaticResource LiquidGlassSurfaceStyle}">
+        <Setter Property="CornerRadius" Value="999" />
+        <Setter Property="BlurRadius" Value="20" />
+        <Setter Property="LensWidth" Value="7" />
+        <Setter Property="RefractionDepth" Value="2.8" />
+        <Setter Property="RefractionOpacity" Value="0.7" />
+        <Setter Property="TintBrush" Value="#2417293A" />
+        <Setter Property="Effect">
+            <Setter.Value>
+                <DropShadowEffect Color="#020711" BlurRadius="22" ShadowDepth="7" Opacity="0.28" />
+            </Setter.Value>
+        </Setter>
+    </Style>
 
     <LinearGradientBrush x:Key="CanvasBrush" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="#EEF0FF" Offset="0" />
-        <GradientStop Color="#F8EBF4" Offset="0.56" />
-        <GradientStop Color="#E6F6F2" Offset="1" />
+        <GradientStop Color="#101B2C" Offset="0" />
+        <GradientStop Color="#13283A" Offset="0.56" />
+        <GradientStop Color="#0B1625" Offset="1" />
     </LinearGradientBrush>
 
     <LinearGradientBrush x:Key="ShellBrush" StartPoint="0,0" EndPoint="1,1">
-        <GradientStop Color="#D9FFFFFF" Offset="0" />
-        <GradientStop Color="#A8F7F9FF" Offset="0.45" />
-        <GradientStop Color="#B5FFFFFF" Offset="1" />
+        <GradientStop Color="#35182635" Offset="0" />
+        <GradientStop Color="#24151F2D" Offset="0.45" />
+        <GradientStop Color="#40111B2A" Offset="1" />
     </LinearGradientBrush>
 
     <Style x:Key="GlassCardStyle" TargetType="Border">
@@ -40,16 +127,16 @@
         <Setter Property="SnapsToDevicePixels" Value="True" />
         <Setter Property="Effect">
             <Setter.Value>
-                <DropShadowEffect Color="#52617B" BlurRadius="18" ShadowDepth="4" Opacity="0.10" />
+                <DropShadowEffect Color="#030811" BlurRadius="22" ShadowDepth="6" Opacity="0.24" />
             </Setter.Value>
         </Setter>
         <Style.Triggers>
             <Trigger Property="IsMouseOver" Value="True">
                 <Setter Property="Background" Value="{StaticResource GlassHoverBrush}" />
-                <Setter Property="BorderBrush" Value="#F5FFFFFF" />
+                <Setter Property="BorderBrush" Value="#A8FFFFFF" />
                 <Setter Property="Effect">
                     <Setter.Value>
-                        <DropShadowEffect Color="#5969A0" BlurRadius="23" ShadowDepth="6" Opacity="0.16" />
+                        <DropShadowEffect Color="#030811" BlurRadius="28" ShadowDepth="8" Opacity="0.32" />
                     </Setter.Value>
                 </Setter>
             </Trigger>
@@ -57,8 +144,8 @@
     </Style>
 
     <Style x:Key="GlassInnerStyle" TargetType="Border">
-        <Setter Property="Background" Value="#5EFFFFFF" />
-        <Setter Property="BorderBrush" Value="#8AFFFFFF" />
+        <Setter Property="Background" Value="#18FFFFFF" />
+        <Setter Property="BorderBrush" Value="#42FFFFFF" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="15" />
     </Style>
@@ -68,8 +155,8 @@
         <Setter Property="FontSize" Value="13" />
         <Setter Property="FontWeight" Value="SemiBold" />
         <Setter Property="Foreground" Value="{StaticResource SecondaryInkBrush}" />
-        <Setter Property="Background" Value="#4CFFFFFF" />
-        <Setter Property="BorderBrush" Value="#80FFFFFF" />
+        <Setter Property="Background" Value="#18FFFFFF" />
+        <Setter Property="BorderBrush" Value="#46FFFFFF" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Cursor" Value="Hand" />
         <Setter Property="FocusVisualStyle" Value="{x:Null}" />
@@ -87,8 +174,8 @@
                     </Border>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Surface" Property="Background" Value="#D8FFFFFF" />
-                            <Setter TargetName="Surface" Property="BorderBrush" Value="#F8FFFFFF" />
+                            <Setter TargetName="Surface" Property="Background" Value="#38FFFFFF" />
+                            <Setter TargetName="Surface" Property="BorderBrush" Value="#9AFFFFFF" />
                         </Trigger>
                         <Trigger Property="IsPressed" Value="True">
                             <Setter TargetName="Surface" Property="Opacity" Value="0.72" />
@@ -127,8 +214,8 @@
 
     <Style x:Key="AccentPillButtonStyle" TargetType="Button" BasedOn="{StaticResource PillButtonStyle}">
         <Setter Property="Foreground" Value="White" />
-        <Setter Property="Background" Value="{StaticResource AccentBrush}" />
-        <Setter Property="BorderBrush" Value="#806C75F6" />
+        <Setter Property="Background" Value="{StaticResource CoralBrush}" />
+        <Setter Property="BorderBrush" Value="#B8FFD6CB" />
     </Style>
 
     <Style x:Key="SidebarRadioStyle" TargetType="RadioButton">
@@ -150,11 +237,11 @@
                     </Grid>
                     <ControlTemplate.Triggers>
                         <Trigger Property="IsMouseOver" Value="True">
-                            <Setter TargetName="Lens" Property="Background" Value="#86FFFFFF" />
+                            <Setter TargetName="Lens" Property="Background" Value="#24FFFFFF" />
                         </Trigger>
                         <Trigger Property="IsChecked" Value="True">
-                            <Setter TargetName="Lens" Property="Background" Value="#E6FFFFFF" />
-                            <Setter TargetName="Lens" Property="BorderBrush" Value="#F8FFFFFF" />
+                            <Setter TargetName="Lens" Property="Background" Value="#3AFFFFFF" />
+                            <Setter TargetName="Lens" Property="BorderBrush" Value="#86FFFFFF" />
                             <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
                             <Setter TargetName="Dot" Property="Opacity" Value="1" />
                         </Trigger>
@@ -207,4 +294,3 @@
         </Setter>
     </Style>
 </ResourceDictionary>
-
