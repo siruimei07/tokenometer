@@ -347,7 +347,7 @@ CaptureRenderer::ShaderParams CaptureRenderer::CropParams() const
     params.tint[3] = 1.0f;
     params.outputSize[0] = static_cast<float>(m_width);
     params.outputSize[1] = static_cast<float>(m_height);
-    params.cornerRadius = 18.0f * static_cast<float>(GetDpiForWindow(m_window)) / 96.0f;
+    params.cornerRadius = 26.0f * static_cast<float>(GetDpiForWindow(m_window)) / 96.0f;
     params.borderWidth = 1.5f;
     return params;
 }

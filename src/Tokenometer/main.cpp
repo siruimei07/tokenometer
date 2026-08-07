@@ -30,9 +30,9 @@ namespace windowing = winrt::Microsoft::UI::Windowing;
 
 namespace
 {
-    constexpr int widgetWidthDip = 300;
-    constexpr int widgetHeightDip = 150;
-    constexpr int cornerRadiusDip = 18;
+    constexpr int widgetWidthDip = 420;
+    constexpr int widgetHeightDip = 240;
+    constexpr int cornerRadiusDip = 26;
 
     winrt::Windows::UI::Color Color(uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha = 255)
     {
@@ -42,6 +42,11 @@ namespace
     media::SolidColorBrush Brush(winrt::Windows::UI::Color color)
     {
         return media::SolidColorBrush{ color };
+    }
+
+    mux::CornerRadius Radius(double value)
+    {
+        return { value, value, value, value };
     }
 
     controls::TextBlock Text(
@@ -55,6 +60,7 @@ namespace
         text.FontFamily(media::FontFamily{ L"Segoe UI Variable Display" });
         text.FontSize(size);
         text.FontWeight({ weight });
+        text.CharacterSpacing(-10);
         text.Foreground(Brush(color));
         return text;
     }
@@ -73,9 +79,9 @@ namespace
         winrt::Windows::UI::Color foreground = Color(247, 247, 242))
     {
         controls::Border icon;
-        icon.Width(18);
-        icon.Height(18);
-        icon.CornerRadius({ 5 });
+        icon.Width(26);
+        icon.Height(26);
+        icon.CornerRadius(Radius(13));
         icon.Background(Brush(background));
 
         auto label = Text(glyph, glyphSize, foreground, 600);
@@ -97,15 +103,38 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
         controls::Border fallback;
         fallback.Width(widgetWidthDip);
         fallback.Height(widgetHeightDip);
-        fallback.Background(Brush(Color(52, 54, 51)));
+        fallback.Background(Brush(Color(18, 16, 17)));
         Place(fallback, 0, 0);
         m_root.Children().Append(fallback);
 
         m_swapChainPanel = controls::SwapChainPanel{};
         m_swapChainPanel.Width(widgetWidthDip);
         m_swapChainPanel.Height(widgetHeightDip);
+        m_swapChainPanel.Opacity(0.28);
         Place(m_swapChainPanel, 0, 0);
         m_root.Children().Append(m_swapChainPanel);
+
+        controls::Border usageCard;
+        usageCard.Width(400);
+        usageCard.Height(124);
+        usageCard.CornerRadius(Radius(18));
+        usageCard.Background(Brush(Color(38, 36, 37, 240)));
+        usageCard.BorderBrush(Brush(Color(255, 255, 255, 18)));
+        usageCard.BorderThickness({ 0.5 });
+        usageCard.IsHitTestVisible(false);
+        Place(usageCard, 10, 10);
+        m_root.Children().Append(usageCard);
+
+        controls::Border resetCard;
+        resetCard.Width(400);
+        resetCard.Height(58);
+        resetCard.CornerRadius(Radius(16));
+        resetCard.Background(Brush(Color(38, 36, 37, 240)));
+        resetCard.BorderBrush(Brush(Color(255, 255, 255, 18)));
+        resetCard.BorderThickness({ 0.5 });
+        resetCard.IsHitTestVisible(false);
+        Place(resetCard, 10, 144);
+        m_root.Children().Append(resetCard);
         BuildContent();
 
         m_window = mux::Window{};
@@ -130,97 +159,99 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
 private:
     void BuildContent()
     {
-        auto usageIcon = Icon(L"✳", Color(211, 235, 0), 12, Color(26, 27, 23));
-        Place(usageIcon, 13, 15);
+        auto usageIcon = Icon(L"✳", Color(240, 63, 22), 13);
+        Place(usageIcon, 28, 27);
         m_root.Children().Append(usageIcon);
 
-        auto title = Text(L"Token Usage", 11.5, Color(247, 247, 242), 600);
-        Place(title, 38, 15);
+        auto title = Text(L"Token Usage", 15, Color(247, 247, 245), 600);
+        Place(title, 64, 25);
         m_root.Children().Append(title);
 
-        auto percent = Text(L"53,8%", 13, Color(247, 247, 242), 500);
-        percent.Width(78);
+        auto percent = Text(L"53,8%", 32, Color(247, 247, 245), 650);
+        percent.Width(104);
         percent.TextAlignment(mux::TextAlignment::Right);
-        Place(percent, 209, 12);
+        Place(percent, 288, 14);
         m_root.Children().Append(percent);
 
         controls::Border track;
-        track.Width(274);
-        track.Height(6);
-        track.CornerRadius({ 3 });
-        track.Background(Brush(Color(235, 238, 230, 46)));
-        track.BorderBrush(Brush(Color(244, 246, 240, 90)));
+        track.Width(364);
+        track.Height(10);
+        track.CornerRadius(Radius(5));
+        track.Background(Brush(Color(52, 49, 50)));
+        track.BorderBrush(Brush(Color(255, 255, 255, 20)));
         track.BorderThickness({ 0.5 });
-        Place(track, 13, 44);
+        Place(track, 28, 70);
         m_root.Children().Append(track);
 
         controls::Border fill;
-        fill.Width(146);
-        fill.Height(4);
-        fill.CornerRadius({ 2 });
-        fill.Background(Brush(Color(211, 235, 0)));
-        Place(fill, 14, 45);
+        fill.Width(195);
+        fill.Height(8);
+        fill.CornerRadius(Radius(4));
+        fill.Background(Brush(Color(98, 223, 125)));
+        Place(fill, 29, 71);
         m_root.Children().Append(fill);
 
-        auto used = Text(L"18,838", 9.5, Color(247, 247, 242), 600);
-        Place(used, 13, 54);
+        shapes::Ellipse marker;
+        marker.Width(12);
+        marker.Height(12);
+        marker.Fill(Brush(Color(38, 36, 37)));
+        marker.Stroke(Brush(Color(98, 223, 125)));
+        marker.StrokeThickness(3);
+        Place(marker, 218, 69);
+        m_root.Children().Append(marker);
+
+        auto used = Text(L"18,838", 11.5, Color(247, 247, 245), 600);
+        Place(used, 28, 91);
         m_root.Children().Append(used);
 
-        auto total = Text(L"/ 35,000", 9.5, Color(224, 225, 220));
-        Place(total, 50, 54);
+        auto total = Text(L"/ 35,000", 11.5, Color(167, 163, 164));
+        Place(total, 76, 91);
         m_root.Children().Append(total);
 
-        auto left = Text(L"16,162 left", 9.5, Color(224, 225, 220));
-        left.Width(78);
+        auto left = Text(L"16,162 left", 11.5, Color(167, 163, 164));
+        left.Width(100);
         left.TextAlignment(mux::TextAlignment::Right);
-        Place(left, 209, 54);
+        Place(left, 292, 91);
         m_root.Children().Append(left);
 
-        shapes::Rectangle divider;
-        divider.Width(274);
-        divider.Height(0.5);
-        divider.Fill(Brush(Color(232, 235, 228, 74)));
-        Place(divider, 13, 80);
-        m_root.Children().Append(divider);
-
-        auto resetIcon = Icon(L"⌛", Color(84, 87, 81, 210), 11);
-        Place(resetIcon, 13, 92);
+        auto resetIcon = Icon(L"⌛", Color(255, 253, 142), 12, Color(38, 36, 37));
+        Place(resetIcon, 28, 160);
         m_root.Children().Append(resetIcon);
 
-        auto reset = Text(L"Reset Time", 11.5, Color(247, 247, 242), 600);
-        Place(reset, 38, 92);
+        auto reset = Text(L"Reset Time", 15, Color(247, 247, 245), 600);
+        Place(reset, 64, 158);
         m_root.Children().Append(reset);
 
-        auto remaining = Text(L"2h 58m", 13, Color(247, 247, 242), 500);
-        remaining.Width(78);
+        auto remaining = Text(L"2h 58m", 24, Color(255, 253, 142), 600);
+        remaining.Width(110);
         remaining.TextAlignment(mux::TextAlignment::Right);
-        Place(remaining, 209, 89);
+        Place(remaining, 282, 150);
         m_root.Children().Append(remaining);
 
-        auto refresh = Text(L"↻", 8.5, Color(224, 225, 220), 600);
-        Place(refresh, 13, 130);
+        auto refresh = Text(L"↻", 10, Color(133, 129, 130), 600);
+        Place(refresh, 28, 215);
         m_root.Children().Append(refresh);
 
-        auto updated = Text(L"Updated: Just Now", 8, Color(224, 225, 220));
-        Place(updated, 24, 131);
+        auto updated = Text(L"Updated: Just Now", 9.5, Color(133, 129, 130));
+        Place(updated, 43, 215);
         m_root.Children().Append(updated);
 
         m_closeButton = controls::Button{};
-        m_closeButton.Width(18);
-        m_closeButton.Height(18);
-        m_closeButton.Padding({ 5.5 });
+        m_closeButton.Width(22);
+        m_closeButton.Height(22);
+        m_closeButton.Padding({ 7 });
         m_closeButton.Background(Brush(Color(0, 0, 0, 0)));
         m_closeButton.BorderThickness({ 0 });
         m_closeButton.Opacity(0);
 
         shapes::Ellipse dot;
-        dot.Width(7);
-        dot.Height(7);
-        dot.Fill(Brush(Color(216, 112, 121)));
+        dot.Width(8);
+        dot.Height(8);
+        dot.Fill(Brush(Color(240, 63, 22)));
         m_closeButton.Content(dot);
         controls::ToolTipService::SetToolTip(m_closeButton, winrt::box_value(L"Close"));
         automation::AutomationProperties::SetName(m_closeButton, L"Close Tokenometer");
-        Place(m_closeButton, 3, 3);
+        Place(m_closeButton, 2, 2);
         m_root.Children().Append(m_closeButton);
     }
 
