@@ -4,7 +4,7 @@
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
-    <ImplicitUsings>enable</ImplicitUsings>
+    <ImplicitUsings>disable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>Tokenometer</RootNamespace>
     <AssemblyName>Tokenometer</AssemblyName>
@@ -12,4 +12,3 @@
     <Deterministic>true</Deterministic>
   </PropertyGroup>
 </Project>
-
