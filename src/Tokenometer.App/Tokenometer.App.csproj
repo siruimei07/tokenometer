@@ -11,7 +11,4 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <Deterministic>true</Deterministic>
   </PropertyGroup>
-  <ItemGroup>
-    <Resource Include="Assets\liquid-flow-bg.png" />
-  </ItemGroup>
 </Project>

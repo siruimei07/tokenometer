@@ -9,6 +9,7 @@ internal static class DwmBackdrop
 {
     private const int WindowCornerPreference = 33;
     private const int SystemBackdropType = 38;
+    private const int UseImmersiveDarkMode = 20;
 
     public static void Apply(Window window, bool transient = false)
     {
@@ -35,6 +36,9 @@ internal static class DwmBackdrop
 
             var corner = 2; // DWMWCP_ROUND
             _ = DwmSetWindowAttribute(handle, WindowCornerPreference, ref corner, sizeof(int));
+
+            var darkMode = 1;
+            _ = DwmSetWindowAttribute(handle, UseImmersiveDarkMode, ref darkMode, sizeof(int));
 
             if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621))
             {
@@ -73,4 +77,3 @@ internal static class DwmBackdrop
         public int Bottom { get; }
     }
 }
-

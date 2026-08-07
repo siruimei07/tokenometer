@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Media.Animation;
 using Tokenometer.Interop;
 using Tokenometer.Services;
@@ -9,26 +10,67 @@ namespace Tokenometer;
 
 public partial class MainWindow : Window
 {
-    private readonly DashboardViewModel _viewModel = new(new DemoUsageSource());
+    private readonly DashboardViewModel _viewModel;
     private CancellationTokenSource? _toastLifetime;
+    private bool _allowClose;
 
-    public MainWindow()
+    public MainWindow(DashboardViewModel viewModel)
     {
         InitializeComponent();
-        DataContext = _viewModel;
-        SourceInitialized += (_, _) => DwmBackdrop.Apply(this);
-        Loaded += async (_, _) => await _viewModel.StartAsync();
+        _viewModel = viewModel;
+        DataContext = viewModel;
+        SourceInitialized += (_, _) => DwmBackdrop.Apply(this, transient: true);
+        StateChanged += (_, _) =>
+        {
+            if (WindowState == WindowState.Minimized)
+            {
+                WindowState = WindowState.Normal;
+                HideRequested?.Invoke(this, EventArgs.Empty);
+            }
+        };
     }
 
-    public void CaptureSnapshot(string path) => SnapshotService.Capture(WindowShell, path);
+    public event EventHandler? HideRequested;
+
+    public event EventHandler? WidgetRequested;
+
+    public void CaptureSnapshot(string path)
+    {
+        var liveBackdrop = BackdropScene.Background;
+        BackdropScene.Background = new SolidColorBrush(Color.FromRgb(78, 88, 82));
+        try
+        {
+            SnapshotService.Capture(WindowShell, path);
+        }
+        finally
+        {
+            BackdropScene.Background = liveBackdrop;
+        }
+    }
+
+    public void CloseForExit()
+    {
+        _allowClose = true;
+        Close();
+    }
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        if (!_allowClose)
+        {
+            e.Cancel = true;
+            HideRequested?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        base.OnClosing(e);
+    }
 
     protected override void OnClosed(EventArgs e)
     {
         _toastLifetime?.Cancel();
         _toastLifetime?.Dispose();
-        _viewModel.Dispose();
         base.OnClosed(e);
-        System.Windows.Application.Current.Shutdown();
     }
 
     private void DragRegion_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -52,21 +94,19 @@ public partial class MainWindow : Window
 
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await _viewModel.RefreshAsync();
 
-    private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
+    private void Minimize_Click(object sender, RoutedEventArgs e) => HideRequested?.Invoke(this, EventArgs.Empty);
 
     private void Maximize_Click(object sender, RoutedEventArgs e) => ToggleMaximize();
 
-    private void Close_Click(object sender, RoutedEventArgs e) => Close();
+    private void Close_Click(object sender, RoutedEventArgs e) => HideRequested?.Invoke(this, EventArgs.Empty);
 
-    private void ReservedNavigation_Checked(object sender, RoutedEventArgs e)
-    {
+    private void Widget_Click(object sender, RoutedEventArgs e) => WidgetRequested?.Invoke(this, EventArgs.Empty);
+
+    private void ReservedNavigation_Checked(object sender, RoutedEventArgs e) =>
         ShowToast("数据接入后启用该页面");
-    }
 
-    private void ReservedButton_Click(object sender, RoutedEventArgs e)
-    {
+    private void ReservedButton_Click(object sender, RoutedEventArgs e) =>
         ShowToast("接口已保留，将随真实数据源启用");
-    }
 
     private void ToggleMaximize()
     {

@@ -9,7 +9,7 @@
         WindowStyle="None"
         ResizeMode="NoResize"
         AllowsTransparency="False"
-        Background="#0107121E"
+        Background="#01000000"
         ShowInTaskbar="False"
         ShowActivated="False"
         Topmost="True"
@@ -63,32 +63,8 @@
 
     <Border x:Name="WidgetRoot" CornerRadius="28" ClipToBounds="True" Background="#01000000">
         <Grid x:Name="DragSurface" Background="Transparent" MouseLeftButtonDown="DragSurface_MouseLeftButtonDown">
-            <!-- Local caustics retain lensing cues while DWM Acrylic keeps the desktop visible. -->
-            <Grid x:Name="WidgetBackdropScene" IsHitTestVisible="False">
-                <Image Source="/Tokenometer;component/Assets/liquid-flow-bg.png"
-                       Stretch="UniformToFill" Opacity="0.32">
-                    <Image.RenderTransform>
-                        <ScaleTransform ScaleX="1.12" ScaleY="1.12" CenterX="183" CenterY="118" />
-                    </Image.RenderTransform>
-                </Image>
-                <Rectangle Fill="#32101C2B" />
-                <Ellipse Width="240" Height="190" Margin="-95,-90,0,0" HorizontalAlignment="Left" VerticalAlignment="Top">
-                    <Ellipse.Fill>
-                        <RadialGradientBrush>
-                            <GradientStop Color="#3470D7FF" Offset="0" />
-                            <GradientStop Color="#0070D7FF" Offset="1" />
-                        </RadialGradientBrush>
-                    </Ellipse.Fill>
-                </Ellipse>
-                <Ellipse Width="190" Height="160" Margin="0,0,-70,-74" HorizontalAlignment="Right" VerticalAlignment="Bottom">
-                    <Ellipse.Fill>
-                        <RadialGradientBrush>
-                            <GradientStop Color="#24FF8C72" Offset="0" />
-                            <GradientStop Color="#00FF8C72" Offset="1" />
-                        </RadialGradientBrush>
-                    </Ellipse.Fill>
-                </Ellipse>
-            </Grid>
+            <!-- Hue comes from the live desktop; this layer adds no color or pattern. -->
+            <Grid x:Name="WidgetBackdropScene" Background="#02000000" IsHitTestVisible="False" />
 
             <controls:BackdropGlass x:Name="WidgetShell"
                                     Style="{StaticResource LiquidGlassSurfaceStyle}"

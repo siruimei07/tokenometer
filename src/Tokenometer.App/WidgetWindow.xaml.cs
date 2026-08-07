@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Media.Animation;
 using Tokenometer.Interop;
 using Tokenometer.Services;
@@ -39,7 +40,19 @@ public partial class WidgetWindow : Window
         Show();
     }
 
-    public void CaptureSnapshot(string path) => SnapshotService.Capture(WidgetRoot, path);
+    public void CaptureSnapshot(string path)
+    {
+        var liveBackdrop = WidgetBackdropScene.Background;
+        WidgetBackdropScene.Background = new SolidColorBrush(Color.FromRgb(78, 88, 82));
+        try
+        {
+            SnapshotService.Capture(WidgetRoot, path);
+        }
+        finally
+        {
+            WidgetBackdropScene.Background = liveBackdrop;
+        }
+    }
 
     public void CloseForExit()
     {

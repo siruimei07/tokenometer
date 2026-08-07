@@ -588,18 +588,18 @@ public sealed class BackdropGlass : ContentControl
             drawingContext.DrawRectangle(owner.SaturationTint, null, bounds);
             drawingContext.DrawRectangle(owner.TintBrush, null, bounds);
 
-            var opticalThickness = Math.Min(Math.Max(5, owner.LensWidth * .82), Math.Min(bounds.Width, bounds.Height) * .28);
+            var opticalThickness = Math.Min(Math.Max(3.5, owner.LensWidth * .64), Math.Min(bounds.Width, bounds.Height) * .22);
             var opticalEdge = new LinearGradientBrush
             {
                 MappingMode = BrushMappingMode.RelativeToBoundingBox,
                 StartPoint = new Point(0, 0),
                 EndPoint = new Point(1, 1)
             };
-            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(72, 255, 255, 255), 0));
-            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(24, 205, 236, 255), .26));
-            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(4, 255, 255, 255), .58));
-            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(22, 255, 146, 116), .84));
-            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(10, 9, 19, 31), 1));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(38, 255, 255, 255), 0));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(14, 255, 255, 255), .26));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(2, 255, 255, 255), .58));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(8, 255, 255, 255), .84));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(6, 0, 0, 0), 1));
             drawingContext.DrawGeometry(opticalEdge, null, RoundedRing(bounds, owner.CornerRadius, opticalThickness));
 
             var surfaceSheen = new LinearGradientBrush
@@ -608,8 +608,8 @@ public sealed class BackdropGlass : ContentControl
                 StartPoint = new Point(.15, 0),
                 EndPoint = new Point(.68, .72)
             };
-            surfaceSheen.GradientStops.Add(new GradientStop(Color.FromArgb(30, 255, 255, 255), 0));
-            surfaceSheen.GradientStops.Add(new GradientStop(Color.FromArgb(8, 205, 234, 255), .34));
+            surfaceSheen.GradientStops.Add(new GradientStop(Color.FromArgb(18, 255, 255, 255), 0));
+            surfaceSheen.GradientStops.Add(new GradientStop(Color.FromArgb(4, 255, 255, 255), .34));
             surfaceSheen.GradientStops.Add(new GradientStop(Colors.Transparent, .7));
             drawingContext.DrawGeometry(surfaceSheen, null, RoundedRect(bounds, owner.CornerRadius));
 
@@ -625,7 +625,7 @@ public sealed class BackdropGlass : ContentControl
                     RadiusY = .58
                 };
                 glow.GradientStops.Add(new GradientStop(Color.FromArgb(alpha, 255, 255, 255), 0));
-                glow.GradientStops.Add(new GradientStop(Color.FromArgb((byte)(alpha * .42), 195, 228, 255), .38));
+                glow.GradientStops.Add(new GradientStop(Color.FromArgb((byte)(alpha * .42), 255, 255, 255), .38));
                 glow.GradientStops.Add(new GradientStop(Colors.Transparent, 1));
                 drawingContext.DrawRectangle(glow, null, bounds);
             }
@@ -653,7 +653,7 @@ public sealed class BackdropGlass : ContentControl
                     RadiusY = .7
                 };
                 edge.GradientStops.Add(new GradientStop(Color.FromArgb(edgeAlpha, 255, 255, 255), 0));
-                edge.GradientStops.Add(new GradientStop(Color.FromArgb((byte)(edgeAlpha * .28), 112, 215, 255), .5));
+                edge.GradientStops.Add(new GradientStop(Color.FromArgb((byte)(edgeAlpha * .28), 255, 255, 255), .5));
                 edge.GradientStops.Add(new GradientStop(Colors.Transparent, 1));
                 DrawStroke(drawingContext, bounds, owner.CornerRadius, edge, 1.15, borderWidth + .25);
             }
