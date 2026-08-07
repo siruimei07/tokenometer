@@ -1,4 +1,3 @@
-using System.IO;
 using System.Windows;
 using Tokenometer.Services;
 using Tokenometer.ViewModels;
@@ -71,7 +70,8 @@ public partial class App : System.Windows.Application
         }
         catch (Exception exception)
         {
-            File.WriteAllText(path + ".error.txt", exception.ToString());
+            System.Diagnostics.Trace.TraceError("Dashboard snapshot failed: {0}", exception.GetType().Name);
+            Environment.ExitCode = 1;
         }
         finally
         {
@@ -90,7 +90,8 @@ public partial class App : System.Windows.Application
         }
         catch (Exception exception)
         {
-            File.WriteAllText(path + ".error.txt", exception.ToString());
+            System.Diagnostics.Trace.TraceError("Widget snapshot failed: {0}", exception.GetType().Name);
+            Environment.ExitCode = 1;
         }
         finally
         {

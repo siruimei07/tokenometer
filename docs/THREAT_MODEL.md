@@ -72,6 +72,7 @@ The local flow fails closed: unreadable or malformed data becomes unavailable, n
 | TM-008 | Tampering / EoP | A skin loads executable content or unsafe remote resources | Skin loader | T1059 | Medium | High | High | Resource-only allowlist; image decoding limits; no scripts/assemblies/XAML loading | App | Required before skins |
 | TM-009 | Supply-chain tampering | Compromised package/build input gains current-user access | Build chain | T1195.001 | Medium | High | High | Prefer platform libraries, lock dependencies, scan releases, reproducible build | Maintainer | In design |
 | TM-010 | Repudiation | Source transitions or parse failures cannot be reconstructed | Diagnostics | T1070 | Low | Medium | Low | Minimal local structured events without sensitive payloads; bounded retention | App | Future |
+| TM-011 | Tampering / Information disclosure | Developer snapshot arguments overwrite a caller-selected writable path or persist local exception details | QA CLI | T1083 | Low | Low | Low | Same-user only; no elevation; do not persist full exception stacks; consider restricting snapshots to test builds before distribution | App | Partially mitigated |
 
 ## Security requirements
 
@@ -86,3 +87,11 @@ The local flow fails closed: unreadable or malformed data becomes unavailable, n
 - **SR-9:** Skins are declarative resources only; no external XAML, scripts, or assemblies.
 - **SR-10:** Release builds undergo code review and dependency audit before distribution.
 
+## Current UI security review — 2026-08-07
+
+- No Critical, High, or Medium findings.
+- No credentials, browser cookies, Codex message bodies, network requests, or unsafe deserialization are present.
+- The manifest uses `asInvoker` with `uiAccess=false`.
+- The project has no third-party `PackageReference`; framework-only WPF/WinForms keeps the present NuGet CVE and license surface empty.
+- Snapshot failures now emit only the exception type to process tracing and never write a full stack trace beside the image.
+- Remaining low-risk decision: before public distribution, either keep arbitrary local PNG export as an explicit developer feature or compile snapshot switches only into test builds. Rollback for the trace-only hardening is `git revert` of its isolated security commit.
