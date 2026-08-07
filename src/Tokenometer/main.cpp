@@ -18,6 +18,8 @@
 #include <cwctype>
 #include <filesystem>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -60,6 +62,14 @@ namespace
     {
         std::vector<std::filesystem::path> paths;
         std::wstring accountLabel;
+    };
+
+    struct BubbleUsageSnapshot
+    {
+        tokenometer::TokenCounts today;
+        std::optional<tokenometer::RateLimitSnapshot> codexLimit;
+        int64_t refreshedAt{};
+        bool available{};
     };
 
     winrt::Windows::UI::Color Color(uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha = 255)
@@ -270,6 +280,60 @@ namespace
     {
         return error.code() == std::make_error_code(std::errc::operation_canceled);
     }
+
+    std::wstring FormatCompactTokens(int64_t value)
+    {
+        value = std::max<int64_t>(value, 0);
+        auto scaled = [value](int64_t divisor, wchar_t suffix)
+        {
+            int64_t const whole = value / divisor;
+            int64_t const tenth = ((value % divisor) * 10) / divisor;
+            std::wstring result = std::to_wstring(whole);
+            if (whole < 100 && tenth > 0)
+            {
+                result += L"." + std::to_wstring(tenth);
+            }
+            result.push_back(suffix);
+            return result;
+        };
+        if (value >= 1'000'000'000) return scaled(1'000'000'000, L'B');
+        if (value >= 1'000'000) return scaled(1'000'000, L'M');
+        if (value >= 1'000) return scaled(1'000, L'K');
+        return std::to_wstring(value);
+    }
+
+    int64_t UnixNow()
+    {
+        return std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+    }
+
+    std::wstring FormatResetCountdown(int64_t resetsAt)
+    {
+        int64_t const seconds = resetsAt - UnixNow();
+        if (resetsAt <= 0 || seconds <= 0) return L"等待刷新";
+        int64_t const days = seconds / 86400;
+        int64_t const hours = (seconds % 86400) / 3600;
+        int64_t const minutes = (seconds % 3600) / 60;
+        if (days > 0)
+        {
+            return std::to_wstring(days) + L"d " + std::to_wstring(hours) + L"h 后重置";
+        }
+        if (hours > 0)
+        {
+            return std::to_wstring(hours) + L"h " + std::to_wstring(minutes) + L"m 后重置";
+        }
+        return std::to_wstring(std::max<int64_t>(minutes, 1)) + L"m 后重置";
+    }
+
+    std::wstring FormatQuotaWindow(int minutes)
+    {
+        if (minutes >= 7 * 24 * 60) return L"周额度";
+        if (minutes >= 24 * 60) return std::to_wstring(minutes / (24 * 60)) + L"天额度";
+        if (minutes >= 60) return std::to_wstring(minutes / 60) + L"小时额度";
+        if (minutes > 0) return std::to_wstring(minutes) + L"分钟额度";
+        return L"额度";
+    }
 }
 
 struct TokenometerApp : mux::ApplicationT<TokenometerApp>
@@ -282,6 +346,7 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
     void OnLaunched(mux::LaunchActivatedEventArgs const&)
     {
         m_bubbleMode = HasArgument(L"--bubble");
+        bool const backdropDisabled = HasArgument(L"--no-backdrop");
         if (m_bubbleMode)
         {
             m_root = controls::Canvas{};
@@ -294,12 +359,15 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
             Place(fallback, 0, 0);
             m_root.Children().Append(fallback);
 
-            m_swapChainPanel = controls::SwapChainPanel{};
-            m_swapChainPanel.Width(widgetWidthDip);
-            m_swapChainPanel.Height(widgetHeightDip);
-            m_swapChainPanel.Opacity(0.28);
-            Place(m_swapChainPanel, 0, 0);
-            m_root.Children().Append(m_swapChainPanel);
+            if (!backdropDisabled)
+            {
+                m_swapChainPanel = controls::SwapChainPanel{};
+                m_swapChainPanel.Width(widgetWidthDip);
+                m_swapChainPanel.Height(widgetHeightDip);
+                m_swapChainPanel.Opacity(0.28);
+                Place(m_swapChainPanel, 0, 0);
+                m_root.Children().Append(m_swapChainPanel);
+            }
 
             controls::Border usageCard;
             usageCard.Width(400);
@@ -373,11 +441,11 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
         {
             m_dashboard->SetStatus(L"预览模式", L"数据采集已禁用", false);
         }
-        if (m_bubbleMode && m_swapChainPanel.IsLoaded())
+        if (m_bubbleMode && !backdropDisabled && m_swapChainPanel.IsLoaded())
         {
             StartBackdrop();
         }
-        else if (m_bubbleMode)
+        else if (m_bubbleMode && !backdropDisabled)
         {
             m_swapChainPanel.Loaded([this](auto const&, auto const&) { StartBackdrop(); });
         }
@@ -983,15 +1051,15 @@ private:
         Place(usageIcon, 28, 27);
         m_root.Children().Append(usageIcon);
 
-        auto title = Text(L"Token Usage", 15, Color(247, 247, 245), 600);
+        auto title = Text(L"Codex 今日 Token", 15, Color(247, 247, 245), 600);
         Place(title, 64, 25);
         m_root.Children().Append(title);
 
-        auto percent = Text(L"53,8%", 32, Color(247, 247, 245), 650);
-        percent.Width(104);
-        percent.TextAlignment(mux::TextAlignment::Right);
-        Place(percent, 288, 14);
-        m_root.Children().Append(percent);
+        m_bubbleTotal = Text(L"—", 32, Color(247, 247, 245), 650);
+        m_bubbleTotal.Width(150);
+        m_bubbleTotal.TextAlignment(mux::TextAlignment::Right);
+        Place(m_bubbleTotal, 242, 14);
+        m_root.Children().Append(m_bubbleTotal);
 
         controls::Border track;
         track.Width(364);
@@ -1003,63 +1071,62 @@ private:
         Place(track, 28, 70);
         m_root.Children().Append(track);
 
-        controls::Border fill;
-        fill.Width(195);
-        fill.Height(8);
-        fill.CornerRadius(Radius(4));
-        fill.Background(Brush(Color(98, 223, 125)));
-        Place(fill, 29, 71);
-        m_root.Children().Append(fill);
+        m_bubbleFill = controls::Border{};
+        m_bubbleFill.Width(0);
+        m_bubbleFill.Height(8);
+        m_bubbleFill.CornerRadius(Radius(4));
+        m_bubbleFill.Background(Brush(Color(98, 223, 125)));
+        Place(m_bubbleFill, 29, 71);
+        m_root.Children().Append(m_bubbleFill);
 
-        shapes::Ellipse marker;
-        marker.Width(12);
-        marker.Height(12);
-        marker.Fill(Brush(Color(38, 36, 37)));
-        marker.Stroke(Brush(Color(98, 223, 125)));
-        marker.StrokeThickness(3);
-        Place(marker, 218, 69);
-        m_root.Children().Append(marker);
+        m_bubbleMarker = shapes::Ellipse{};
+        m_bubbleMarker.Width(12);
+        m_bubbleMarker.Height(12);
+        m_bubbleMarker.Fill(Brush(Color(38, 36, 37)));
+        m_bubbleMarker.Stroke(Brush(Color(98, 223, 125)));
+        m_bubbleMarker.StrokeThickness(3);
+        Place(m_bubbleMarker, 23, 69);
+        m_root.Children().Append(m_bubbleMarker);
 
-        auto used = Text(L"18,838", 11.5, Color(247, 247, 245), 600);
-        Place(used, 28, 91);
-        m_root.Children().Append(used);
+        m_bubbleInput = Text(L"输入 —", 11.5, Color(247, 247, 245), 600);
+        Place(m_bubbleInput, 28, 91);
+        m_root.Children().Append(m_bubbleInput);
 
-        auto total = Text(L"/ 35,000", 11.5, Color(167, 163, 164));
-        Place(total, 76, 91);
-        m_root.Children().Append(total);
+        m_bubbleOutput = Text(L"输出 —", 11.5, Color(167, 163, 164));
+        Place(m_bubbleOutput, 125, 91);
+        m_root.Children().Append(m_bubbleOutput);
 
-        auto left = Text(L"16,162 left", 11.5, Color(167, 163, 164));
-        left.Width(100);
-        left.TextAlignment(mux::TextAlignment::Right);
-        Place(left, 292, 91);
-        m_root.Children().Append(left);
+        m_bubbleCache = Text(L"缓存 —", 11.5, Color(167, 163, 164));
+        m_bubbleCache.Width(110);
+        m_bubbleCache.TextAlignment(mux::TextAlignment::Right);
+        Place(m_bubbleCache, 282, 91);
+        m_root.Children().Append(m_bubbleCache);
 
         auto resetIcon = Icon(L"⌛", Color(255, 253, 142), 12, Color(38, 36, 37));
         Place(resetIcon, 28, 160);
         m_root.Children().Append(resetIcon);
 
-        auto reset = Text(L"Reset Time", 15, Color(247, 247, 245), 600);
-        Place(reset, 64, 158);
-        m_root.Children().Append(reset);
+        m_bubbleLimitTitle = Text(L"Codex 额度", 15, Color(247, 247, 245), 600);
+        Place(m_bubbleLimitTitle, 64, 158);
+        m_root.Children().Append(m_bubbleLimitTitle);
 
-        auto remaining = Text(L"2h 58m", 24, Color(255, 253, 142), 600);
-        remaining.Width(110);
-        remaining.TextAlignment(mux::TextAlignment::Right);
-        Place(remaining, 282, 150);
-        m_root.Children().Append(remaining);
+        m_bubbleLimit = Text(L"—", 24, Color(255, 253, 142), 600);
+        m_bubbleLimit.Width(110);
+        m_bubbleLimit.TextAlignment(mux::TextAlignment::Right);
+        Place(m_bubbleLimit, 282, 150);
+        m_root.Children().Append(m_bubbleLimit);
 
         auto refresh = Text(L"↻", 10, Color(133, 129, 130), 600);
         Place(refresh, 28, 215);
         m_root.Children().Append(refresh);
 
-        auto updated = Text(L"Updated: Just Now", 9.5, Color(133, 129, 130));
-        Place(updated, 43, 215);
-        m_root.Children().Append(updated);
+        m_bubbleUpdated = Text(L"等待首次同步", 9.5, Color(133, 129, 130));
+        Place(m_bubbleUpdated, 43, 215);
+        m_root.Children().Append(m_bubbleUpdated);
 
-        m_closeButton = controls::Button{};
+        m_closeButton = controls::Border{};
         m_closeButton.Width(22);
         m_closeButton.Height(22);
-        m_closeButton.Padding({ 7 });
         m_closeButton.Background(Brush(Color(0, 0, 0, 0)));
         m_closeButton.BorderThickness({ 0 });
         m_closeButton.Opacity(0);
@@ -1068,7 +1135,9 @@ private:
         dot.Width(8);
         dot.Height(8);
         dot.Fill(Brush(Color(240, 63, 22)));
-        m_closeButton.Content(dot);
+        dot.HorizontalAlignment(mux::HorizontalAlignment::Center);
+        dot.VerticalAlignment(mux::VerticalAlignment::Center);
+        m_closeButton.Child(dot);
         controls::ToolTipService::SetToolTip(m_closeButton, winrt::box_value(L"Close"));
         automation::AutomationProperties::SetName(m_closeButton, L"Close Tokenometer");
         Place(m_closeButton, 2, 2);
@@ -1188,9 +1257,16 @@ private:
     {
         if (m_bubbleMode)
         {
-            m_closeButton.Click([this](auto const&, auto const&) { m_window.Close(); });
-            m_root.PointerEntered([this](auto const&, auto const&) { m_closeButton.Opacity(1); });
-            m_root.PointerExited([this](auto const&, auto const&) { m_closeButton.Opacity(0); });
+            if (m_closeButton)
+            {
+                m_closeButton.PointerPressed([this](auto const&, input::PointerRoutedEventArgs const& args)
+                {
+                    m_window.Close();
+                    args.Handled(true);
+                });
+                m_root.PointerEntered([this](auto const&, auto const&) { m_closeButton.Opacity(1); });
+                m_root.PointerExited([this](auto const&, auto const&) { m_closeButton.Opacity(0); });
+            }
             m_root.PointerPressed([this](auto const&, input::PointerRoutedEventArgs const& args)
             {
                 auto point = args.GetCurrentPoint(m_root);
@@ -1243,6 +1319,7 @@ private:
                             auto const result = m_collector->CollectOnce(stopToken);
                             m_lastCollectionAt.store(result.completedAt, std::memory_order_relaxed);
                             m_collectionFailed.store(false, std::memory_order_relaxed);
+                            UpdateBubbleSnapshotCache();
                             if (!stopToken.stop_requested() && m_database->PruneDetailsIfDue())
                             {
                                 m_database->Optimize();
@@ -1288,6 +1365,7 @@ private:
                             {
                                 m_wslCollecting.store(true, std::memory_order_relaxed);
                                 auto const wslResult = m_wslCollector->CollectOnce(stopToken);
+                                UpdateBubbleSnapshotCache();
                                 bool const failed = !wslResult.discoverySucceeded ||
                                     wslResult.errors > 0;
                                 m_wslCollectionFailed.store(failed, std::memory_order_relaxed);
@@ -1331,17 +1409,209 @@ private:
         }
     }
 
+    void UpdateBubbleSnapshotCache() noexcept
+    {
+        if (!m_database) return;
+        try
+        {
+            BubbleUsageSnapshot next;
+            for (auto const& row : m_database->GetDailyUsage(1))
+            {
+                next.today.input += row.counts.input;
+                next.today.cachedInput += row.counts.cachedInput;
+                next.today.cacheWriteInput += row.counts.cacheWriteInput;
+                next.today.output += row.counts.output;
+                next.today.reasoningOutput += row.counts.reasoningOutput;
+                next.today.reportedTotal += row.counts.reportedTotal;
+            }
+            next.codexLimit = m_database->GetLatestRateLimit();
+            next.refreshedAt = UnixNow();
+            next.available = true;
+            std::scoped_lock lock(m_bubbleSnapshotMutex);
+            m_bubbleSnapshot = std::move(next);
+            m_bubbleSnapshotFailed.store(false, std::memory_order_relaxed);
+        }
+        catch (...)
+        {
+            m_bubbleSnapshotFailed.store(true, std::memory_order_relaxed);
+        }
+    }
+
     void StartDashboardRefresh()
     {
-        if (m_bubbleMode || !m_dashboard)
+        if (!m_bubbleMode && !m_dashboard)
         {
             return;
         }
         m_usageTimer = mux::DispatcherTimer{};
         m_usageTimer.Interval(std::chrono::seconds(1));
-        m_usageTimer.Tick([this](auto const&, auto const&) { RefreshDashboard(); });
-        RefreshDashboard();
+        m_usageTimer.Tick([this](auto const&, auto const&)
+        {
+            if (m_bubbleMode) RefreshBubble();
+            else RefreshDashboard();
+        });
+        if (m_bubbleMode) RefreshBubble();
+        else RefreshDashboard();
         m_usageTimer.Start();
+    }
+
+    void RefreshBubble()
+    {
+        if (!m_bubbleMode || !m_bubbleTotal)
+        {
+            return;
+        }
+
+        auto setUnavailable = [this](std::wstring_view message)
+        {
+            m_bubbleTotal.Text(L"—");
+            m_bubbleInput.Text(L"输入 —");
+            m_bubbleOutput.Text(L"输出 —");
+            m_bubbleCache.Text(L"缓存 —");
+            m_bubbleFill.Width(0);
+            controls::Canvas::SetLeft(m_bubbleMarker, 23);
+            m_bubbleLimitTitle.Text(L"同步状态");
+            m_bubbleLimit.Text(L"异常");
+            m_bubbleLimit.Foreground(Brush(Color(240, 63, 22)));
+            m_bubbleUpdated.Text(message);
+        };
+        if (!m_database)
+        {
+            setUnavailable(L"本地数据暂不可用");
+            return;
+        }
+
+        try
+        {
+            BubbleUsageSnapshot snapshot;
+            {
+                std::scoped_lock lock(m_bubbleSnapshotMutex);
+                snapshot = m_bubbleSnapshot;
+            }
+            if (!snapshot.available)
+            {
+                if (m_collectionFailed.load(std::memory_order_relaxed) ||
+                    m_bubbleSnapshotFailed.load(std::memory_order_relaxed))
+                {
+                    setUnavailable(L"首次索引失败，正在重试");
+                    m_bubbleLimit.Text(L"重试中");
+                    return;
+                }
+                m_bubbleLimitTitle.Text(L"同步状态");
+                m_bubbleLimit.Text(L"等待中");
+                m_bubbleLimit.Foreground(Brush(Color(255, 253, 142)));
+                m_bubbleUpdated.Text(L"等待首次索引完成");
+                return;
+            }
+            auto const& today = snapshot.today;
+
+            double const cachePercent = today.input > 0
+                ? std::clamp(100.0 * static_cast<double>(today.cachedInput) /
+                    static_cast<double>(today.input), 0.0, 100.0)
+                : 0.0;
+            double const fillWidth = 362.0 * cachePercent / 100.0;
+            m_bubbleTotal.Text(FormatCompactTokens(today.DisplayTotal()));
+            m_bubbleInput.Text(L"输入 " + FormatCompactTokens(today.input));
+            m_bubbleOutput.Text(L"输出 " + FormatCompactTokens(today.output));
+            m_bubbleCache.Text(
+                L"缓存 " + std::to_wstring(static_cast<int>(cachePercent + 0.5)) + L"%");
+            m_bubbleFill.Width(fillWidth);
+            controls::Canvas::SetLeft(m_bubbleMarker, 23 + fillWidth);
+
+            m_bubbleLimit.Foreground(Brush(Color(255, 253, 142)));
+            auto const& limit = snapshot.codexLimit;
+            if (limit)
+            {
+                struct LimitWindow
+                {
+                    double used{-1.0};
+                    int minutes{};
+                    int64_t resetsAt{};
+                } selected;
+                int64_t const now = UnixNow();
+                auto consider = [&](double used, int minutes, int64_t resetsAt)
+                {
+                    if (used >= 0.0 && used <= 100.0 && resetsAt > now && used > selected.used)
+                    {
+                        selected = {used, minutes, resetsAt};
+                    }
+                };
+                consider(
+                    limit->primaryUsedPercent,
+                    limit->primaryWindowMinutes,
+                    limit->primaryResetsAt);
+                consider(
+                    limit->secondaryUsedPercent,
+                    limit->secondaryWindowMinutes,
+                    limit->secondaryResetsAt);
+                if (selected.used >= 0.0)
+                {
+                    double const remaining = std::clamp(100.0 - selected.used, 0.0, 100.0);
+                    m_bubbleLimitTitle.Text(L"Codex " + FormatQuotaWindow(selected.minutes));
+                    m_bubbleLimit.Text(
+                        std::to_wstring(static_cast<int>(remaining + 0.5)) + L"%");
+                    std::wstring detail = FormatResetCountdown(selected.resetsAt);
+                    int64_t const age = limit->capturedAt > 0
+                        ? std::max<int64_t>(now - limit->capturedAt, 0)
+                        : 0;
+                    if (age >= 300)
+                    {
+                        detail += L" · " + std::to_wstring(age / 60) + L"分钟前记录";
+                    }
+                    m_bubbleUpdated.Text(detail);
+                }
+                else
+                {
+                    m_bubbleLimitTitle.Text(L"同步状态");
+                    m_bubbleLimit.Text(L"实时");
+                    m_bubbleUpdated.Text(L"额度窗口尚未上报");
+                }
+            }
+            else
+            {
+                m_bubbleLimitTitle.Text(L"同步状态");
+                bool const collecting = m_collecting.load(std::memory_order_relaxed) ||
+                    m_wslCollecting.load(std::memory_order_relaxed);
+                m_bubbleLimit.Text(collecting ? L"同步中" : L"实时");
+                int64_t const lastSync = m_lastCollectionAt.load(std::memory_order_relaxed);
+                int64_t const age = lastSync > 0 ? std::max<int64_t>(UnixNow() - lastSync, 0) : -1;
+                if (age < 0) m_bubbleUpdated.Text(L"等待首次同步");
+                else if (age < 5) m_bubbleUpdated.Text(L"刚刚更新");
+                else if (age < 60) m_bubbleUpdated.Text(std::to_wstring(age) + L" 秒前更新");
+                else m_bubbleUpdated.Text(std::to_wstring(age / 60) + L" 分钟前更新");
+            }
+            int64_t const snapshotAge = std::max<int64_t>(
+                UnixNow() - snapshot.refreshedAt,
+                0);
+            if (m_collectionFailed.load(std::memory_order_relaxed))
+            {
+                m_bubbleLimitTitle.Text(L"同步状态");
+                m_bubbleLimit.Text(L"重试中");
+                m_bubbleLimit.Foreground(Brush(Color(240, 63, 22)));
+                m_bubbleUpdated.Text(L"保留上次成功数据");
+            }
+            else if (m_bubbleSnapshotFailed.load(std::memory_order_relaxed) ||
+                     snapshotAge > 15)
+            {
+                m_bubbleLimitTitle.Text(L"快照状态");
+                m_bubbleLimit.Text(L"重试中");
+                m_bubbleLimit.Foreground(Brush(Color(240, 63, 22)));
+                m_bubbleUpdated.Text(
+                    snapshotAge < 60
+                        ? std::to_wstring(snapshotAge) + L" 秒前的数据"
+                        : std::to_wstring(snapshotAge / 60) + L" 分钟前的数据");
+            }
+            else if (m_wslCollectionFailed.load(std::memory_order_relaxed))
+            {
+                std::wstring status{m_bubbleUpdated.Text()};
+                status += L" · WSL 暂不可用";
+                m_bubbleUpdated.Text(status);
+            }
+        }
+        catch (...)
+        {
+            setUnavailable(L"读取实时快照失败");
+        }
     }
 
     void RefreshDashboard()
@@ -1462,7 +1732,16 @@ private:
     mux::Window m_window{ nullptr };
     controls::Canvas m_root{ nullptr };
     controls::SwapChainPanel m_swapChainPanel{ nullptr };
-    controls::Button m_closeButton{ nullptr };
+    controls::Border m_closeButton{ nullptr };
+    controls::TextBlock m_bubbleTotal{ nullptr };
+    controls::TextBlock m_bubbleInput{ nullptr };
+    controls::TextBlock m_bubbleOutput{ nullptr };
+    controls::TextBlock m_bubbleCache{ nullptr };
+    controls::TextBlock m_bubbleLimitTitle{ nullptr };
+    controls::TextBlock m_bubbleLimit{ nullptr };
+    controls::TextBlock m_bubbleUpdated{ nullptr };
+    controls::Border m_bubbleFill{ nullptr };
+    shapes::Ellipse m_bubbleMarker{ nullptr };
     std::unique_ptr<tokenometer::DashboardView> m_dashboard;
     mux::DispatcherTimer m_statusTimer{ nullptr };
     mux::DispatcherTimer m_usageTimer{ nullptr };
@@ -1482,6 +1761,9 @@ private:
     std::atomic_bool m_collectionFailed{};
     std::atomic_bool m_chatGptImporting{};
     std::atomic_bool m_closing{};
+    std::atomic_bool m_bubbleSnapshotFailed{};
+    std::mutex m_bubbleSnapshotMutex;
+    BubbleUsageSnapshot m_bubbleSnapshot;
     tokenometer::ChatGptImportViewData m_chatGptImportData;
     tokenometer::DetailsDimension m_detailsDimension{ tokenometer::DetailsDimension::Tool };
     std::wstring m_selectedBreakdownKey;
