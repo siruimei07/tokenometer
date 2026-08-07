@@ -24,6 +24,7 @@ public sealed class BackdropGlass : ContentControl
         Color.FromArgb(18, 255, 255, 255),
         new Point(0, 0),
         new Point(1, 1)));
+    private static readonly ControlTemplate DefaultTemplate = CreateTemplate();
 
     public static readonly DependencyProperty BackdropVisualProperty = DependencyProperty.Register(
         nameof(BackdropVisual),
@@ -102,7 +103,7 @@ public sealed class BackdropGlass : ContentControl
 
     static BackdropGlass()
     {
-        TemplateProperty.OverrideMetadata(typeof(BackdropGlass), new FrameworkPropertyMetadata(CreateTemplate()));
+        TemplateProperty.OverrideMetadata(typeof(BackdropGlass), new FrameworkPropertyMetadata(DefaultTemplate));
         BackgroundProperty.OverrideMetadata(typeof(BackdropGlass), Changed(Brushes.Transparent));
         BorderBrushProperty.OverrideMetadata(typeof(BackdropGlass), Changed(DefaultBorder));
         BorderThicknessProperty.OverrideMetadata(typeof(BackdropGlass), Changed(new Thickness(1)));
@@ -111,6 +112,9 @@ public sealed class BackdropGlass : ContentControl
     public BackdropGlass()
     {
         SnapsToDevicePixels = true;
+        SetValue(TemplateProperty, DefaultTemplate);
+        HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        VerticalContentAlignment = VerticalAlignment.Stretch;
         _interactionTimer = new DispatcherTimer(
             TimeSpan.FromMilliseconds(16),
             DispatcherPriority.Render,
@@ -336,6 +340,27 @@ public sealed class BackdropGlass : ContentControl
         return geometry;
     }
 
+    private static Geometry RoundedRing(Rect bounds, CornerRadius radius, double inset)
+    {
+        var outer = RoundedRect(bounds, radius);
+        var innerBounds = bounds;
+        innerBounds.Inflate(-inset, -inset);
+        if (innerBounds.Width <= 0 || innerBounds.Height <= 0)
+        {
+            return outer;
+        }
+
+        var innerRadius = new CornerRadius(
+            Math.Max(0, radius.TopLeft - inset),
+            Math.Max(0, radius.TopRight - inset),
+            Math.Max(0, radius.BottomRight - inset),
+            Math.Max(0, radius.BottomLeft - inset));
+        return new CombinedGeometry(
+            GeometryCombineMode.Exclude,
+            outer,
+            RoundedRect(innerBounds, innerRadius));
+    }
+
     private static bool NearlyEquals(Rect left, Rect right) =>
         !left.IsEmpty && !right.IsEmpty &&
         Math.Abs(left.X - right.X) < .05 &&
@@ -504,18 +529,8 @@ public sealed class BackdropGlass : ContentControl
             _brush.Viewbox = refracted;
 
             var bounds = new Rect(RenderSize);
-            var outer = RoundedRect(bounds, owner.CornerRadius);
             var inset = Math.Min(owner.LensWidth, Math.Min(bounds.Width, bounds.Height) * .45);
-            var innerBounds = bounds;
-            innerBounds.Inflate(-inset, -inset);
-            var innerRadius = new CornerRadius(
-                Math.Max(0, owner.CornerRadius.TopLeft - inset),
-                Math.Max(0, owner.CornerRadius.TopRight - inset),
-                Math.Max(0, owner.CornerRadius.BottomRight - inset),
-                Math.Max(0, owner.CornerRadius.BottomLeft - inset));
-            var ring = innerBounds.Width > 0 && innerBounds.Height > 0
-                ? new CombinedGeometry(GeometryCombineMode.Exclude, outer, RoundedRect(innerBounds, innerRadius))
-                : outer;
+            var ring = RoundedRing(bounds, owner.CornerRadius, inset);
 
             drawingContext.PushClip(ring);
             drawingContext.PushOpacity(owner.RefractionOpacity);
@@ -572,6 +587,31 @@ public sealed class BackdropGlass : ContentControl
             }
             drawingContext.DrawRectangle(owner.SaturationTint, null, bounds);
             drawingContext.DrawRectangle(owner.TintBrush, null, bounds);
+
+            var opticalThickness = Math.Min(Math.Max(5, owner.LensWidth * .82), Math.Min(bounds.Width, bounds.Height) * .28);
+            var opticalEdge = new LinearGradientBrush
+            {
+                MappingMode = BrushMappingMode.RelativeToBoundingBox,
+                StartPoint = new Point(0, 0),
+                EndPoint = new Point(1, 1)
+            };
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(72, 255, 255, 255), 0));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(24, 205, 236, 255), .26));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(4, 255, 255, 255), .58));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(22, 255, 146, 116), .84));
+            opticalEdge.GradientStops.Add(new GradientStop(Color.FromArgb(10, 9, 19, 31), 1));
+            drawingContext.DrawGeometry(opticalEdge, null, RoundedRing(bounds, owner.CornerRadius, opticalThickness));
+
+            var surfaceSheen = new LinearGradientBrush
+            {
+                MappingMode = BrushMappingMode.RelativeToBoundingBox,
+                StartPoint = new Point(.15, 0),
+                EndPoint = new Point(.68, .72)
+            };
+            surfaceSheen.GradientStops.Add(new GradientStop(Color.FromArgb(30, 255, 255, 255), 0));
+            surfaceSheen.GradientStops.Add(new GradientStop(Color.FromArgb(8, 205, 234, 255), .34));
+            surfaceSheen.GradientStops.Add(new GradientStop(Colors.Transparent, .7));
+            drawingContext.DrawGeometry(surfaceSheen, null, RoundedRect(bounds, owner.CornerRadius));
 
             if (owner._pointerEnergy > 0 && owner.PointerGlowOpacity > 0)
             {
