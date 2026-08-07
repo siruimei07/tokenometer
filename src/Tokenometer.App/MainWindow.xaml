@@ -205,18 +205,18 @@
 
                     <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
                                 shell:WindowChrome.IsHitTestVisibleInChrome="True">
-                        <Button Style="{StaticResource ActionButtonStyle}" Click="Widget_Click">
+                        <Button Style="{StaticResource ActionButtonStyle}" AutomationProperties.Name="显示桌面组件" Click="Widget_Click">
                             <StackPanel Orientation="Horizontal">
                                 <TextBlock Text="Add widget" />
                                 <TextBlock Margin="8,0,0,0" FontSize="18" FontWeight="Normal" Text="+" />
                             </StackPanel>
                         </Button>
-                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="通知（接口已保留）" Click="ReservedButton_Click" Content="&#xE7F4;" />
-                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="立即刷新" Click="Refresh_Click" Content="&#xE72C;" />
-                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="搜索（接口已保留）" Click="ReservedButton_Click" Content="&#xE721;" />
-                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="最小化" Click="Minimize_Click" Content="&#xE921;" />
-                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="最大化" Click="Maximize_Click" Content="&#xE922;" />
-                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="关闭" Click="Close_Click" Content="&#xE8BB;" />
+                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="通知（接口已保留）" AutomationProperties.Name="通知" Click="ReservedButton_Click" Content="&#xE7F4;" />
+                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="立即刷新" AutomationProperties.Name="立即刷新" Click="Refresh_Click" Content="&#xE72C;" />
+                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="搜索（接口已保留）" AutomationProperties.Name="搜索" Click="ReservedButton_Click" Content="&#xE721;" />
+                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="最小化" AutomationProperties.Name="最小化到桌面组件" Click="Minimize_Click" Content="&#xE921;" />
+                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="最大化" AutomationProperties.Name="最大化窗口" Click="Maximize_Click" Content="&#xE922;" />
+                        <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="关闭" AutomationProperties.Name="隐藏到桌面组件" Click="Close_Click" Content="&#xE8BB;" />
                     </StackPanel>
                 </Grid>
 
@@ -464,9 +464,9 @@
                             <Grid>
                                 <TextBlock Text="快捷操作" FontSize="13" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Top" />
                                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                                    <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="刷新" Click="Refresh_Click" Content="&#xE72C;" />
-                                    <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="桌面组件" Click="Widget_Click" Content="&#xE7F4;" />
-                                    <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="设置（接口已保留）" Click="ReservedButton_Click" Content="&#xE713;" />
+                                    <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="刷新" AutomationProperties.Name="刷新用量" Click="Refresh_Click" Content="&#xE72C;" />
+                                    <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="桌面组件" AutomationProperties.Name="显示桌面组件" Click="Widget_Click" Content="&#xE7F4;" />
+                                    <Button Style="{StaticResource HeaderCircleButtonStyle}" ToolTip="设置（接口已保留）" AutomationProperties.Name="设置" Click="ReservedButton_Click" Content="&#xE713;" />
                                 </StackPanel>
                             </Grid>
                         </controls:BackdropGlass>
@@ -533,11 +533,11 @@
                                     BackdropVisual="{Binding ElementName=BackdropScene}"
                                     Padding="7,3">
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                    <Button Style="{StaticResource BottomNavButtonStyle}" ToolTip="日历（接口已保留）" Click="ReservedButton_Click" Content="&#xE787;" />
-                    <Button Style="{StaticResource BottomNavButtonStyle}" ToolTip="搜索（接口已保留）" Click="ReservedButton_Click" Content="&#xE721;" />
-                    <Button Style="{StaticResource SelectedBottomNavButtonStyle}" ToolTip="Overview" Content="&#xE80F;" />
-                    <Button Style="{StaticResource BottomNavButtonStyle}" ToolTip="会话" Click="ReservedButton_Click" Content="&#xE8A5;" />
-                    <Button Style="{StaticResource BottomNavButtonStyle}" ToolTip="设置" Click="ReservedButton_Click" Content="&#xE713;" />
+                    <Button Style="{StaticResource BottomNavButtonStyle}" ToolTip="日历（接口已保留）" AutomationProperties.Name="日历" Click="ReservedButton_Click" Content="&#xE787;" />
+                    <Button Style="{StaticResource BottomNavButtonStyle}" ToolTip="搜索（接口已保留）" AutomationProperties.Name="搜索" Click="ReservedButton_Click" Content="&#xE721;" />
+                    <Button Style="{StaticResource SelectedBottomNavButtonStyle}" ToolTip="Overview" AutomationProperties.Name="用量概览（当前）" Content="&#xE80F;" />
+                    <Button Style="{StaticResource BottomNavButtonStyle}" ToolTip="会话" AutomationProperties.Name="会话" Click="ReservedButton_Click" Content="&#xE8A5;" />
+                    <Button Style="{StaticResource BottomNavButtonStyle}" ToolTip="设置" AutomationProperties.Name="设置" Click="ReservedButton_Click" Content="&#xE713;" />
                 </StackPanel>
             </controls:BackdropGlass>
 

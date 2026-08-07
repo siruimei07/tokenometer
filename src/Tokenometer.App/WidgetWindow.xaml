@@ -108,8 +108,8 @@
                                 </StackPanel>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                <Button Style="{StaticResource WidgetIconButtonStyle}" ToolTip="折叠" Click="Collapse_Click" Content="&#xE70D;" />
-                                <Button Style="{StaticResource WidgetIconButtonStyle}" Margin="5,0,0,0" ToolTip="隐藏组件" Click="Hide_Click" Content="&#xE8BB;" />
+                                <Button Style="{StaticResource WidgetIconButtonStyle}" ToolTip="折叠" AutomationProperties.Name="折叠桌面组件" Click="Collapse_Click" Content="&#xE70D;" />
+                                <Button Style="{StaticResource WidgetIconButtonStyle}" Margin="5,0,0,0" ToolTip="隐藏组件" AutomationProperties.Name="隐藏桌面组件" Click="Hide_Click" Content="&#xE8BB;" />
                             </StackPanel>
                         </Grid>
 
@@ -157,9 +157,9 @@
                                 <TextBlock Text="{Binding ContextDisplay}" FontSize="9" FontWeight="SemiBold" Foreground="White" />
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                <Button Style="{StaticResource WidgetIconButtonStyle}" ToolTip="打开主界面" Click="Open_Click" Content="&#xE8A7;" />
+                                <Button Style="{StaticResource WidgetIconButtonStyle}" ToolTip="打开主界面" AutomationProperties.Name="打开主界面" Click="Open_Click" Content="&#xE8A7;" />
                                 <Button x:Name="PinButton" Style="{StaticResource WidgetIconButtonStyle}" Margin="5,0,0,0"
-                                        ToolTip="取消置顶" Click="Pin_Click" Content="&#xE718;" />
+                                        ToolTip="取消置顶" AutomationProperties.Name="切换组件置顶" Click="Pin_Click" Content="&#xE718;" />
                             </StackPanel>
                         </Grid>
                     </Grid>
@@ -183,7 +183,7 @@
                             <TextBlock Text="QUOTA" FontSize="7.5" Foreground="#91B1C4D3" HorizontalAlignment="Right" />
                         </StackPanel>
                         <Button Grid.Column="3" Margin="5,0,0,0" Style="{StaticResource WidgetIconButtonStyle}"
-                                ToolTip="展开" Click="Expand_Click" Content="&#xE70E;" />
+                                ToolTip="展开" AutomationProperties.Name="展开桌面组件" Click="Expand_Click" Content="&#xE70E;" />
                     </Grid>
                 </Grid>
             </controls:BackdropGlass>
