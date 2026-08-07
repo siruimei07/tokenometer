@@ -3,6 +3,7 @@ bin/
 obj/
 packages/
 AppPackages/
+artifacts/
 *.appx
 *.msix
 *.user

@@ -72,11 +72,13 @@
 
   <ItemGroup>
     <ClCompile Include="CodexCollector.cpp" />
+    <ClCompile Include="DashboardView.cpp" />
     <ClCompile Include="Database.cpp" />
     <ClCompile Include="CaptureRenderer.cpp" />
     <ClCompile Include="main.cpp" />
     <ClInclude Include="CodexCollector.h" />
     <ClInclude Include="CaptureRenderer.h" />
+    <ClInclude Include="DashboardView.h" />
     <ClInclude Include="Database.h" />
     <ClInclude Include="UsageModels.h" />
     <Manifest Include="app.manifest" />

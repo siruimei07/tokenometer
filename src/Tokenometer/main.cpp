@@ -4,8 +4,10 @@
 
 #include "CaptureRenderer.h"
 #include "CodexCollector.h"
+#include "DashboardView.h"
 #include "Database.h"
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <thread>
@@ -37,6 +39,8 @@ namespace
     constexpr int widgetWidthDip = 420;
     constexpr int widgetHeightDip = 240;
     constexpr int cornerRadiusDip = 26;
+    constexpr int dashboardWidthDip = 1280;
+    constexpr int dashboardHeightDip = 800;
 
     winrt::Windows::UI::Color Color(uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha = 255)
     {
@@ -122,60 +126,85 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
 {
     void OnLaunched(mux::LaunchActivatedEventArgs const&)
     {
-        m_root = controls::Canvas{};
-        m_root.Background(Brush(Color(0, 0, 0, 0)));
+        m_bubbleMode = HasArgument(L"--bubble");
+        if (m_bubbleMode)
+        {
+            m_root = controls::Canvas{};
+            m_root.Background(Brush(Color(0, 0, 0, 0)));
 
-        controls::Border fallback;
-        fallback.Width(widgetWidthDip);
-        fallback.Height(widgetHeightDip);
-        fallback.Background(Brush(Color(18, 16, 17)));
-        Place(fallback, 0, 0);
-        m_root.Children().Append(fallback);
+            controls::Border fallback;
+            fallback.Width(widgetWidthDip);
+            fallback.Height(widgetHeightDip);
+            fallback.Background(Brush(Color(18, 16, 17)));
+            Place(fallback, 0, 0);
+            m_root.Children().Append(fallback);
 
-        m_swapChainPanel = controls::SwapChainPanel{};
-        m_swapChainPanel.Width(widgetWidthDip);
-        m_swapChainPanel.Height(widgetHeightDip);
-        m_swapChainPanel.Opacity(0.28);
-        Place(m_swapChainPanel, 0, 0);
-        m_root.Children().Append(m_swapChainPanel);
+            m_swapChainPanel = controls::SwapChainPanel{};
+            m_swapChainPanel.Width(widgetWidthDip);
+            m_swapChainPanel.Height(widgetHeightDip);
+            m_swapChainPanel.Opacity(0.28);
+            Place(m_swapChainPanel, 0, 0);
+            m_root.Children().Append(m_swapChainPanel);
 
-        controls::Border usageCard;
-        usageCard.Width(400);
-        usageCard.Height(124);
-        usageCard.CornerRadius(Radius(18));
-        usageCard.Background(Brush(Color(38, 36, 37, 240)));
-        usageCard.BorderBrush(Brush(Color(255, 255, 255, 18)));
-        usageCard.BorderThickness({ 0.5 });
-        usageCard.IsHitTestVisible(false);
-        Place(usageCard, 10, 10);
-        m_root.Children().Append(usageCard);
+            controls::Border usageCard;
+            usageCard.Width(400);
+            usageCard.Height(124);
+            usageCard.CornerRadius(Radius(18));
+            usageCard.Background(Brush(Color(38, 36, 37, 240)));
+            usageCard.BorderBrush(Brush(Color(255, 255, 255, 18)));
+            usageCard.BorderThickness({ 0.5 });
+            usageCard.IsHitTestVisible(false);
+            Place(usageCard, 10, 10);
+            m_root.Children().Append(usageCard);
 
-        controls::Border resetCard;
-        resetCard.Width(400);
-        resetCard.Height(58);
-        resetCard.CornerRadius(Radius(16));
-        resetCard.Background(Brush(Color(38, 36, 37, 240)));
-        resetCard.BorderBrush(Brush(Color(255, 255, 255, 18)));
-        resetCard.BorderThickness({ 0.5 });
-        resetCard.IsHitTestVisible(false);
-        Place(resetCard, 10, 144);
-        m_root.Children().Append(resetCard);
-        BuildContent();
+            controls::Border resetCard;
+            resetCard.Width(400);
+            resetCard.Height(58);
+            resetCard.CornerRadius(Radius(16));
+            resetCard.Background(Brush(Color(38, 36, 37, 240)));
+            resetCard.BorderBrush(Brush(Color(255, 255, 255, 18)));
+            resetCard.BorderThickness({ 0.5 });
+            resetCard.IsHitTestVisible(false);
+            Place(resetCard, 10, 144);
+            m_root.Children().Append(resetCard);
+            BuildContent();
+        }
+        else
+        {
+            m_dashboard = std::make_unique<tokenometer::DashboardView>();
+        }
 
         m_window = mux::Window{};
         m_window.Title(L"Tokenometer");
-        m_window.Content(m_root);
+        if (m_bubbleMode)
+        {
+            m_window.Content(m_root);
+        }
+        else
+        {
+            m_window.Content(m_dashboard->Root());
+        }
 
         auto nativeWindow = m_window.as<::IWindowNative>();
         winrt::check_hresult(nativeWindow->get_WindowHandle(&m_hwnd));
         m_window.Activate();
-        ConfigureWindow();
-        StartCollection();
-        if (m_swapChainPanel.IsLoaded())
+        if (m_bubbleMode)
+        {
+            ConfigureWindow();
+        }
+        else
+        {
+            ConfigureDashboardWindow();
+        }
+        if (!HasArgument(L"--no-collection"))
+        {
+            StartCollection();
+        }
+        if (m_bubbleMode && m_swapChainPanel.IsLoaded())
         {
             StartBackdrop();
         }
-        else
+        else if (m_bubbleMode)
         {
             m_swapChainPanel.Loaded([this](auto const&, auto const&) { StartBackdrop(); });
         }
@@ -335,21 +364,56 @@ private:
         }
     }
 
+    void ConfigureDashboardWindow()
+    {
+        auto appWindow = m_window.AppWindow();
+        auto presenter = appWindow.Presenter().as<windowing::OverlappedPresenter>();
+        presenter.IsResizable(true);
+        presenter.IsMaximizable(true);
+        presenter.IsMinimizable(true);
+        presenter.IsAlwaysOnTop(false);
+        appWindow.IsShownInSwitchers(true);
+
+        HMONITOR monitor = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTOPRIMARY);
+        MONITORINFO info{ sizeof(info) };
+        winrt::check_bool(GetMonitorInfoW(monitor, &info));
+        int const workWidth = info.rcWork.right - info.rcWork.left;
+        int const workHeight = info.rcWork.bottom - info.rcWork.top;
+        UINT const dpi = GetDpiForWindow(m_hwnd);
+        int const width = std::min(MulDiv(dashboardWidthDip, dpi, 96), std::max(workWidth - 48, 640));
+        int const height = std::min(MulDiv(dashboardHeightDip, dpi, 96), std::max(workHeight - 48, 520));
+        appWindow.Resize({ width, height });
+
+        int const x = info.rcWork.left + ((info.rcWork.right - info.rcWork.left) - width) / 2;
+        int const y = info.rcWork.top + ((info.rcWork.bottom - info.rcWork.top) - height) / 2;
+        winrt::check_bool(SetWindowPos(
+            m_hwnd,
+            HWND_NOTOPMOST,
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE));
+    }
+
     void WireInteractions()
     {
-        m_closeButton.Click([this](auto const&, auto const&) { m_window.Close(); });
-        m_root.PointerEntered([this](auto const&, auto const&) { m_closeButton.Opacity(1); });
-        m_root.PointerExited([this](auto const&, auto const&) { m_closeButton.Opacity(0); });
-        m_root.PointerPressed([this](auto const&, input::PointerRoutedEventArgs const& args)
+        if (m_bubbleMode)
         {
-            auto point = args.GetCurrentPoint(m_root);
-            if (point.Properties().IsLeftButtonPressed())
+            m_closeButton.Click([this](auto const&, auto const&) { m_window.Close(); });
+            m_root.PointerEntered([this](auto const&, auto const&) { m_closeButton.Opacity(1); });
+            m_root.PointerExited([this](auto const&, auto const&) { m_closeButton.Opacity(0); });
+            m_root.PointerPressed([this](auto const&, input::PointerRoutedEventArgs const& args)
             {
-                ReleaseCapture();
-                SendMessageW(m_hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
-                args.Handled(true);
-            }
-        });
+                auto point = args.GetCurrentPoint(m_root);
+                if (point.Properties().IsLeftButtonPressed())
+                {
+                    ReleaseCapture();
+                    SendMessageW(m_hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+                    args.Handled(true);
+                }
+            });
+        }
 
         m_window.Closed([this](auto const&, auto const&)
         {
@@ -459,12 +523,14 @@ private:
     controls::Canvas m_root{ nullptr };
     controls::SwapChainPanel m_swapChainPanel{ nullptr };
     controls::Button m_closeButton{ nullptr };
+    std::unique_ptr<tokenometer::DashboardView> m_dashboard;
     mux::DispatcherTimer m_statusTimer{ nullptr };
     std::shared_ptr<CaptureRenderer> m_renderer;
     std::shared_ptr<tokenometer::Database> m_database;
     std::unique_ptr<tokenometer::CodexCollector> m_collector;
     std::jthread m_collectionThread;
     HWND m_hwnd{};
+    bool m_bubbleMode{};
 };
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
