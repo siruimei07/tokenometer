@@ -31,6 +31,7 @@ The database stores normalized token counters, model/tool/session metadata, quot
 | Per-turn token totals and tool names | Permanent | Historical session summaries |
 | Daily usage buckets | Permanent | Heatmap, streaks, and long-term totals |
 | Processed-record keys and source cursors | Permanent | Idempotent rescans and archive moves |
+| ChatGPT export estimates | Permanent until replaced | Account/session/prompt/day estimates derived from official exports |
 
 Permanent tables are compact numerical aggregates. Source JSONL is never mirrored, so storage grows with normalized events rather than with the much larger transcripts. `PRAGMA optimize`, passive WAL checkpoints, and incremental vacuuming are run periodically; automatic full `VACUUM` is intentionally avoided.
 
@@ -47,3 +48,4 @@ Permanent tables are compact numerical aggregates. Source JSONL is never mirrore
 
 Consumer ChatGPT does not expose a supported real-time local token feed. Tokenometer must not scrape its Chromium profile or copy authentication state. ChatGPT support is therefore limited to user-initiated official data-export imports (clearly labelled as estimated where tokenization is reconstructed). OpenAI API organization usage is a separate optional source and does not represent ChatGPT Plus or Pro subscription usage.
 
+ChatGPT imports are stored in dedicated `estimated` tables so they can never be added to exact Codex counters by accident. Only the selected file's basename, SHA-256, size, modified time, account label, session identifiers, model labels, timestamps, message counts, and estimated token totals are persisted. Absolute export paths and message bodies are discarded. Re-importing the same file is a no-op; a changed export replaces matching stable session IDs instead of accumulating duplicates.

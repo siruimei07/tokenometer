@@ -146,6 +146,85 @@ namespace tokenometer
         int64_t toolCalls{};
         int64_t activeDays{};
         int64_t sessions{};
+        int64_t estimatedTokens{};
+        int64_t estimatedSessions{};
+    };
+
+    struct ChatGPTPromptEstimate
+    {
+        std::wstring sessionId;
+        std::wstring turnId;
+        int promptIndex{};
+        int64_t timestamp{};
+        std::wstring day;
+        std::wstring model;
+        int64_t messages{};
+        int64_t estimatedInputTokens{};
+        int64_t estimatedOutputTokens{};
+
+        [[nodiscard]] int64_t EstimatedTokens() const noexcept
+        {
+            return estimatedInputTokens + estimatedOutputTokens;
+        }
+    };
+
+    struct ChatGPTSessionEstimate
+    {
+        std::wstring id;
+        std::wstring sourceKind{ L"chatgpt-export" };
+        std::wstring accountId;
+        std::wstring model;
+        int64_t startedAt{};
+        int64_t updatedAt{};
+        int64_t messages{};
+        int64_t prompts{};
+        int64_t estimatedInputTokens{};
+        int64_t estimatedOutputTokens{};
+
+        [[nodiscard]] int64_t EstimatedTokens() const noexcept
+        {
+            return estimatedInputTokens + estimatedOutputTokens;
+        }
+    };
+
+    struct ChatGPTEstimatedDailyUsage
+    {
+        std::wstring day;
+        std::wstring sourceKind{ L"chatgpt-export" };
+        std::wstring tool{ L"ChatGPT" };
+        std::wstring model;
+        std::wstring accountId;
+        int64_t estimatedInputTokens{};
+        int64_t estimatedOutputTokens{};
+        int64_t messages{};
+        int64_t prompts{};
+
+        [[nodiscard]] int64_t EstimatedTokens() const noexcept
+        {
+            return estimatedInputTokens + estimatedOutputTokens;
+        }
+    };
+
+    struct ChatGPTExportBatch
+    {
+        std::wstring sourcePath;
+        std::wstring sourceHash;
+        int64_t sourceModifiedAt{};
+        int64_t sourceSize{};
+        std::wstring accountId;
+        std::vector<ChatGPTSessionEstimate> sessions;
+        std::vector<ChatGPTPromptEstimate> prompts;
+    };
+
+    struct ChatGPTImportResult
+    {
+        bool unchanged{};
+        int64_t conversations{};
+        int64_t prompts{};
+        int64_t messages{};
+        int64_t estimatedTokens{};
+        int64_t skippedConversations{};
+        std::wstring sourceHash;
     };
 
     struct DailyUsage

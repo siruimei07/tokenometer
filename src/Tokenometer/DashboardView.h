@@ -144,6 +144,36 @@ namespace tokenometer
         std::function<void(TrendRange)> onRangeChanged;
     };
 
+    enum class ChatGptImportState
+    {
+        Idle,
+        SelectingFiles,
+        Importing,
+        Succeeded,
+        Failed,
+    };
+
+    struct ChatGptImportViewData
+    {
+        ChatGptImportState state{ ChatGptImportState::Idle };
+        std::vector<std::wstring> selectedFiles;
+        std::wstring accountLabel{ L"ChatGPT" };
+        int64_t conversations{};
+        int64_t estimatedTokens{};
+        int64_t skipped{};
+        int64_t unchangedFiles{};
+        int64_t errors{};
+        std::wstring message;
+        std::wstring details;
+        bool detailsExpanded{};
+    };
+
+    struct ChatGptImportCallbacks
+    {
+        std::function<void(std::wstring const& accountLabel)> onChooseFilesRequested;
+        std::function<void(bool expanded)> onDetailsToggled;
+    };
+
     class DashboardView final
     {
     public:
@@ -161,6 +191,8 @@ namespace tokenometer
         void SetDetailsCallbacks(DetailsCallbacks callbacks);
         void UpdateTrends(TrendViewData const& data);
         void SetTrendCallbacks(TrendCallbacks callbacks);
+        void UpdateChatGptImport(ChatGptImportViewData const& data);
+        void SetChatGptImportCallbacks(ChatGptImportCallbacks callbacks);
         void ShowPage(DashboardPage page);
 
     private:
@@ -179,6 +211,7 @@ namespace tokenometer
         void UpdateDailyVisuals(std::vector<DailyUsage> const& daily);
         void UpdateDetailsDimensionButtons();
         void UpdateTrendButtons();
+        void UpdateChatGptImportLayout();
 
         winrt::Microsoft::UI::Xaml::Controls::Grid m_root{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::Grid m_pageHost{ nullptr };
@@ -206,6 +239,8 @@ namespace tokenometer
         winrt::Microsoft::UI::Xaml::Controls::TextBlock m_dayToolCallsText{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::TextBlock m_activeDaysText{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::TextBlock m_heatmapCaption{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptOverviewValue{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptOverviewDetail{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::TextBlock m_codexLimitName{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::TextBlock m_codexLimitValue{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::TextBlock m_codexLimitReset{ nullptr };
@@ -257,6 +292,24 @@ namespace tokenometer
         TrendChart m_trendChart{ TrendChart::Bars };
         TrendRange m_trendRange{ TrendRange::Days30 };
         TrendCallbacks m_trendCallbacks;
+
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptAccountLabel{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_chatGptChooseFilesButton{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptFilesText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptImportTitle{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptImportMessage{ nullptr };
+        winrt::Microsoft::UI::Xaml::Shapes::Ellipse m_chatGptImportDot{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptConversationCount{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptEstimatedTokens{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptSkippedCount{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptUnchangedCount{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptErrorCount{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_chatGptDetailsButton{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Border m_chatGptDetailsPanel{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_chatGptDetailsText{ nullptr };
+        std::wstring m_chatGptDetails;
+        bool m_chatGptDetailsExpanded{};
+        ChatGptImportCallbacks m_chatGptImportCallbacks;
 
         DashboardPage m_currentPage{ DashboardPage::Overview };
     };

@@ -1,8 +1,10 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <shobjidl_core.h>
 #undef GetCurrentTime
 
 #include "CaptureRenderer.h"
+#include "ChatGPTExportImporter.h"
 #include "CodexCollector.h"
 #include "DashboardView.h"
 #include "Database.h"
@@ -12,8 +14,11 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cwctype>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -22,6 +27,7 @@
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.UI.Text.h>
+#include <winrt/Microsoft.UI.Dispatching.h>
 #include <winrt/Microsoft.UI.Input.h>
 #include <winrt/Microsoft.UI.Windowing.h>
 #include <winrt/Microsoft.UI.Xaml.h>
@@ -47,6 +53,13 @@ namespace
     constexpr int cornerRadiusDip = 26;
     constexpr int dashboardWidthDip = 1280;
     constexpr int dashboardHeightDip = 800;
+    constexpr DWORD chatGptAccountLabelControl = 1001;
+
+    struct ChatGptFileSelection
+    {
+        std::vector<std::filesystem::path> paths;
+        std::wstring accountLabel;
+    };
 
     winrt::Windows::UI::Color Color(uint8_t red, uint8_t green, uint8_t blue, uint8_t alpha = 255)
     {
@@ -161,10 +174,110 @@ namespace
         default: return 30;
         }
     }
+
+    ChatGptFileSelection PickChatGptExportFiles(HWND owner, std::wstring_view accountLabel)
+    {
+        winrt::com_ptr<IFileOpenDialog> dialog;
+        winrt::check_hresult(CoCreateInstance(
+            CLSID_FileOpenDialog,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(dialog.put())));
+
+        DWORD options{};
+        winrt::check_hresult(dialog->GetOptions(&options));
+        winrt::check_hresult(dialog->SetOptions(
+            options | FOS_ALLOWMULTISELECT | FOS_FILEMUSTEXIST |
+            FOS_PATHMUSTEXIST | FOS_FORCEFILESYSTEM));
+        COMDLG_FILTERSPEC const filters[] = {
+            { L"ChatGPT conversations JSON", L"conversations*.json" },
+            { L"JSON files", L"*.json" },
+        };
+        winrt::check_hresult(dialog->SetFileTypes(2, filters));
+        winrt::check_hresult(dialog->SetDefaultExtension(L"json"));
+
+        auto customize = dialog.as<IFileDialogCustomize>();
+        winrt::check_hresult(customize->AddText(1000, L"账户标签（可选）"));
+        winrt::check_hresult(customize->AddEditBox(
+            chatGptAccountLabelControl,
+            std::wstring{ accountLabel }.c_str()));
+
+        auto const shown = dialog->Show(owner);
+        if (shown == HRESULT_FROM_WIN32(ERROR_CANCELLED))
+        {
+            return {};
+        }
+        winrt::check_hresult(shown);
+
+        winrt::com_ptr<IShellItemArray> results;
+        winrt::check_hresult(dialog->GetResults(results.put()));
+        DWORD count{};
+        winrt::check_hresult(results->GetCount(&count));
+
+        ChatGptFileSelection selection;
+        selection.paths.reserve(count);
+        for (DWORD index = 0; index < count; ++index)
+        {
+            winrt::com_ptr<IShellItem> item;
+            winrt::check_hresult(results->GetItemAt(index, item.put()));
+            PWSTR rawPath{};
+            winrt::check_hresult(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath));
+            if (rawPath)
+            {
+                selection.paths.emplace_back(rawPath);
+                CoTaskMemFree(rawPath);
+            }
+        }
+        PWSTR rawAccountLabel{};
+        winrt::check_hresult(customize->GetEditBoxText(
+            chatGptAccountLabelControl,
+            &rawAccountLabel));
+        if (rawAccountLabel)
+        {
+            selection.accountLabel = rawAccountLabel;
+            CoTaskMemFree(rawAccountLabel);
+        }
+        return selection;
+    }
+
+    std::wstring NormalizeAccountLabel(std::wstring_view value)
+    {
+        size_t first{};
+        while (first < value.size() && std::iswspace(value[first]))
+        {
+            ++first;
+        }
+        size_t last = value.size();
+        while (last > first && std::iswspace(value[last - 1]))
+        {
+            --last;
+        }
+
+        std::wstring result;
+        result.reserve(std::min<size_t>(last - first, 64));
+        for (size_t index = first; index < last && result.size() < 64; ++index)
+        {
+            if (!std::iswcntrl(value[index]))
+            {
+                result.push_back(value[index]);
+            }
+        }
+        return result.empty() ? std::wstring{ L"ChatGPT" } : result;
+    }
+
+    bool IsCancelled(std::system_error const& error)
+    {
+        return error.code() == std::make_error_code(std::errc::operation_canceled);
+    }
 }
 
 struct TokenometerApp : mux::ApplicationT<TokenometerApp>
 {
+    ~TokenometerApp()
+    {
+        StopBackgroundWorkers();
+    }
+
     void OnLaunched(mux::LaunchActivatedEventArgs const&)
     {
         m_bubbleMode = HasArgument(L"--bubble");
@@ -332,6 +445,250 @@ private:
             RefreshTrends(true);
         };
         m_dashboard->SetTrendCallbacks(std::move(trendCallbacks));
+
+        tokenometer::ChatGptImportCallbacks importCallbacks;
+        importCallbacks.onChooseFilesRequested = [this](std::wstring const& accountLabel)
+        {
+            BeginChatGptImport(accountLabel);
+        };
+        importCallbacks.onDetailsToggled = [this](bool expanded)
+        {
+            m_chatGptImportData.detailsExpanded = expanded;
+        };
+        m_dashboard->SetChatGptImportCallbacks(std::move(importCallbacks));
+    }
+
+    void BeginChatGptImport(std::wstring_view requestedAccountLabel)
+    {
+        if (m_closing.load(std::memory_order_relaxed) || !m_dashboard ||
+            m_chatGptImporting.exchange(true, std::memory_order_relaxed))
+        {
+            return;
+        }
+
+        auto previousImportData = m_chatGptImportData;
+        auto accountLabel = NormalizeAccountLabel(requestedAccountLabel);
+        m_chatGptImportData = {};
+        m_chatGptImportData.state = tokenometer::ChatGptImportState::SelectingFiles;
+        m_chatGptImportData.accountLabel = accountLabel;
+        m_chatGptImportData.conversations = previousImportData.conversations;
+        m_chatGptImportData.estimatedTokens = previousImportData.estimatedTokens;
+        m_dashboard->UpdateChatGptImport(m_chatGptImportData);
+
+        ChatGptFileSelection selection;
+        try
+        {
+            selection = PickChatGptExportFiles(m_hwnd, accountLabel);
+        }
+        catch (...)
+        {
+            m_chatGptImporting.store(false, std::memory_order_relaxed);
+            m_chatGptImportData.state = tokenometer::ChatGptImportState::Failed;
+            m_chatGptImportData.errors = 1;
+            m_chatGptImportData.message = L"无法打开 Windows 文件选择器。";
+            m_dashboard->UpdateChatGptImport(m_chatGptImportData);
+            return;
+        }
+
+        if (selection.paths.empty())
+        {
+            m_chatGptImporting.store(false, std::memory_order_relaxed);
+            m_chatGptImportData = std::move(previousImportData);
+            m_chatGptImportData.accountLabel = accountLabel;
+            m_dashboard->UpdateChatGptImport(m_chatGptImportData);
+            return;
+        }
+        accountLabel = NormalizeAccountLabel(selection.accountLabel);
+        auto paths = std::move(selection.paths);
+
+        if (!m_database)
+        {
+            m_chatGptImporting.store(false, std::memory_order_relaxed);
+            m_chatGptImportData.state = tokenometer::ChatGptImportState::Failed;
+            m_chatGptImportData.errors = 1;
+            m_chatGptImportData.message = L"本地数据库不可用，无法导入。";
+            m_dashboard->UpdateChatGptImport(m_chatGptImportData);
+            return;
+        }
+
+        std::vector<std::wstring> displayFiles;
+        displayFiles.reserve(paths.size());
+        for (auto const& path : paths)
+        {
+            displayFiles.push_back(path.filename().wstring());
+        }
+        m_chatGptImportData = {};
+        m_chatGptImportData.state = tokenometer::ChatGptImportState::Importing;
+        m_chatGptImportData.accountLabel = accountLabel;
+        m_chatGptImportData.selectedFiles = displayFiles;
+        m_dashboard->UpdateChatGptImport(m_chatGptImportData);
+
+        auto const dispatcher = m_window.DispatcherQueue();
+        auto const database = m_database;
+        auto const weakThis = get_weak();
+        try
+        {
+            if (m_chatGptImportThread.joinable())
+            {
+                m_chatGptImportThread.join();
+            }
+            m_chatGptImportThread = std::jthread([
+                weakThis,
+                dispatcher,
+                database,
+                paths = std::move(paths),
+                displayFiles = std::move(displayFiles),
+                accountLabel](std::stop_token stopToken) mutable
+            {
+                tokenometer::ChatGptImportViewData completed;
+                completed.state = tokenometer::ChatGptImportState::Succeeded;
+                completed.accountLabel = accountLabel;
+                completed.selectedFiles = std::move(displayFiles);
+                int64_t importedFiles{};
+                int64_t unchangedFiles{};
+                std::wstring details;
+                bool apartmentInitialized{};
+                bool cancelled{};
+
+                try
+                {
+                    winrt::init_apartment(winrt::apartment_type::multi_threaded);
+                    apartmentInitialized = true;
+                    tokenometer::ChatGPTExportImporter importer(*database);
+                    for (auto const& path : paths)
+                    {
+                        if (stopToken.stop_requested())
+                        {
+                            cancelled = true;
+                            break;
+                        }
+                        auto const name = path.filename().wstring();
+                        try
+                        {
+                            auto const result = importer.Import(path, accountLabel, stopToken);
+                            completed.conversations += result.conversations;
+                            completed.estimatedTokens += result.estimatedTokens;
+                            completed.skipped += result.skippedConversations;
+                            if (result.unchanged)
+                            {
+                                ++unchangedFiles;
+                                details += name + L" · 内容未变更，已跳过\n";
+                            }
+                            else
+                            {
+                                ++importedFiles;
+                                details += name + L" · 已导入 "
+                                    + std::to_wstring(result.conversations) + L" 个会话\n";
+                            }
+                        }
+                        catch (std::system_error const& error)
+                        {
+                            if (IsCancelled(error))
+                            {
+                                cancelled = true;
+                                break;
+                            }
+                            ++completed.errors;
+                            details += name + L" · 格式无效、文件过大或无法读取\n";
+                        }
+                        catch (...)
+                        {
+                            ++completed.errors;
+                            details += name + L" · 格式无效、文件过大或无法读取\n";
+                        }
+                    }
+                }
+                catch (std::system_error const& error)
+                {
+                    if (IsCancelled(error)) cancelled = true;
+                    else
+                    {
+                        ++completed.errors;
+                        details += L"导入线程无法初始化。\n";
+                    }
+                }
+                catch (...)
+                {
+                    ++completed.errors;
+                    details += L"导入线程无法初始化。\n";
+                }
+                if (apartmentInitialized) winrt::uninit_apartment();
+
+                if (!cancelled && !stopToken.stop_requested())
+                {
+                    try
+                    {
+                        auto const totals = database->GetChatGPTEstimatedTotals(accountLabel);
+                        completed.conversations = totals.estimatedSessions;
+                        completed.estimatedTokens = totals.estimatedTokens;
+                    }
+                    catch (...)
+                    {
+                        ++completed.errors;
+                        details += L"无法读取导入后的账户汇总。\n";
+                    }
+                }
+
+                completed.unchangedFiles = unchangedFiles;
+                completed.details = std::move(details);
+                if (cancelled || stopToken.stop_requested())
+                {
+                    completed.state = tokenometer::ChatGptImportState::Failed;
+                    completed.message = L"导入已停止；已完成的会话保持有效。";
+                }
+                else if (completed.errors > 0)
+                {
+                    completed.state = tokenometer::ChatGptImportState::Failed;
+                    completed.message = importedFiles + unchangedFiles > 0
+                        ? L"部分文件未导入；已保留成功结果。"
+                        : L"没有文件成功导入。";
+                }
+                else
+                {
+                    completed.message = L"已处理 " + std::to_wstring(importedFiles + unchangedFiles)
+                        + L" 个文件；token 仅为当前分支可见文本估算。";
+                }
+
+                bool queued{};
+                try
+                {
+                    queued = dispatcher.TryEnqueue([
+                        weakThis,
+                        completed = std::move(completed)]() mutable
+                    {
+                        if (auto self = weakThis.get())
+                        {
+                            if (self->m_closing.load(std::memory_order_relaxed)) return;
+                            self->m_chatGptImporting.store(false, std::memory_order_relaxed);
+                            self->m_chatGptImportData = std::move(completed);
+                            if (self->m_dashboard)
+                            {
+                                self->m_dashboard->UpdateChatGptImport(self->m_chatGptImportData);
+                                self->RefreshDashboard();
+                            }
+                        }
+                    });
+                }
+                catch (...)
+                {
+                }
+                if (!queued)
+                {
+                    if (auto self = weakThis.get())
+                    {
+                        self->m_chatGptImporting.store(false, std::memory_order_relaxed);
+                    }
+                }
+            });
+        }
+        catch (...)
+        {
+            m_chatGptImporting.store(false, std::memory_order_relaxed);
+            m_chatGptImportData.state = tokenometer::ChatGptImportState::Failed;
+            m_chatGptImportData.errors = 1;
+            m_chatGptImportData.message = L"无法启动 ChatGPT 导入线程。";
+            m_dashboard->UpdateChatGptImport(m_chatGptImportData);
+        }
     }
 
     void LoadToolContent(std::wstring const& locator)
@@ -716,6 +1073,27 @@ private:
             SWP_NOSIZE | SWP_NOACTIVATE));
     }
 
+    void StopBackgroundWorkers() noexcept
+    {
+        m_closing.store(true, std::memory_order_relaxed);
+        auto stop = [](std::jthread& worker) noexcept
+        {
+            if (!worker.joinable()) return;
+            worker.request_stop();
+            try
+            {
+                if (worker.get_id() == std::this_thread::get_id()) worker.detach();
+                else worker.join();
+            }
+            catch (...)
+            {
+                if (worker.joinable()) worker.detach();
+            }
+        };
+        stop(m_chatGptImportThread);
+        stop(m_collectionThread);
+    }
+
     void WireInteractions()
     {
         if (m_bubbleMode)
@@ -750,10 +1128,7 @@ private:
                 m_renderer->Stop();
                 m_renderer.reset();
             }
-            if (m_collectionThread.joinable())
-            {
-                m_collectionThread.request_stop();
-            }
+            StopBackgroundWorkers();
         });
     }
 
@@ -828,7 +1203,6 @@ private:
         {
             return;
         }
-
         tokenometer::OverviewViewData snapshot;
         snapshot.collecting = m_collecting.load(std::memory_order_relaxed);
         snapshot.lastSync = m_lastCollectionAt.load(std::memory_order_relaxed);
@@ -874,6 +1248,17 @@ private:
             snapshot.error = L"读取本地使用快照失败";
         }
         m_dashboard->UpdateOverview(snapshot);
+        try
+        {
+            auto const totals = m_database->GetChatGPTEstimatedTotals(
+                m_chatGptImportData.accountLabel);
+            m_chatGptImportData.conversations = totals.estimatedSessions;
+            m_chatGptImportData.estimatedTokens = totals.estimatedTokens;
+            m_dashboard->UpdateChatGptImport(m_chatGptImportData);
+        }
+        catch (...)
+        {
+        }
         if (m_dashboard->CurrentPage() == tokenometer::DashboardPage::Details)
         {
             RefreshDetails();
@@ -932,9 +1317,13 @@ private:
     std::shared_ptr<tokenometer::Database> m_database;
     std::unique_ptr<tokenometer::CodexCollector> m_collector;
     std::jthread m_collectionThread;
+    std::jthread m_chatGptImportThread;
     std::atomic<int64_t> m_lastCollectionAt{};
     std::atomic_bool m_collecting{};
     std::atomic_bool m_collectionFailed{};
+    std::atomic_bool m_chatGptImporting{};
+    std::atomic_bool m_closing{};
+    tokenometer::ChatGptImportViewData m_chatGptImportData;
     tokenometer::DetailsDimension m_detailsDimension{ tokenometer::DetailsDimension::Tool };
     std::wstring m_selectedBreakdownKey;
     std::wstring m_selectedSessionId;
@@ -959,6 +1348,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         if (!tokenometer::CodexCollector::SelfTest()) return 12;
         if (!tokenometer::TestSourceContentReader()) return 13;
         if (!tokenometer::TestTrendAnalytics()) return 14;
+        if (!tokenometer::ChatGPTExportImporter::SelfTest()) return 15;
         return 0;
     }
 

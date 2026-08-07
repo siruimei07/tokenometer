@@ -140,25 +140,6 @@ namespace
         rest.Width(Star(std::max(1.0 - ratio, 0.001)));
     }
 
-    controls::Grid StatLine(
-        std::wstring_view label,
-        std::wstring_view value,
-        winrt::Windows::UI::Color const& valueColor = Color(247, 247, 245))
-    {
-        controls::Grid row;
-        AddColumn(row, Star());
-        AddColumn(row, mux::GridLengthHelper::Auto());
-
-        auto labelText = Text(label, 12, Color(154, 150, 151));
-        row.Children().Append(labelText);
-
-        auto valueText = Text(value, 12, valueColor, 600, true);
-        valueText.TextAlignment(mux::TextAlignment::Right);
-        controls::Grid::SetColumn(valueText, 1);
-        row.Children().Append(valueText);
-        return row;
-    }
-
     controls::Grid DynamicStatLine(
         std::wstring_view label,
         controls::TextBlock& valueTarget,
@@ -410,6 +391,12 @@ namespace
         return L"30 days";
     }
 
+    std::wstring FileNamePart(std::wstring const& path)
+    {
+        auto const separator = path.find_last_of(L"\\/");
+        return separator == std::wstring::npos ? path : path.substr(separator + 1);
+    }
+
     controls::Border SessionRow(
         controls::TextBlock& titleTarget,
         controls::TextBlock& detailTarget,
@@ -475,27 +462,6 @@ namespace
         return panel;
     }
 
-    controls::Grid SettingsBody(
-        std::wstring_view first,
-        std::wstring_view firstValue,
-        std::wstring_view second,
-        std::wstring_view secondValue)
-    {
-        controls::Grid body;
-        AddRow(body, Star());
-        AddRow(body, Star());
-        body.RowSpacing(10);
-
-        auto firstRow = StatLine(first, firstValue, Color(98, 223, 125));
-        firstRow.VerticalAlignment(mux::VerticalAlignment::Center);
-        body.Children().Append(firstRow);
-
-        auto secondRow = StatLine(second, secondValue, Color(255, 253, 142));
-        secondRow.VerticalAlignment(mux::VerticalAlignment::Center);
-        controls::Grid::SetRow(secondRow, 1);
-        body.Children().Append(secondRow);
-        return body;
-    }
 }
 
 namespace tokenometer
@@ -506,6 +472,7 @@ DashboardView::DashboardView()
     UpdateOverview({});
     UpdateDetails({});
     UpdateTrends({});
+    UpdateChatGptImport({});
     ShowPage(DashboardPage::Overview);
 }
 
@@ -651,6 +618,19 @@ void DashboardView::UpdateOverview(OverviewViewData const& data)
         m_sessionValues[index].Text(winrt::hstring{ FormatCompact(session.counts.DisplayTotal()) });
     }
     m_recentEmptyState.Visibility(sessionCount == 0 ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+
+    if (data.total.estimatedTokens > 0)
+    {
+        m_chatGptOverviewValue.Text(winrt::hstring{
+            L"≈ " + FormatCompact(data.total.estimatedTokens) + L" token" });
+        m_chatGptOverviewDetail.Text(winrt::hstring{
+            FormatInteger(data.total.estimatedSessions) + L" 个会话 · 官方导出可见文本估算" });
+    }
+    else
+    {
+        m_chatGptOverviewValue.Text(L"等待官方导出导入");
+        m_chatGptOverviewDetail.Text(L"实时 token 不可用");
+    }
     UpdateDailyVisuals(data.daily);
 }
 
@@ -1399,6 +1379,112 @@ void DashboardView::UpdateTrendButtons()
     update(m_trendRangeButtons, static_cast<size_t>(m_trendRange), Color(240, 63, 22));
 }
 
+void DashboardView::SetChatGptImportCallbacks(ChatGptImportCallbacks callbacks)
+{
+    m_chatGptImportCallbacks = std::move(callbacks);
+}
+
+void DashboardView::UpdateChatGptImport(ChatGptImportViewData const& data)
+{
+    m_chatGptAccountLabel.Text(winrt::hstring{ data.accountLabel });
+
+    std::wstring filesText;
+    if (data.selectedFiles.empty())
+    {
+        filesText = L"尚未选择 JSON 文件";
+    }
+    else
+    {
+        filesText = FormatInteger(static_cast<int64_t>(data.selectedFiles.size())) + L" 个 JSON · ";
+        filesText += FileNamePart(data.selectedFiles.front());
+        if (data.selectedFiles.size() > 1)
+        {
+            filesText += L" 等";
+        }
+    }
+    m_chatGptFilesText.Text(winrt::hstring{ filesText });
+
+    std::wstring_view title;
+    std::wstring_view fallbackMessage;
+    auto stateColor = Color(143, 139, 140);
+    switch (data.state)
+    {
+    case ChatGptImportState::Idle:
+        title = L"等待导入";
+        fallbackMessage = L"选择 ChatGPT 官方导出的一个或多个 JSON 文件。";
+        break;
+    case ChatGptImportState::SelectingFiles:
+        title = L"正在选择文件";
+        fallbackMessage = L"可多选 conversations.json 与编号分片。";
+        stateColor = Color(255, 253, 142);
+        break;
+    case ChatGptImportState::Importing:
+        title = L"正在导入";
+        fallbackMessage = L"正在解析会话并估算 token，请保持应用运行。";
+        stateColor = Color(255, 253, 142);
+        break;
+    case ChatGptImportState::Succeeded:
+        title = L"导入完成";
+        fallbackMessage = L"所选记录已完成处理，重复记录已跳过。";
+        stateColor = Color(98, 223, 125);
+        break;
+    case ChatGptImportState::Failed:
+        title = L"导入未完成";
+        fallbackMessage = L"请查看错误信息后重新选择文件。";
+        stateColor = Color(240, 63, 22);
+        break;
+    }
+
+    auto const message = data.message.empty() ? std::wstring{ fallbackMessage } : data.message;
+    m_chatGptImportTitle.Text(winrt::hstring{ title });
+    m_chatGptImportMessage.Text(winrt::hstring{ message });
+    m_chatGptImportDot.Fill(Brush(stateColor));
+
+    auto const busy = data.state == ChatGptImportState::SelectingFiles
+        || data.state == ChatGptImportState::Importing;
+    m_chatGptChooseFilesButton.IsEnabled(!busy);
+    m_chatGptChooseFilesButton.Content(winrt::box_value(winrt::hstring{
+        data.state == ChatGptImportState::SelectingFiles
+            ? L"正在选择…"
+            : data.state == ChatGptImportState::Importing
+                ? L"正在导入…"
+                : L"选择一个或多个 JSON" }));
+
+    auto const hasResults = data.state == ChatGptImportState::Succeeded
+        || data.state == ChatGptImportState::Failed
+        || data.conversations != 0
+        || data.estimatedTokens != 0
+        || data.skipped != 0
+        || data.unchangedFiles != 0
+        || data.errors != 0;
+    auto const resultText = [hasResults](int64_t value)
+    {
+        return hasResults ? FormatInteger(std::max<int64_t>(value, 0)) : std::wstring{ L"—" };
+    };
+    m_chatGptConversationCount.Text(winrt::hstring{ resultText(data.conversations) });
+    m_chatGptEstimatedTokens.Text(winrt::hstring{ resultText(data.estimatedTokens) });
+    m_chatGptSkippedCount.Text(winrt::hstring{ resultText(data.skipped) });
+    m_chatGptUnchangedCount.Text(winrt::hstring{ resultText(data.unchangedFiles) });
+    m_chatGptErrorCount.Text(winrt::hstring{ resultText(data.errors) });
+
+    m_chatGptDetails = data.details;
+    m_chatGptDetailsExpanded = data.detailsExpanded;
+    m_chatGptDetailsText.Text(winrt::hstring{ m_chatGptDetails });
+    m_chatGptDetailsButton.Visibility(
+        m_chatGptDetails.empty() ? mux::Visibility::Collapsed : mux::Visibility::Visible);
+
+    UpdateChatGptImportLayout();
+}
+
+void DashboardView::UpdateChatGptImportLayout()
+{
+    auto const showDetails = m_chatGptDetailsExpanded && !m_chatGptDetails.empty();
+    m_chatGptDetailsPanel.Visibility(showDetails ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    m_chatGptDetailsButton.Content(winrt::box_value(winrt::hstring{
+        showDetails ? L"收起详情" : L"查看详情" }));
+
+}
+
 void DashboardView::ShowPage(DashboardPage page)
 {
     m_currentPage = page;
@@ -1629,8 +1715,10 @@ controls::Grid DashboardView::BuildOverviewPage()
     controls::StackPanel chatgptCopy;
     chatgptCopy.Spacing(3);
     chatgptCopy.Children().Append(Text(L"ChatGPT", 13, Color(247, 247, 245), 600));
-    chatgptCopy.Children().Append(Text(L"等待官方导出导入", 11, Color(255, 253, 142), 600));
-    chatgptCopy.Children().Append(Text(L"实时 token 不可用", 9.5, Color(143, 139, 140)));
+    m_chatGptOverviewValue = Text(L"等待官方导出导入", 11, Color(255, 253, 142), 600);
+    m_chatGptOverviewDetail = Text(L"实时 token 不可用", 9.5, Color(143, 139, 140));
+    chatgptCopy.Children().Append(m_chatGptOverviewValue);
+    chatgptCopy.Children().Append(m_chatGptOverviewDetail);
     accounts.Children().Append(SoftPanel(chatgptCopy));
     accounts.Children().Append(Text(L"近期会话", 12, Color(143, 139, 140), 600));
     for (int index = 0; index < 3; ++index)
@@ -1962,41 +2050,189 @@ controls::Grid DashboardView::BuildTrendsPage()
 controls::Grid DashboardView::BuildSettingsPage()
 {
     controls::Grid page;
-    page.Height(548);
+    page.MinHeight(548);
     page.ColumnSpacing(16);
-    page.RowSpacing(16);
-    AddColumn(page, Star());
-    AddColumn(page, Star());
-    AddRow(page, Pixels(266));
-    AddRow(page, Pixels(266));
+    AddColumn(page, Star(1.15));
+    AddColumn(page, Star(0.85));
 
-    auto modules = Card(
-        L"仪表盘模块",
-        Color(240, 63, 22),
-        SettingsBody(L"显示模块", L"6 enabled", L"拖放顺序", L"CUSTOM"));
-    page.Children().Append(modules);
+    controls::StackPanel importBody;
+    importBody.Spacing(14);
 
-    auto appearance = Card(
-        L"外观",
-        Color(98, 223, 125),
-        SettingsBody(L"主题", L"DARK", L"玻璃透明度", L"72%"));
-    controls::Grid::SetColumn(appearance, 1);
-    page.Children().Append(appearance);
+    auto badgeText = Text(L"OFFICIAL EXPORT", 9.5, Color(18, 16, 17), 700, true);
+    badgeText.HorizontalAlignment(mux::HorizontalAlignment::Center);
+    badgeText.VerticalAlignment(mux::VerticalAlignment::Center);
+    controls::Border badge;
+    badge.Width(128);
+    badge.Height(26);
+    badge.HorizontalAlignment(mux::HorizontalAlignment::Left);
+    badge.Background(Brush(Color(98, 223, 125)));
+    badge.CornerRadius(Radius(13));
+    badge.Child(badgeText);
+    importBody.Children().Append(badge);
 
-    auto wsl = Card(
-        L"WSL 与同步",
-        Color(255, 253, 142),
-        SettingsBody(L"自动检测", L"ON", L"合并间隔", L"5 MIN"));
-    controls::Grid::SetRow(wsl, 1);
-    page.Children().Append(wsl);
+    auto hero = Text(L"导入 ChatGPT 使用记录", 25, Color(247, 247, 245), 650);
+    importBody.Children().Append(hero);
+    auto description = Text(
+        L"导入 conversations.json；token 为估算，不读取浏览器 / Cookie，不存正文。",
+        11.5,
+        Color(154, 150, 151));
+    description.TextWrapping(mux::TextWrapping::Wrap);
+    description.TextTrimming(mux::TextTrimming::None);
+    importBody.Children().Append(description);
 
-    auto surfaces = Card(
-        L"托盘与浮动气泡",
-        Color(240, 63, 22),
-        SettingsBody(L"托盘摘要", L"TOKENS", L"气泡预览", L"COMPACT"));
-    controls::Grid::SetColumn(surfaces, 1);
-    controls::Grid::SetRow(surfaces, 1);
-    page.Children().Append(surfaces);
+    controls::StackPanel boundaries;
+    boundaries.Spacing(8);
+    auto appendBoundary = [&boundaries](std::wstring_view marker, std::wstring_view copy,
+                                        winrt::Windows::UI::Color const& color)
+    {
+        controls::Grid row;
+        AddColumn(row, Pixels(24));
+        AddColumn(row, Star());
+        auto mark = Text(marker, 10.5, color, 700, true);
+        mark.VerticalAlignment(mux::VerticalAlignment::Center);
+        row.Children().Append(mark);
+        auto body = Text(copy, 10.5, Color(247, 247, 245), 500);
+        body.TextWrapping(mux::TextWrapping::Wrap);
+        body.TextTrimming(mux::TextTrimming::None);
+        controls::Grid::SetColumn(body, 1);
+        row.Children().Append(body);
+        boundaries.Children().Append(row);
+    };
+    appendBoundary(L"01", L"仅支持官方导出的 conversations.json、conversations-1.json 等文件；不解压 ZIP。", Color(255, 253, 142));
+    appendBoundary(L"02", L"可一次多选编号分片，也可稍后重复选择；导入按稳定 ID 幂等去重。", Color(98, 223, 125));
+    appendBoundary(L"03", L"只保存统计与来源标识；提示、回答和 Cookie 均不会写入应用状态。", Color(240, 63, 22));
+    importBody.Children().Append(SoftPanel(boundaries));
+
+    controls::StackPanel accountField;
+    accountField.Spacing(6);
+    accountField.Children().Append(Text(L"当前账户标签", 9.5, Color(143, 139, 140), 600));
+    m_chatGptAccountLabel = Text(L"ChatGPT", 11, Color(247, 247, 245), 650, true);
+    accountField.Children().Append(m_chatGptAccountLabel);
+    auto accountHint = Text(
+        L"可在 Windows 文件选择器中修改，用于隔离多个账户的导入统计。",
+        9,
+        Color(143, 139, 140));
+    accountHint.TextWrapping(mux::TextWrapping::Wrap);
+    accountHint.TextTrimming(mux::TextTrimming::None);
+    accountField.Children().Append(accountHint);
+    importBody.Children().Append(SoftPanel(accountField));
+
+    m_chatGptChooseFilesButton = controls::Button{};
+    m_chatGptChooseFilesButton.Height(44);
+    m_chatGptChooseFilesButton.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+    m_chatGptChooseFilesButton.HorizontalContentAlignment(mux::HorizontalAlignment::Center);
+    m_chatGptChooseFilesButton.Background(Brush(Color(240, 63, 22)));
+    m_chatGptChooseFilesButton.Foreground(Brush(Color(247, 247, 245)));
+    m_chatGptChooseFilesButton.BorderThickness({ 0 });
+    m_chatGptChooseFilesButton.CornerRadius(Radius(14));
+    m_chatGptChooseFilesButton.FontFamily(media::FontFamily{ L"Segoe UI Variable Display" });
+    m_chatGptChooseFilesButton.FontSize(12);
+    m_chatGptChooseFilesButton.FontWeight({ 650 });
+    automation::AutomationProperties::SetName(
+        m_chatGptChooseFilesButton,
+        winrt::hstring{ L"选择 ChatGPT 导出 JSON 文件" });
+    m_chatGptChooseFilesButton.Click([this](auto const&, auto const&)
+    {
+        if (m_chatGptImportCallbacks.onChooseFilesRequested)
+        {
+            m_chatGptImportCallbacks.onChooseFilesRequested(
+                std::wstring{ m_chatGptAccountLabel.Text().c_str() });
+        }
+    });
+    importBody.Children().Append(m_chatGptChooseFilesButton);
+
+    auto importCard = Card(L"ChatGPT 数据导入", Color(240, 63, 22), importBody);
+    page.Children().Append(importCard);
+
+    controls::StackPanel statusBody;
+    statusBody.Spacing(12);
+
+    controls::Grid stateRow;
+    AddColumn(stateRow, Pixels(18));
+    AddColumn(stateRow, Star());
+    m_chatGptImportDot = shapes::Ellipse{};
+    m_chatGptImportDot.Width(9);
+    m_chatGptImportDot.Height(9);
+    m_chatGptImportDot.VerticalAlignment(mux::VerticalAlignment::Center);
+    stateRow.Children().Append(m_chatGptImportDot);
+    controls::StackPanel stateCopy;
+    stateCopy.Spacing(3);
+    m_chatGptImportTitle = Text(L"等待导入", 13, Color(247, 247, 245), 600);
+    stateCopy.Children().Append(m_chatGptImportTitle);
+    m_chatGptImportMessage = Text(L"", 9.5, Color(143, 139, 140));
+    m_chatGptImportMessage.TextWrapping(mux::TextWrapping::Wrap);
+    m_chatGptImportMessage.TextTrimming(mux::TextTrimming::None);
+    stateCopy.Children().Append(m_chatGptImportMessage);
+    controls::Grid::SetColumn(stateCopy, 1);
+    stateRow.Children().Append(stateCopy);
+    statusBody.Children().Append(stateRow);
+
+    controls::StackPanel filesCopy;
+    filesCopy.Spacing(3);
+    filesCopy.Children().Append(Text(L"所选文件", 9.5, Color(143, 139, 140), 600));
+    m_chatGptFilesText = Text(L"尚未选择 JSON 文件", 10.5, Color(247, 247, 245), 600, true);
+    m_chatGptFilesText.TextWrapping(mux::TextWrapping::Wrap);
+    m_chatGptFilesText.TextTrimming(mux::TextTrimming::None);
+    filesCopy.Children().Append(m_chatGptFilesText);
+    statusBody.Children().Append(SoftPanel(filesCopy));
+
+    controls::StackPanel results;
+    results.Spacing(8);
+    results.Children().Append(DynamicStatLine(
+        L"账户总会话", m_chatGptConversationCount, L"—", Color(98, 223, 125)));
+    results.Children().Append(DynamicStatLine(
+        L"账户总估算 token", m_chatGptEstimatedTokens, L"—", Color(255, 253, 142)));
+    results.Children().Append(DynamicStatLine(
+        L"本次跳过会话", m_chatGptSkippedCount, L"—", Color(143, 139, 140)));
+    results.Children().Append(DynamicStatLine(
+        L"未变更文件", m_chatGptUnchangedCount, L"—", Color(143, 139, 140)));
+    results.Children().Append(DynamicStatLine(
+        L"本次错误", m_chatGptErrorCount, L"—", Color(240, 63, 22)));
+    statusBody.Children().Append(results);
+
+    auto estimateNote = Text(
+        L"估算值仅用于趋势与分组统计，不代表 OpenAI 账单 token。",
+        9,
+        Color(143, 139, 140));
+    estimateNote.TextWrapping(mux::TextWrapping::Wrap);
+    estimateNote.TextTrimming(mux::TextTrimming::None);
+    statusBody.Children().Append(estimateNote);
+
+    m_chatGptDetailsButton = controls::Button{};
+    m_chatGptDetailsButton.Height(34);
+    m_chatGptDetailsButton.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+    m_chatGptDetailsButton.HorizontalContentAlignment(mux::HorizontalAlignment::Center);
+    m_chatGptDetailsButton.Background(Brush(Color(29, 27, 28)));
+    m_chatGptDetailsButton.Foreground(Brush(Color(255, 253, 142)));
+    m_chatGptDetailsButton.BorderBrush(Brush(Color(255, 255, 255, 20)));
+    m_chatGptDetailsButton.BorderThickness({ 1 });
+    m_chatGptDetailsButton.CornerRadius(Radius(11));
+    m_chatGptDetailsButton.FontFamily(media::FontFamily{ L"Segoe UI Variable Display" });
+    m_chatGptDetailsButton.FontSize(10.5);
+    automation::AutomationProperties::SetName(
+        m_chatGptDetailsButton,
+        winrt::hstring{ L"查看 ChatGPT 导入详情" });
+    m_chatGptDetailsButton.Click([this](auto const&, auto const&)
+    {
+        m_chatGptDetailsExpanded = !m_chatGptDetailsExpanded;
+        UpdateChatGptImportLayout();
+        if (m_chatGptImportCallbacks.onDetailsToggled)
+        {
+            m_chatGptImportCallbacks.onDetailsToggled(m_chatGptDetailsExpanded);
+        }
+    });
+    statusBody.Children().Append(m_chatGptDetailsButton);
+
+    m_chatGptDetailsText = Text(L"", 9.5, Color(247, 247, 245), 400, true);
+    m_chatGptDetailsText.TextWrapping(mux::TextWrapping::Wrap);
+    m_chatGptDetailsText.TextTrimming(mux::TextTrimming::None);
+    m_chatGptDetailsPanel = SoftPanel(m_chatGptDetailsText);
+    m_chatGptDetailsPanel.Visibility(mux::Visibility::Collapsed);
+    statusBody.Children().Append(m_chatGptDetailsPanel);
+
+    auto statusCard = Card(L"导入状态", Color(98, 223, 125), statusBody);
+    controls::Grid::SetColumn(statusCard, 1);
+    page.Children().Append(statusCard);
     return page;
 }
 

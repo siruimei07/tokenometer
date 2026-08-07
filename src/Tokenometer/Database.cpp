@@ -9,12 +9,22 @@
 #include <chrono>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <unordered_map>
 #include <utility>
 
 namespace tokenometer
 {
     namespace
     {
+        void ThrowIfCancelled(std::stop_token stopToken)
+        {
+            if (stopToken.stop_requested())
+            {
+                throw std::system_error(std::make_error_code(std::errc::operation_canceled));
+            }
+        }
+
         std::string Utf8(std::wstring_view value)
         {
             if (value.empty())
@@ -143,6 +153,15 @@ namespace tokenometer
                     throw std::runtime_error(sqlite3_errmsg(m_database));
                 }
                 return false;
+            }
+
+            void Reset()
+            {
+                if (sqlite3_reset(m_statement) != SQLITE_OK ||
+                    sqlite3_clear_bindings(m_statement) != SQLITE_OK)
+                {
+                    throw std::runtime_error(sqlite3_errmsg(m_database));
+                }
             }
 
             [[nodiscard]] int64_t Int64(int column) const
@@ -301,7 +320,7 @@ namespace tokenometer
             versionStatement.Step();
             version = versionStatement.Int(0);
         }
-        if (version > 5)
+        if (version > 6)
         {
             throw std::runtime_error("The usage database was created by a newer Tokenometer version");
         }
@@ -502,6 +521,70 @@ namespace tokenometer
                 captured_at INTEGER NOT NULL,
                 PRIMARY KEY(provider, account_id)
             );
+            CREATE TABLE IF NOT EXISTS chatgpt_import_sources(
+                account_id TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                source_hash TEXT NOT NULL,
+                modified_at INTEGER NOT NULL,
+                size INTEGER NOT NULL,
+                imported_at INTEGER NOT NULL,
+                PRIMARY KEY(account_id, source_path)
+            );
+            CREATE TABLE IF NOT EXISTS chatgpt_estimated_sessions(
+                account_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                source_path TEXT NOT NULL,
+                source_hash TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'chatgpt-export',
+                measurement_kind TEXT NOT NULL DEFAULT 'estimated' CHECK(measurement_kind='estimated'),
+                model TEXT NOT NULL DEFAULT '',
+                started_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                messages INTEGER NOT NULL DEFAULT 0,
+                prompts INTEGER NOT NULL DEFAULT 0,
+                estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+                estimated_output_tokens INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(account_id, session_id),
+                FOREIGN KEY(account_id, source_path)
+                    REFERENCES chatgpt_import_sources(account_id, source_path) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS chatgpt_estimated_sessions_updated_idx
+                ON chatgpt_estimated_sessions(account_id, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS chatgpt_estimated_prompts(
+                account_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                prompt_index INTEGER NOT NULL,
+                turn_id TEXT NOT NULL DEFAULT '',
+                measurement_kind TEXT NOT NULL DEFAULT 'estimated' CHECK(measurement_kind='estimated'),
+                timestamp INTEGER NOT NULL DEFAULT 0,
+                day TEXT NOT NULL DEFAULT 'unknown',
+                model TEXT NOT NULL DEFAULT '',
+                messages INTEGER NOT NULL DEFAULT 0,
+                estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+                estimated_output_tokens INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(account_id, session_id, prompt_index),
+                FOREIGN KEY(account_id, session_id)
+                    REFERENCES chatgpt_estimated_sessions(account_id, session_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS chatgpt_estimated_prompts_time_idx
+                ON chatgpt_estimated_prompts(timestamp);
+            CREATE TABLE IF NOT EXISTS chatgpt_estimated_daily(
+                account_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                day TEXT NOT NULL,
+                source_kind TEXT NOT NULL DEFAULT 'chatgpt-export',
+                measurement_kind TEXT NOT NULL DEFAULT 'estimated' CHECK(measurement_kind='estimated'),
+                model TEXT NOT NULL DEFAULT '',
+                estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+                estimated_output_tokens INTEGER NOT NULL DEFAULT 0,
+                messages INTEGER NOT NULL DEFAULT 0,
+                prompts INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(account_id, session_id, day, model),
+                FOREIGN KEY(account_id, session_id)
+                    REFERENCES chatgpt_estimated_sessions(account_id, session_id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS chatgpt_estimated_daily_day_idx
+                ON chatgpt_estimated_daily(day, account_id);
             INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                 VALUES(1, CAST(strftime('%s','now') AS INTEGER));
             INSERT OR IGNORE INTO schema_migrations(version, applied_at)
@@ -512,7 +595,9 @@ namespace tokenometer
                 VALUES(4, CAST(strftime('%s','now') AS INTEGER));
             INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                 VALUES(5, CAST(strftime('%s','now') AS INTEGER));
-            PRAGMA user_version=5;
+            INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES(6, CAST(strftime('%s','now') AS INTEGER));
+            PRAGMA user_version=6;
                 )sql");
             });
         }
@@ -757,6 +842,83 @@ namespace tokenometer
                     INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                         VALUES(5, CAST(strftime('%s','now') AS INTEGER));
                     PRAGMA user_version=5;
+                )sql");
+            });
+            version = 5;
+        }
+
+        if (version == 5)
+        {
+            Transaction([&]
+            {
+                Execute(R"sql(
+                    CREATE TABLE chatgpt_import_sources(
+                        account_id TEXT NOT NULL,
+                        source_path TEXT NOT NULL,
+                        source_hash TEXT NOT NULL,
+                        modified_at INTEGER NOT NULL,
+                        size INTEGER NOT NULL,
+                        imported_at INTEGER NOT NULL,
+                        PRIMARY KEY(account_id, source_path)
+                    );
+                    CREATE TABLE chatgpt_estimated_sessions(
+                        account_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        source_path TEXT NOT NULL,
+                        source_hash TEXT NOT NULL,
+                        source_kind TEXT NOT NULL DEFAULT 'chatgpt-export',
+                        measurement_kind TEXT NOT NULL DEFAULT 'estimated' CHECK(measurement_kind='estimated'),
+                        model TEXT NOT NULL DEFAULT '',
+                        started_at INTEGER NOT NULL DEFAULT 0,
+                        updated_at INTEGER NOT NULL DEFAULT 0,
+                        messages INTEGER NOT NULL DEFAULT 0,
+                        prompts INTEGER NOT NULL DEFAULT 0,
+                        estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        estimated_output_tokens INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(account_id, session_id),
+                        FOREIGN KEY(account_id, source_path)
+                            REFERENCES chatgpt_import_sources(account_id, source_path) ON DELETE CASCADE
+                    );
+                    CREATE INDEX chatgpt_estimated_sessions_updated_idx
+                        ON chatgpt_estimated_sessions(account_id, updated_at DESC);
+                    CREATE TABLE chatgpt_estimated_prompts(
+                        account_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        prompt_index INTEGER NOT NULL,
+                        turn_id TEXT NOT NULL DEFAULT '',
+                        measurement_kind TEXT NOT NULL DEFAULT 'estimated' CHECK(measurement_kind='estimated'),
+                        timestamp INTEGER NOT NULL DEFAULT 0,
+                        day TEXT NOT NULL DEFAULT 'unknown',
+                        model TEXT NOT NULL DEFAULT '',
+                        messages INTEGER NOT NULL DEFAULT 0,
+                        estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        estimated_output_tokens INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(account_id, session_id, prompt_index),
+                        FOREIGN KEY(account_id, session_id)
+                            REFERENCES chatgpt_estimated_sessions(account_id, session_id) ON DELETE CASCADE
+                    );
+                    CREATE INDEX chatgpt_estimated_prompts_time_idx
+                        ON chatgpt_estimated_prompts(timestamp);
+                    CREATE TABLE chatgpt_estimated_daily(
+                        account_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        day TEXT NOT NULL,
+                        source_kind TEXT NOT NULL DEFAULT 'chatgpt-export',
+                        measurement_kind TEXT NOT NULL DEFAULT 'estimated' CHECK(measurement_kind='estimated'),
+                        model TEXT NOT NULL DEFAULT '',
+                        estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        estimated_output_tokens INTEGER NOT NULL DEFAULT 0,
+                        messages INTEGER NOT NULL DEFAULT 0,
+                        prompts INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(account_id, session_id, day, model),
+                        FOREIGN KEY(account_id, session_id)
+                            REFERENCES chatgpt_estimated_sessions(account_id, session_id) ON DELETE CASCADE
+                    );
+                    CREATE INDEX chatgpt_estimated_daily_day_idx
+                        ON chatgpt_estimated_daily(day, account_id);
+                    INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                        VALUES(6, CAST(strftime('%s','now') AS INTEGER));
+                    PRAGMA user_version=6;
                 )sql");
             });
         }
@@ -1335,6 +1497,178 @@ namespace tokenometer
         statement.Step();
     }
 
+    bool Database::IsChatGPTExportCurrent(ChatGPTExportBatch const& batch)
+    {
+        std::scoped_lock lock(m_mutex);
+        Statement statement(m_database, R"sql(
+            SELECT 1 FROM chatgpt_import_sources
+            WHERE account_id=?1 AND source_path=?2 AND source_hash=?3
+              AND modified_at=?4 AND size=?5;
+        )sql");
+        statement.Bind(1, batch.accountId);
+        statement.Bind(2, batch.sourcePath);
+        statement.Bind(3, batch.sourceHash);
+        statement.Bind(4, batch.sourceModifiedAt);
+        statement.Bind(5, batch.sourceSize);
+        return statement.Step();
+    }
+
+    void Database::ReplaceChatGPTExport(
+        ChatGPTExportBatch const& batch,
+        std::stop_token stopToken)
+    {
+        ThrowIfCancelled(stopToken);
+        if (batch.accountId.empty() || batch.sourcePath.empty() || batch.sourceHash.empty())
+        {
+            throw std::invalid_argument("ChatGPT export metadata is incomplete");
+        }
+
+        std::unordered_map<std::wstring, std::vector<ChatGPTPromptEstimate const*>> promptsBySession;
+        for (auto const& prompt : batch.prompts)
+        {
+            ThrowIfCancelled(stopToken);
+            promptsBySession[prompt.sessionId].push_back(&prompt);
+        }
+
+        ThrowIfCancelled(stopToken);
+        Transaction([&]
+        {
+            Statement insertSource(m_database, R"sql(
+                INSERT INTO chatgpt_import_sources(
+                    account_id, source_path, source_hash, modified_at, size, imported_at)
+                VALUES(?1,?2,'',?3,?4,?5)
+                ON CONFLICT(account_id, source_path) DO UPDATE SET
+                    source_hash='', modified_at=excluded.modified_at,
+                    size=excluded.size, imported_at=excluded.imported_at;
+            )sql");
+            insertSource.Bind(1, batch.accountId);
+            insertSource.Bind(2, batch.sourcePath);
+            insertSource.Bind(3, batch.sourceModifiedAt);
+            insertSource.Bind(4, batch.sourceSize);
+            insertSource.Bind(5, UnixNow());
+            insertSource.Step();
+        });
+
+        for (auto const& session : batch.sessions)
+        {
+            ThrowIfCancelled(stopToken);
+            Transaction([&]
+            {
+                ThrowIfCancelled(stopToken);
+            Statement deleteSession(m_database, R"sql(
+                DELETE FROM chatgpt_estimated_sessions WHERE account_id=?1 AND session_id=?2;
+            )sql");
+                deleteSession.Bind(1, batch.accountId);
+                deleteSession.Bind(2, session.id);
+                deleteSession.Step();
+
+                Statement insertSession(m_database, R"sql(
+                INSERT INTO chatgpt_estimated_sessions(
+                    account_id, session_id, source_path, source_hash,
+                    source_kind, measurement_kind, model,
+                    started_at, updated_at, messages, prompts,
+                    estimated_input_tokens, estimated_output_tokens)
+                VALUES(?1,?2,?3,?4,'chatgpt-export','estimated',?5,?6,?7,?8,?9,?10,?11);
+            )sql");
+                insertSession.Bind(1, batch.accountId);
+                insertSession.Bind(2, session.id);
+                insertSession.Bind(3, batch.sourcePath);
+                insertSession.Bind(4, batch.sourceHash);
+                insertSession.Bind(5, session.model);
+                insertSession.Bind(6, session.startedAt);
+                insertSession.Bind(7, session.updatedAt);
+                insertSession.Bind(8, session.messages);
+                insertSession.Bind(9, session.prompts);
+                insertSession.Bind(10, session.estimatedInputTokens);
+                insertSession.Bind(11, session.estimatedOutputTokens);
+                insertSession.Step();
+
+                Statement insertPrompt(m_database, R"sql(
+                INSERT INTO chatgpt_estimated_prompts(
+                    account_id, session_id, prompt_index, turn_id, measurement_kind,
+                    timestamp, day, model, messages,
+                    estimated_input_tokens, estimated_output_tokens)
+                VALUES(?1,?2,?3,?4,'estimated',?5,?6,?7,?8,?9,?10);
+                )sql");
+                auto const prompts = promptsBySession.find(session.id);
+                if (prompts != promptsBySession.end())
+                {
+                    for (auto const* prompt : prompts->second)
+                    {
+                        ThrowIfCancelled(stopToken);
+                        insertPrompt.Bind(1, batch.accountId);
+                        insertPrompt.Bind(2, prompt->sessionId);
+                        insertPrompt.Bind(3, prompt->promptIndex);
+                        insertPrompt.Bind(4, prompt->turnId);
+                        insertPrompt.Bind(5, prompt->timestamp);
+                        insertPrompt.Bind(6, prompt->day);
+                        insertPrompt.Bind(7, prompt->model);
+                        insertPrompt.Bind(8, prompt->messages);
+                        insertPrompt.Bind(9, prompt->estimatedInputTokens);
+                        insertPrompt.Bind(10, prompt->estimatedOutputTokens);
+                        insertPrompt.Step();
+                        insertPrompt.Reset();
+                    }
+                }
+
+                ThrowIfCancelled(stopToken);
+                Statement daily(m_database, R"sql(
+                INSERT INTO chatgpt_estimated_daily(
+                    account_id, session_id, day, source_kind, measurement_kind, model,
+                    estimated_input_tokens, estimated_output_tokens, messages, prompts)
+                SELECT p.account_id, p.session_id, p.day, 'chatgpt-export', 'estimated', p.model,
+                       SUM(p.estimated_input_tokens), SUM(p.estimated_output_tokens),
+                       SUM(p.messages), COUNT(*)
+                FROM chatgpt_estimated_prompts p
+                WHERE p.account_id=?1 AND p.session_id=?2
+                GROUP BY p.account_id, p.session_id, p.day, p.model;
+            )sql");
+                daily.Bind(1, batch.accountId);
+                daily.Bind(2, session.id);
+                daily.Step();
+            });
+        }
+
+        ThrowIfCancelled(stopToken);
+        Transaction([&]
+        {
+            ThrowIfCancelled(stopToken);
+            Statement deleteStale(m_database, R"sql(
+                DELETE FROM chatgpt_estimated_sessions
+                WHERE account_id=?1 AND source_path=?2 AND source_hash<>?3;
+            )sql");
+            deleteStale.Bind(1, batch.accountId);
+            deleteStale.Bind(2, batch.sourcePath);
+            deleteStale.Bind(3, batch.sourceHash);
+            deleteStale.Step();
+
+            Statement completeSource(m_database, R"sql(
+                UPDATE chatgpt_import_sources
+                SET source_hash=?3, modified_at=?4, size=?5, imported_at=?6
+                WHERE account_id=?1 AND source_path=?2;
+            )sql");
+            completeSource.Bind(1, batch.accountId);
+            completeSource.Bind(2, batch.sourcePath);
+            completeSource.Bind(3, batch.sourceHash);
+            completeSource.Bind(4, batch.sourceModifiedAt);
+            completeSource.Bind(5, batch.sourceSize);
+            completeSource.Bind(6, UnixNow());
+            completeSource.Step();
+
+            Statement pruneSources(m_database, R"sql(
+                DELETE FROM chatgpt_import_sources
+                WHERE account_id=?1 AND source_path<>?2
+                  AND NOT EXISTS(
+                      SELECT 1 FROM chatgpt_estimated_sessions s
+                      WHERE s.account_id=chatgpt_import_sources.account_id
+                        AND s.source_path=chatgpt_import_sources.source_path);
+            )sql");
+            pruneSources.Bind(1, batch.accountId);
+            pruneSources.Bind(2, batch.sourcePath);
+            pruneSources.Step();
+        });
+    }
+
     UsageTotals Database::GetTotals(int64_t since)
     {
         std::scoped_lock lock(m_mutex);
@@ -1355,6 +1689,15 @@ namespace tokenometer
         result.toolCalls = statement.Int64(7);
         result.activeDays = statement.Int64(8);
         result.sessions = statement.Int64(9);
+        Statement estimated(m_database, R"sql(
+            SELECT COALESCE(SUM(estimated_input_tokens + estimated_output_tokens),0),
+                   COUNT(DISTINCT length(account_id) || ':' || account_id || session_id)
+            FROM chatgpt_estimated_prompts WHERE (?1=0 OR timestamp>=?1);
+        )sql");
+        estimated.Bind(1, since);
+        estimated.Step();
+        result.estimatedTokens = estimated.Int64(0);
+        result.estimatedSessions = estimated.Int64(1);
         return result;
     }
 
@@ -1610,6 +1953,145 @@ namespace tokenometer
         result.secondaryResetsAt = statement.Int64(9);
         result.planType = statement.Text(10);
         result.capturedAt = statement.Int64(11);
+        return result;
+    }
+
+    std::vector<ChatGPTSessionEstimate> Database::GetChatGPTEstimatedSessions(
+        std::wstring_view accountId,
+        int limit)
+    {
+        std::scoped_lock lock(m_mutex);
+        Statement statement(m_database, R"sql(
+            SELECT session_id, source_kind, account_id, model, started_at, updated_at,
+                   messages, prompts, estimated_input_tokens, estimated_output_tokens
+            FROM chatgpt_estimated_sessions
+            WHERE account_id=?1
+            ORDER BY updated_at DESC, session_id
+            LIMIT ?2;
+        )sql");
+        statement.Bind(1, accountId);
+        statement.Bind(2, std::clamp(limit, 1, 500));
+        std::vector<ChatGPTSessionEstimate> result;
+        while (statement.Step())
+        {
+            ChatGPTSessionEstimate row;
+            row.id = statement.Text(0);
+            row.sourceKind = statement.Text(1);
+            row.accountId = statement.Text(2);
+            row.model = statement.Text(3);
+            row.startedAt = statement.Int64(4);
+            row.updatedAt = statement.Int64(5);
+            row.messages = statement.Int64(6);
+            row.prompts = statement.Int64(7);
+            row.estimatedInputTokens = statement.Int64(8);
+            row.estimatedOutputTokens = statement.Int64(9);
+            result.push_back(std::move(row));
+        }
+        return result;
+    }
+
+    UsageTotals Database::GetChatGPTEstimatedTotals(std::wstring_view accountId)
+    {
+        std::scoped_lock lock(m_mutex);
+        Statement statement(m_database, R"sql(
+            SELECT COALESCE(SUM(estimated_input_tokens + estimated_output_tokens),0), COUNT(*)
+            FROM chatgpt_estimated_sessions WHERE account_id=?1;
+        )sql");
+        statement.Bind(1, accountId);
+        statement.Step();
+        UsageTotals result;
+        result.estimatedTokens = statement.Int64(0);
+        result.estimatedSessions = statement.Int64(1);
+        return result;
+    }
+
+    std::vector<ChatGPTPromptEstimate> Database::GetChatGPTEstimatedPrompts(
+        std::wstring_view accountId,
+        std::wstring_view sessionId,
+        int limit)
+    {
+        std::scoped_lock lock(m_mutex);
+        Statement statement(m_database, R"sql(
+            SELECT session_id, turn_id, prompt_index, timestamp, day, model, messages,
+                   estimated_input_tokens, estimated_output_tokens
+            FROM chatgpt_estimated_prompts
+            WHERE account_id=?1 AND session_id=?2
+            ORDER BY prompt_index DESC
+            LIMIT ?3;
+        )sql");
+        statement.Bind(1, accountId);
+        statement.Bind(2, sessionId);
+        statement.Bind(3, std::clamp(limit, 1, 2000));
+        std::vector<ChatGPTPromptEstimate> result;
+        while (statement.Step())
+        {
+            ChatGPTPromptEstimate row;
+            row.sessionId = statement.Text(0);
+            row.turnId = statement.Text(1);
+            row.promptIndex = statement.Int(2);
+            row.timestamp = statement.Int64(3);
+            row.day = statement.Text(4);
+            row.model = statement.Text(5);
+            row.messages = statement.Int64(6);
+            row.estimatedInputTokens = statement.Int64(7);
+            row.estimatedOutputTokens = statement.Int64(8);
+            result.push_back(std::move(row));
+        }
+        return result;
+    }
+
+    std::vector<ChatGPTEstimatedDailyUsage> Database::GetChatGPTEstimatedDailyUsage(
+        int days,
+        std::wstring_view accountId)
+    {
+        std::scoped_lock lock(m_mutex);
+        std::string sql = R"sql(
+            SELECT day, source_kind, model, account_id,
+                   SUM(estimated_input_tokens), SUM(estimated_output_tokens),
+                   SUM(messages), SUM(prompts)
+            FROM chatgpt_estimated_daily WHERE 1=1 )sql";
+        int bindIndex = 1;
+        int accountIndex{};
+        int firstDayIndex{};
+        int lastDayIndex{};
+        if (!accountId.empty())
+        {
+            accountIndex = bindIndex++;
+            sql += "AND account_id=?" + std::to_string(accountIndex) + " ";
+        }
+        if (days > 0)
+        {
+            firstDayIndex = bindIndex++;
+            lastDayIndex = bindIndex++;
+            sql += "AND day>=?" + std::to_string(firstDayIndex) +
+                   " AND day<=?" + std::to_string(lastDayIndex) + " ";
+        }
+        sql += R"sql(
+            GROUP BY day, source_kind, model, account_id
+            ORDER BY day ASC;
+        )sql";
+
+        Statement statement(m_database, sql.c_str());
+        if (accountIndex) statement.Bind(accountIndex, accountId);
+        if (firstDayIndex)
+        {
+            statement.Bind(firstDayIndex, LocalCalendarDay(days - 1));
+            statement.Bind(lastDayIndex, LocalCalendarDay());
+        }
+        std::vector<ChatGPTEstimatedDailyUsage> result;
+        while (statement.Step())
+        {
+            ChatGPTEstimatedDailyUsage row;
+            row.day = statement.Text(0);
+            row.sourceKind = statement.Text(1);
+            row.model = statement.Text(2);
+            row.accountId = statement.Text(3);
+            row.estimatedInputTokens = statement.Int64(4);
+            row.estimatedOutputTokens = statement.Int64(5);
+            row.messages = statement.Int64(6);
+            row.prompts = statement.Int64(7);
+            result.push_back(std::move(row));
+        }
         return result;
     }
 
@@ -1938,7 +2420,7 @@ namespace tokenometer
             )sql");
             migrated.Initialize();
             Statement migratedVersion(migrated.m_database, "PRAGMA user_version;");
-            if (!migratedVersion.Step() || migratedVersion.Int(0) != 5) return false;
+            if (!migratedVersion.Step() || migratedVersion.Int(0) != 6) return false;
             auto hasAccountColumn = [&](char const* table)
             {
                 std::string sql = "PRAGMA table_info(";

@@ -6,6 +6,7 @@
 #include <functional>
 #include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string_view>
 
 struct sqlite3;
@@ -39,6 +40,10 @@ namespace tokenometer
         bool AttachToolOutput(ToolOutputEvent const& event);
         bool InsertPromptEvent(PromptEvent const& event);
         void UpsertRateLimit(RateLimitSnapshot const& snapshot);
+        [[nodiscard]] bool IsChatGPTExportCurrent(ChatGPTExportBatch const& batch);
+        void ReplaceChatGPTExport(
+            ChatGPTExportBatch const& batch,
+            std::stop_token stopToken = {});
 
         [[nodiscard]] UsageTotals GetTotals(int64_t since = 0);
         [[nodiscard]] std::vector<DailyUsage> GetDailyUsage(int days);
@@ -57,6 +62,17 @@ namespace tokenometer
         [[nodiscard]] std::optional<RateLimitSnapshot> GetLatestRateLimit(
             std::wstring_view provider = L"codex",
             std::wstring_view accountId = L"current");
+        [[nodiscard]] std::vector<ChatGPTSessionEstimate> GetChatGPTEstimatedSessions(
+            std::wstring_view accountId,
+            int limit = 100);
+        [[nodiscard]] UsageTotals GetChatGPTEstimatedTotals(std::wstring_view accountId);
+        [[nodiscard]] std::vector<ChatGPTPromptEstimate> GetChatGPTEstimatedPrompts(
+            std::wstring_view accountId,
+            std::wstring_view sessionId,
+            int limit = 500);
+        [[nodiscard]] std::vector<ChatGPTEstimatedDailyUsage> GetChatGPTEstimatedDailyUsage(
+            int days,
+            std::wstring_view accountId = {});
 
         void PruneDetails(int usageDays = 180, int toolDays = 180, int hourlyDays = 400);
         [[nodiscard]] bool PruneDetailsIfDue(

@@ -63,7 +63,7 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;runtimeobject.lib;user32.lib;gdi32.lib;shell32.lib;ole32.lib;winsqlite3.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d11.lib;dxgi.lib;d3dcompiler.lib;runtimeobject.lib;user32.lib;gdi32.lib;shell32.lib;ole32.lib;bcrypt.lib;winsqlite3.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(ProjectDir)Glass.hlsl" "$(OutDir)Glass.hlsl"</Command>
@@ -71,6 +71,7 @@
   </ItemDefinitionGroup>
 
   <ItemGroup>
+    <ClCompile Include="ChatGPTExportImporter.cpp" />
     <ClCompile Include="CodexCollector.cpp" />
     <ClCompile Include="DashboardView.cpp" />
     <ClCompile Include="Database.cpp" />
@@ -78,6 +79,7 @@
     <ClCompile Include="TrendAnalytics.cpp" />
     <ClCompile Include="CaptureRenderer.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClInclude Include="ChatGPTExportImporter.h" />
     <ClInclude Include="CodexCollector.h" />
     <ClInclude Include="CaptureRenderer.h" />
     <ClInclude Include="DashboardView.h" />
