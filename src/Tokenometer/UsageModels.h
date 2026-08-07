@@ -56,6 +56,7 @@ namespace tokenometer
         int64_t startedAt{};
         int64_t updatedAt{};
         int messageCount{};
+        std::wstring accountId{ L"current" };
     };
 
     struct UsageEvent
@@ -73,6 +74,7 @@ namespace tokenometer
         int64_t timestamp{};
         std::wstring day;
         TokenCounts counts;
+        std::wstring accountId{ L"current" };
     };
 
     struct ToolEvent
@@ -92,6 +94,7 @@ namespace tokenometer
         std::wstring name;
         std::wstring callId;
         int64_t inputLength{};
+        std::wstring accountId{ L"current" };
     };
 
     struct ToolOutputEvent
@@ -117,6 +120,7 @@ namespace tokenometer
         int promptIndex{};
         int64_t timestamp{};
         std::wstring day;
+        std::wstring accountId{ L"current" };
     };
 
     struct RateLimitSnapshot
@@ -155,6 +159,7 @@ namespace tokenometer
         TokenCounts counts;
         int64_t messages{};
         int64_t toolCalls{};
+        std::wstring accountId;
     };
 
     struct HourlyUsage
@@ -169,6 +174,7 @@ namespace tokenometer
         TokenCounts counts;
         int64_t messages{};
         int64_t toolCalls{};
+        std::wstring accountId;
     };
 
     struct BreakdownRow
@@ -192,6 +198,7 @@ namespace tokenometer
         int64_t messages{};
         int64_t toolCalls{};
         TokenCounts counts;
+        std::wstring accountId;
     };
 
     struct TurnSummary

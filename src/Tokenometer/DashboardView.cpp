@@ -8,6 +8,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <utility>
 
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
@@ -509,6 +510,7 @@ DashboardView::DashboardView()
 {
     BuildShell();
     UpdateOverview({});
+    UpdateDetails({});
     ShowPage(DashboardPage::Overview);
 }
 
@@ -723,6 +725,329 @@ void DashboardView::UpdateDailyVisuals(std::vector<DailyUsage> const& daily)
         auto caption = totalsByDay.begin()->first + L" — " + totalsByDay.rbegin()->first;
         caption += L" · " + FormatInteger(static_cast<int64_t>(totalsByDay.size())) + L" 日有记录";
         m_heatmapCaption.Text(winrt::hstring{ caption });
+    }
+}
+
+void DashboardView::SetDetailsCallbacks(DetailsCallbacks callbacks)
+{
+    m_detailsCallbacks = std::move(callbacks);
+}
+
+void DashboardView::UpdateDetails(DetailsViewData const& data)
+{
+    m_detailsDimension = data.dimension;
+    UpdateDetailsDimensionButtons();
+    m_breakdownList.Children().Clear();
+
+    auto appendState = [](controls::StackPanel const& panel, std::wstring_view title, std::wstring_view detail)
+    {
+        controls::StackPanel copy;
+        copy.Spacing(3);
+        copy.Children().Append(Text(title, 11.5, Color(247, 247, 245), 600));
+        auto detailText = Text(detail, 9.5, Color(143, 139, 140));
+        detailText.TextWrapping(mux::TextWrapping::Wrap);
+        copy.Children().Append(detailText);
+        panel.Children().Append(SoftPanel(copy));
+    };
+
+    if (!data.error.empty())
+    {
+        appendState(m_breakdownList, L"明细加载失败", data.error);
+    }
+    else if (data.loading)
+    {
+        appendState(m_breakdownList, L"正在加载明细", L"读取完成后会自动刷新当前维度。");
+    }
+    else if (data.rows.empty())
+    {
+        appendState(m_breakdownList, L"当前维度暂无数据", L"采集到使用记录后会显示在这里。");
+    }
+    else
+    {
+        int64_t peak{};
+        for (auto const& row : data.rows)
+        {
+            peak = std::max(peak, row.counts.DisplayTotal());
+        }
+
+        auto const visibleRows = std::min<size_t>(data.rows.size(), 3);
+        for (size_t index = 0; index < visibleRows; ++index)
+        {
+            auto const& row = data.rows[index];
+            auto const selected = row.key == data.selectedKey;
+            auto const input = std::max<int64_t>(row.counts.input, 0);
+            auto const cached = std::clamp<int64_t>(row.counts.cachedInput, 0, input);
+            auto const hitRate = input > 0
+                ? static_cast<double>(cached) * 100.0 / static_cast<double>(input)
+                : 0.0;
+
+            controls::StackPanel rowContent;
+            rowContent.Spacing(6);
+            controls::Grid top;
+            AddColumn(top, Star());
+            AddColumn(top, mux::GridLengthHelper::Auto());
+            top.Children().Append(Text(row.key.empty() ? L"未命名" : row.key, 11.5, Color(247, 247, 245), 600));
+            auto total = Text(FormatCompact(row.counts.DisplayTotal()), 11.5, Color(247, 247, 245), 600, true);
+            controls::Grid::SetColumn(total, 1);
+            top.Children().Append(total);
+            rowContent.Children().Append(top);
+
+            auto summary = FormatPercent(hitRate) + L" hit · "
+                + FormatCompact(row.counts.output) + L" output";
+            rowContent.Children().Append(Text(summary, 9.5, Color(143, 139, 140)));
+            auto const ratio = peak > 0
+                ? static_cast<double>(row.counts.DisplayTotal()) / static_cast<double>(peak)
+                : 0.0;
+            rowContent.Children().Append(Progress(ratio, selected ? Color(240, 63, 22) : Color(98, 223, 125)));
+
+            controls::Button button;
+            button.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+            button.HorizontalContentAlignment(mux::HorizontalAlignment::Stretch);
+            button.Padding({ 12, 9, 12, 9 });
+            button.Background(Brush(selected ? Color(55, 52, 53) : Color(29, 27, 28)));
+            button.BorderBrush(Brush(selected ? Color(240, 63, 22) : Color(255, 255, 255, 12)));
+            button.BorderThickness({ 1 });
+            button.CornerRadius(Radius(13));
+            button.Content(rowContent);
+            automation::AutomationProperties::SetName(button, winrt::hstring{ row.key });
+            auto key = row.key;
+            button.Click([this, key = std::move(key)](auto const&, auto const&)
+            {
+                if (m_detailsCallbacks.onBreakdownSelected)
+                {
+                    m_detailsCallbacks.onBreakdownSelected(key);
+                }
+            });
+            m_breakdownList.Children().Append(button);
+        }
+
+        if (data.rows.size() > visibleRows)
+        {
+            auto caption = L"显示前 " + std::to_wstring(visibleRows)
+                + L" 项 · 共 " + std::to_wstring(data.rows.size()) + L" 项";
+            m_breakdownList.Children().Append(Text(caption, 9.5, Color(143, 139, 140)));
+        }
+    }
+
+    auto const selectedRow = std::find_if(
+        data.rows.begin(),
+        data.rows.end(),
+        [&data](BreakdownRow const& row) { return !data.selectedKey.empty() && row.key == data.selectedKey; });
+    auto const hasSelection = selectedRow != data.rows.end();
+    m_detailsSelectionState.Visibility(hasSelection ? mux::Visibility::Collapsed : mux::Visibility::Visible);
+    m_detailsMetricsPanel.Visibility(hasSelection ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    if (hasSelection)
+    {
+        auto const input = std::max<int64_t>(selectedRow->counts.input, 0);
+        auto const cached = std::clamp<int64_t>(selectedRow->counts.cachedInput, 0, input);
+        auto const miss = std::max<int64_t>(selectedRow->counts.UncachedInput(), 0);
+        auto const output = std::max<int64_t>(selectedRow->counts.output, 0);
+        auto const ratio = input > 0
+            ? static_cast<double>(cached) / static_cast<double>(input)
+            : 0.0;
+        m_detailsSelectedTitle.Text(winrt::hstring{ selectedRow->key });
+        m_detailsInputText.Text(winrt::hstring{ FormatInteger(input) });
+        m_detailsCacheHitTokensText.Text(winrt::hstring{ FormatInteger(cached) });
+        m_detailsCacheMissTokensText.Text(winrt::hstring{ FormatInteger(miss) });
+        m_detailsOutputText.Text(winrt::hstring{ FormatInteger(output) });
+        m_detailsHitRateText.Text(winrt::hstring{ FormatPercent(ratio * 100.0) });
+        SetProgress(m_detailsCacheProgressFill, m_detailsCacheProgressRest, ratio);
+    }
+    else
+    {
+        SetProgress(m_detailsCacheProgressFill, m_detailsCacheProgressRest, 0.0);
+    }
+
+    m_detailsSessionsPanel.Children().Clear();
+    if (!data.error.empty())
+    {
+        appendState(m_detailsSessionsPanel, L"会话不可用", data.error);
+    }
+    else
+    {
+        m_detailsSessionsPanel.Children().Append(Text(L"最近会话", 10.5, Color(143, 139, 140), 600));
+        auto const visibleSessions = std::min<size_t>(data.recentSessions.size(), 3);
+        for (size_t index = 0; index < visibleSessions; ++index)
+        {
+            auto const& session = data.recentSessions[index];
+            auto title = session.title;
+            if (title.empty())
+            {
+                title = !session.project.empty() ? session.project : session.model;
+            }
+            if (title.empty())
+            {
+                title = L"未命名会话";
+            }
+
+            controls::Grid content;
+            AddColumn(content, Star());
+            AddColumn(content, mux::GridLengthHelper::Auto());
+            controls::StackPanel copy;
+            copy.Spacing(2);
+            copy.Children().Append(Text(title, 10.5, Color(247, 247, 245), 600));
+            auto detail = session.model.empty() ? std::wstring{ L"Codex" } : session.model;
+            detail += L" · " + FormatInteger(session.messages) + L" msgs";
+            copy.Children().Append(Text(detail, 9, Color(143, 139, 140)));
+            content.Children().Append(copy);
+            auto value = Text(FormatCompact(session.counts.DisplayTotal()), 10.5, Color(247, 247, 245), 600, true);
+            value.VerticalAlignment(mux::VerticalAlignment::Center);
+            controls::Grid::SetColumn(value, 1);
+            content.Children().Append(value);
+
+            auto const selected = session.id == data.selectedSessionId;
+            controls::Button button;
+            button.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+            button.HorizontalContentAlignment(mux::HorizontalAlignment::Stretch);
+            button.Padding({ 10, 7, 10, 7 });
+            button.Background(Brush(selected ? Color(55, 52, 53) : Color(29, 27, 28)));
+            button.BorderBrush(Brush(selected ? Color(240, 63, 22) : Color(255, 255, 255, 12)));
+            button.BorderThickness({ 1 });
+            button.CornerRadius(Radius(12));
+            button.Content(content);
+            automation::AutomationProperties::SetName(button, winrt::hstring{ title });
+            auto sessionId = session.id;
+            button.Click([this, sessionId = std::move(sessionId)](auto const&, auto const&)
+            {
+                if (m_detailsCallbacks.onSessionSelected)
+                {
+                    m_detailsCallbacks.onSessionSelected(sessionId);
+                }
+            });
+            m_detailsSessionsPanel.Children().Append(button);
+        }
+
+        if (visibleSessions == 0)
+        {
+            appendState(m_detailsSessionsPanel, L"暂无会话", L"采集完成后最多显示最近 3 条。");
+        }
+
+        if (!data.selectedSessionId.empty())
+        {
+            m_detailsSessionsPanel.Children().Append(Text(L"提示拆分", 10.5, Color(143, 139, 140), 600));
+            if (data.selectedTurns.empty())
+            {
+                appendState(m_detailsSessionsPanel, L"暂无提示详情", L"该会话尚未生成可展示的提示记录。");
+            }
+            for (auto const& turn : data.selectedTurns)
+            {
+                controls::Grid content;
+                AddColumn(content, Star());
+                AddColumn(content, mux::GridLengthHelper::Auto());
+                controls::StackPanel copy;
+                copy.Spacing(2);
+                auto title = L"Prompt " + std::to_wstring(turn.promptIndex + 1);
+                if (!turn.model.empty())
+                {
+                    title += L" · " + turn.model;
+                }
+                copy.Children().Append(Text(title, 10.5, Color(247, 247, 245), 600));
+                copy.Children().Append(Text(
+                    turn.tools.empty() ? L"未使用工具" : turn.tools,
+                    9,
+                    Color(143, 139, 140)));
+                content.Children().Append(copy);
+                auto value = Text(FormatCompact(turn.counts.DisplayTotal()), 10.5, Color(255, 253, 142), 600, true);
+                value.VerticalAlignment(mux::VerticalAlignment::Center);
+                controls::Grid::SetColumn(value, 1);
+                content.Children().Append(value);
+                m_detailsSessionsPanel.Children().Append(SoftPanel(content));
+            }
+
+            if (!data.toolCalls.empty())
+            {
+                m_detailsSessionsPanel.Children().Append(Text(L"工具调用", 10.5, Color(143, 139, 140), 600));
+            }
+            for (auto const& tool : data.toolCalls)
+            {
+                controls::Grid content;
+                AddColumn(content, Star());
+                AddColumn(content, mux::GridLengthHelper::Auto());
+                controls::StackPanel copy;
+                copy.Spacing(2);
+                copy.Children().Append(Text(
+                    tool.name.empty() ? L"未命名工具" : tool.name,
+                    10.5,
+                    Color(247, 247, 245),
+                    600));
+                copy.Children().Append(Text(
+                    tool.summary.empty() ? L"点击读取输入 / 输出" : tool.summary,
+                    9,
+                    Color(143, 139, 140)));
+                content.Children().Append(copy);
+                auto arrow = Text(L">", 12, Color(255, 253, 142), 600, true);
+                arrow.VerticalAlignment(mux::VerticalAlignment::Center);
+                controls::Grid::SetColumn(arrow, 1);
+                content.Children().Append(arrow);
+
+                auto const selected = tool.locator == data.selectedToolCallLocator;
+                controls::Button button;
+                button.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+                button.HorizontalContentAlignment(mux::HorizontalAlignment::Stretch);
+                button.Padding({ 10, 7, 10, 7 });
+                button.Background(Brush(selected ? Color(55, 52, 53) : Color(29, 27, 28)));
+                button.BorderBrush(Brush(selected ? Color(255, 253, 142) : Color(255, 255, 255, 12)));
+                button.BorderThickness({ 1 });
+                button.CornerRadius(Radius(12));
+                button.Content(content);
+                automation::AutomationProperties::SetName(button, winrt::hstring{ tool.name });
+                auto locator = tool.locator;
+                button.Click([this, locator = std::move(locator)](auto const&, auto const&)
+                {
+                    if (m_detailsCallbacks.onToolCallRequested)
+                    {
+                        m_detailsCallbacks.onToolCallRequested(locator);
+                    }
+                });
+                m_detailsSessionsPanel.Children().Append(button);
+            }
+
+            if (!data.selectedToolCallLocator.empty())
+            {
+                controls::StackPanel detail;
+                detail.Spacing(6);
+                detail.Children().Append(Text(L"工具输入 / 输出", 10.5, Color(255, 253, 142), 600));
+                detail.Children().Append(Text(
+                    L"从本地转录按需读取 · 不写入数据库",
+                    9,
+                    Color(143, 139, 140),
+                    500));
+                auto body = Text(
+                    data.selectedToolDetails.empty() ? L"正在按需读取工具详情…" : data.selectedToolDetails,
+                    10,
+                    Color(247, 247, 245));
+                body.TextWrapping(mux::TextWrapping::Wrap);
+                detail.Children().Append(body);
+                m_detailsSessionsPanel.Children().Append(SoftPanel(detail));
+            }
+        }
+    }
+
+    double expandedHeight = 548.0;
+    if (!data.selectedSessionId.empty())
+    {
+        expandedHeight += 54.0;
+        expandedHeight += static_cast<double>(data.selectedTurns.size()) * 58.0;
+        expandedHeight += static_cast<double>(data.toolCalls.size()) * 52.0;
+        if (!data.selectedToolCallLocator.empty())
+        {
+            auto const approximateLines = (data.selectedToolDetails.size() + 45) / 46;
+            expandedHeight += 82.0 + static_cast<double>(approximateLines) * 17.0;
+        }
+    }
+    m_detailsPage.Height(expandedHeight);
+}
+
+void DashboardView::UpdateDetailsDimensionButtons()
+{
+    auto const selectedIndex = static_cast<size_t>(m_detailsDimension);
+    for (size_t index = 0; index < m_detailsDimensionButtons.size(); ++index)
+    {
+        auto const selected = index == selectedIndex;
+        auto const& button = m_detailsDimensionButtons[index];
+        button.Background(Brush(selected ? Color(55, 52, 53) : Color(0, 0, 0, 0)));
+        button.Foreground(Brush(selected ? Color(247, 247, 245) : Color(143, 139, 140)));
+        button.BorderBrush(Brush(selected ? Color(98, 223, 125) : Color(255, 255, 255, 12)));
     }
 }
 
@@ -991,50 +1316,110 @@ controls::Grid DashboardView::BuildDetailsPage()
     controls::Grid page;
     page.Height(548);
     page.RowSpacing(16);
-    AddRow(page, Pixels(82));
-    AddRow(page, Pixels(450));
+    AddRow(page, Pixels(98));
+    AddRow(page, Star());
 
     auto intro = PageIntro(
         L"工具 · 模型 · 会话 · 设备 · 项目 · 账户",
         L"逐层查看每一枚 token",
-        L"点击数据行后可在这里展开缓存命中、输入、输出与费用。",
+        L"选择分组行查看缓存拆分；选择会话后按需展开提示和工具调用。",
         Color(98, 223, 125));
     page.Children().Append(intro);
 
     controls::Grid content;
     content.ColumnSpacing(16);
-    AddColumn(content, Star(1.48));
-    AddColumn(content, Star());
+    AddColumn(content, Star(1.18));
+    AddColumn(content, Star(0.92));
+    AddColumn(content, Star(1.22));
     controls::Grid::SetRow(content, 1);
 
-    controls::StackPanel rows;
-    rows.Spacing(10);
-    rows.Children().Append(BreakdownPanel(
-        L"Codex", L"Cache 71.4% · Output 8.1K", L"3.62B", 0.86, Color(98, 223, 125)));
-    rows.Children().Append(BreakdownPanel(
-        L"ChatGPT", L"Cache 64.8% · Output 5.4K", L"1.79B", 0.43, Color(255, 253, 142)));
-    rows.Children().Append(BreakdownPanel(
-        L"gpt-5.6-sol", L"12 sessions · $18.24", L"1.75B", 0.68, Color(98, 223, 125)));
-    rows.Children().Append(BreakdownPanel(
-        L"Desktop · Windows", L"Synced 1m ago", L"137.6M", 0.22, Color(240, 63, 22)));
-    auto listCard = Card(L"使用细分", Color(98, 223, 125), rows);
+    controls::StackPanel breakdown;
+    breakdown.Spacing(10);
+    controls::StackPanel dimensions;
+    dimensions.Orientation(controls::Orientation::Horizontal);
+    dimensions.Spacing(4);
+    constexpr std::array<std::wstring_view, 6> labels{
+        L"工具", L"模型", L"会话", L"设备", L"项目", L"账户"
+    };
+    constexpr std::array dimensionValues{
+        DetailsDimension::Tool,
+        DetailsDimension::Model,
+        DetailsDimension::Session,
+        DetailsDimension::Device,
+        DetailsDimension::Project,
+        DetailsDimension::Account,
+    };
+    for (size_t index = 0; index < labels.size(); ++index)
+    {
+        controls::Button button;
+        button.Width(46);
+        button.Height(30);
+        button.Padding({ 0 });
+        button.CornerRadius(Radius(10));
+        button.BorderThickness({ 1 });
+        button.FontFamily(media::FontFamily{ L"Segoe UI Variable Display" });
+        button.FontSize(10.5);
+        button.FontWeight({ 600 });
+        button.Content(winrt::box_value(winrt::hstring{ labels[index] }));
+        automation::AutomationProperties::SetName(button, winrt::hstring{ labels[index] });
+        auto const dimension = dimensionValues[index];
+        button.Click([this, dimension](auto const&, auto const&)
+        {
+            m_detailsDimension = dimension;
+            UpdateDetailsDimensionButtons();
+            if (m_detailsCallbacks.onDimensionChanged)
+            {
+                m_detailsCallbacks.onDimensionChanged(dimension);
+            }
+        });
+        dimensions.Children().Append(button);
+        m_detailsDimensionButtons.push_back(button);
+    }
+    breakdown.Children().Append(dimensions);
+    m_breakdownList = controls::StackPanel{};
+    m_breakdownList.Spacing(8);
+    breakdown.Children().Append(m_breakdownList);
+    auto listCard = Card(L"使用细分", Color(98, 223, 125), breakdown);
     content.Children().Append(listCard);
 
     controls::StackPanel cache;
-    cache.Spacing(14);
-    cache.Children().Append(Text(L"Codex · all models", 13, Color(247, 247, 245), 600));
-    cache.Children().Append(Progress(0.714, Color(98, 223, 125)));
-    cache.Children().Append(StatLine(L"Input · cache hit", L"71.4%", Color(98, 223, 125)));
-    cache.Children().Append(StatLine(L"Input · cache miss", L"20.3%", Color(255, 253, 142)));
-    cache.Children().Append(StatLine(L"Output", L"8.3%", Color(240, 63, 22)));
-    cache.Children().Append(StatLine(L"Estimated cost", L"$3,243.77"));
-    cache.Children().Append(Text(
-        L"静态占位：接入 UsageModels 后，选中任意行即可更新本面板。",
-        10.5,
-        Color(143, 139, 140)));
-    auto cacheCard = Card(L"缓存命中详情", Color(255, 253, 142), cache);
+    cache.Spacing(12);
+    controls::StackPanel selectionCopy;
+    selectionCopy.Spacing(3);
+    selectionCopy.Children().Append(Text(L"选择一项查看详情", 11.5, Color(247, 247, 245), 600));
+    selectionCopy.Children().Append(Text(L"这里会显示实际的输入与缓存拆分。", 9.5, Color(143, 139, 140)));
+    m_detailsSelectionState = SoftPanel(selectionCopy);
+    cache.Children().Append(m_detailsSelectionState);
+
+    m_detailsMetricsPanel = controls::StackPanel{};
+    m_detailsMetricsPanel.Spacing(12);
+    m_detailsSelectedTitle = Text(L"", 13, Color(247, 247, 245), 600);
+    m_detailsMetricsPanel.Children().Append(m_detailsSelectedTitle);
+    m_detailsMetricsPanel.Children().Append(Progress(
+        0.0,
+        Color(98, 223, 125),
+        &m_detailsCacheProgressFill,
+        &m_detailsCacheProgressRest));
+    m_detailsMetricsPanel.Children().Append(DynamicStatLine(
+        L"Input", m_detailsInputText, L"—"));
+    m_detailsMetricsPanel.Children().Append(DynamicStatLine(
+        L"Cache hit", m_detailsCacheHitTokensText, L"—", Color(98, 223, 125)));
+    m_detailsMetricsPanel.Children().Append(DynamicStatLine(
+        L"Cache miss", m_detailsCacheMissTokensText, L"—", Color(255, 253, 142)));
+    m_detailsMetricsPanel.Children().Append(DynamicStatLine(
+        L"Output", m_detailsOutputText, L"—", Color(240, 63, 22)));
+    m_detailsMetricsPanel.Children().Append(DynamicStatLine(
+        L"Hit rate", m_detailsHitRateText, L"—", Color(98, 223, 125)));
+    cache.Children().Append(m_detailsMetricsPanel);
+    auto cacheCard = Card(L"缓存与 Token", Color(255, 253, 142), cache);
     controls::Grid::SetColumn(cacheCard, 1);
     content.Children().Append(cacheCard);
+
+    m_detailsSessionsPanel = controls::StackPanel{};
+    m_detailsSessionsPanel.Spacing(8);
+    auto sessionsCard = Card(L"会话与工具", Color(240, 63, 22), m_detailsSessionsPanel);
+    controls::Grid::SetColumn(sessionsCard, 2);
+    content.Children().Append(sessionsCard);
 
     page.Children().Append(content);
     return page;

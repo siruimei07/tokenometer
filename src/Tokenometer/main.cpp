@@ -6,12 +6,16 @@
 #include "CodexCollector.h"
 #include "DashboardView.h"
 #include "Database.h"
+#include "SourceContentReader.h"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include <microsoft.ui.xaml.window.h>
 #include <winrt/base.h>
@@ -121,6 +125,30 @@ namespace
         LocalFree(arguments);
         return found;
     }
+
+    std::wstring_view DetailsDimensionKey(tokenometer::DetailsDimension dimension)
+    {
+        switch (dimension)
+        {
+        case tokenometer::DetailsDimension::Model: return L"model";
+        case tokenometer::DetailsDimension::Session: return L"session";
+        case tokenometer::DetailsDimension::Device: return L"device";
+        case tokenometer::DetailsDimension::Project: return L"project";
+        case tokenometer::DetailsDimension::Account: return L"account";
+        default: return L"tool";
+        }
+    }
+
+    std::wstring ClipToolContent(std::wstring_view value, size_t maximumCharacters = 16 * 1024)
+    {
+        if (value.size() <= maximumCharacters)
+        {
+            return std::wstring(value);
+        }
+        std::wstring result(value.substr(0, maximumCharacters));
+        result += L"\n\n[内容过长，已截断显示]";
+        return result;
+    }
 }
 
 struct TokenometerApp : mux::ApplicationT<TokenometerApp>
@@ -173,6 +201,19 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
         else
         {
             m_dashboard = std::make_unique<tokenometer::DashboardView>();
+            ConfigureDashboardCallbacks();
+            if (HasArgument(L"--page-details"))
+            {
+                m_dashboard->ShowPage(tokenometer::DashboardPage::Details);
+            }
+            else if (HasArgument(L"--page-trends"))
+            {
+                m_dashboard->ShowPage(tokenometer::DashboardPage::Trends);
+            }
+            else if (HasArgument(L"--page-settings"))
+            {
+                m_dashboard->ShowPage(tokenometer::DashboardPage::Settings);
+            }
         }
 
         m_window = mux::Window{};
@@ -218,6 +259,156 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
     }
 
 private:
+    void ConfigureDashboardCallbacks()
+    {
+        tokenometer::DetailsCallbacks callbacks;
+        callbacks.onDimensionChanged = [this](tokenometer::DetailsDimension dimension)
+        {
+            m_detailsDimension = dimension;
+            m_selectedBreakdownKey.clear();
+            RefreshDetails();
+        };
+        callbacks.onBreakdownSelected = [this](std::wstring const& key)
+        {
+            m_selectedBreakdownKey = m_selectedBreakdownKey == key ? std::wstring{} : key;
+            RefreshDetails();
+        };
+        callbacks.onSessionSelected = [this](std::wstring const& sessionId)
+        {
+            if (m_selectedSessionId == sessionId)
+            {
+                m_selectedSessionId.clear();
+            }
+            else
+            {
+                m_selectedSessionId = sessionId;
+            }
+            m_selectedToolLocator.clear();
+            m_selectedToolDetails.clear();
+            RefreshDetails();
+        };
+        callbacks.onToolCallRequested = [this](std::wstring const& locator)
+        {
+            if (m_selectedToolLocator == locator)
+            {
+                m_selectedToolLocator.clear();
+                m_selectedToolDetails.clear();
+            }
+            else
+            {
+                m_selectedToolLocator = locator;
+                LoadToolContent(locator);
+            }
+            RefreshDetails();
+        };
+        m_dashboard->SetDetailsCallbacks(std::move(callbacks));
+    }
+
+    void LoadToolContent(std::wstring const& locator)
+    {
+        auto const match = std::find_if(
+            m_toolLocators.begin(),
+            m_toolLocators.end(),
+            [&locator](auto const& item) { return item.first == locator; });
+        if (match == m_toolLocators.end())
+        {
+            m_selectedToolDetails = L"该工具定位信息已经失效，请重新选择会话。";
+            return;
+        }
+
+        try
+        {
+            tokenometer::SourceContentReader reader;
+            auto const content = reader.Read(match->second);
+            std::wstring details;
+            details.reserve(std::min<size_t>(
+                content.input.size() + content.output.size() + 32,
+                32 * 1024 + 32));
+            details += L"输入\n";
+            details += content.input.empty() ? L"（源记录未提供输入）" : ClipToolContent(content.input);
+            details += L"\n\n输出\n";
+            details += content.output.empty() ? L"（尚未找到输出记录）" : ClipToolContent(content.output);
+            m_selectedToolDetails = std::move(details);
+        }
+        catch (...)
+        {
+            m_selectedToolDetails = L"无法安全读取该工具记录；源文件可能已移动、被裁剪或不在允许目录。";
+        }
+    }
+
+    void RefreshDetails()
+    {
+        if (!m_dashboard)
+        {
+            return;
+        }
+
+        tokenometer::DetailsViewData data;
+        data.dimension = m_detailsDimension;
+        data.selectedKey = m_selectedBreakdownKey;
+        data.selectedSessionId = m_selectedSessionId;
+        data.selectedToolCallLocator = m_selectedToolLocator;
+        data.selectedToolDetails = m_selectedToolDetails;
+        data.loading = m_collecting.load(std::memory_order_relaxed);
+        m_toolLocators.clear();
+
+        if (!m_database)
+        {
+            data.error = L"本地使用数据库不可用";
+            m_dashboard->UpdateDetails(data);
+            return;
+        }
+
+        try
+        {
+            data.rows = m_database->GetBreakdown(DetailsDimensionKey(m_detailsDimension), 0, 12);
+            data.recentSessions = m_database->GetRecentSessions(3);
+            if (!m_selectedSessionId.empty())
+            {
+                data.selectedTurns = m_database->GetSessionTurns(m_selectedSessionId, 8);
+                size_t toolIndex{};
+                for (auto const& turn : data.selectedTurns)
+                {
+                    for (auto const& tool : m_database->GetToolCalls(m_selectedSessionId, turn.promptIndex))
+                    {
+                        if (toolIndex >= 20)
+                        {
+                            break;
+                        }
+                        std::wstring locator = L"tool-" + std::to_wstring(toolIndex + 1);
+                        tokenometer::ToolCallViewData view;
+                        view.locator = locator;
+                        view.name = tool.name;
+                        if (tool.inputLength > 0 && tool.outputLength > 0)
+                        {
+                            view.summary = L"输入 / 输出可按需读取";
+                        }
+                        else if (tool.inputLength > 0)
+                        {
+                            view.summary = L"输入可用 · 暂无输出";
+                        }
+                        else
+                        {
+                            view.summary = L"源详情不可用";
+                        }
+                        data.toolCalls.push_back(std::move(view));
+                        m_toolLocators.emplace_back(std::move(locator), tool);
+                        ++toolIndex;
+                    }
+                    if (toolIndex >= 20)
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+        catch (...)
+        {
+            data.error = L"读取本地使用明细失败";
+        }
+        m_dashboard->UpdateDetails(data);
+    }
+
     void BuildContent()
     {
         auto usageIcon = Icon(L"✳", Color(240, 63, 22), 13);
@@ -563,6 +754,10 @@ private:
             snapshot.error = L"读取本地使用快照失败";
         }
         m_dashboard->UpdateOverview(snapshot);
+        if (m_dashboard->CurrentPage() == tokenometer::DashboardPage::Details)
+        {
+            RefreshDetails();
+        }
     }
 
     void StartBackdrop()
@@ -616,6 +811,12 @@ private:
     std::atomic<int64_t> m_lastCollectionAt{};
     std::atomic_bool m_collecting{};
     std::atomic_bool m_collectionFailed{};
+    tokenometer::DetailsDimension m_detailsDimension{ tokenometer::DetailsDimension::Tool };
+    std::wstring m_selectedBreakdownKey;
+    std::wstring m_selectedSessionId;
+    std::wstring m_selectedToolLocator;
+    std::wstring m_selectedToolDetails;
+    std::vector<std::pair<std::wstring, tokenometer::ToolCallDetail>> m_toolLocators;
     HWND m_hwnd{};
     bool m_bubbleMode{};
 };
@@ -628,6 +829,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     {
         if (!tokenometer::Database::SelfTest()) return 11;
         if (!tokenometer::CodexCollector::SelfTest()) return 12;
+        if (!tokenometer::TestSourceContentReader()) return 13;
         return 0;
     }
 

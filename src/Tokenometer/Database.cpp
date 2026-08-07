@@ -265,7 +265,7 @@ namespace tokenometer
             versionStatement.Step();
             version = versionStatement.Int(0);
         }
-        if (version > 2)
+        if (version > 4)
         {
             throw std::runtime_error("The usage database was created by a newer Tokenometer version");
         }
@@ -313,6 +313,7 @@ namespace tokenometer
                 id TEXT PRIMARY KEY,
                 source_path TEXT NOT NULL,
                 source_kind TEXT NOT NULL,
+                account_id TEXT NOT NULL DEFAULT 'current',
                 title TEXT NOT NULL DEFAULT '',
                 project TEXT NOT NULL DEFAULT '',
                 model TEXT NOT NULL DEFAULT '',
@@ -407,6 +408,7 @@ namespace tokenometer
                 day TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 source_kind TEXT NOT NULL,
+                account_id TEXT NOT NULL DEFAULT 'current',
                 tool TEXT NOT NULL,
                 model TEXT NOT NULL DEFAULT '',
                 project TEXT NOT NULL DEFAULT '',
@@ -419,7 +421,7 @@ namespace tokenometer
                 reported_total_tokens INTEGER NOT NULL DEFAULT 0,
                 messages INTEGER NOT NULL DEFAULT 0,
                 tool_calls INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY(source_path, hour_start, session_id, source_kind, tool, model, project, device_id)
+                PRIMARY KEY(source_path, hour_start, session_id, source_kind, account_id, tool, model, project, device_id)
             );
             CREATE INDEX IF NOT EXISTS hourly_usage_time_idx ON hourly_usage(hour_start);
             CREATE TABLE IF NOT EXISTS daily_usage(
@@ -427,6 +429,7 @@ namespace tokenometer
                 day TEXT NOT NULL,
                 session_id TEXT NOT NULL,
                 source_kind TEXT NOT NULL,
+                account_id TEXT NOT NULL DEFAULT 'current',
                 tool TEXT NOT NULL,
                 model TEXT NOT NULL DEFAULT '',
                 project TEXT NOT NULL DEFAULT '',
@@ -441,11 +444,12 @@ namespace tokenometer
                 reported_total_tokens INTEGER NOT NULL DEFAULT 0,
                 messages INTEGER NOT NULL DEFAULT 0,
                 tool_calls INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY(source_path, day, session_id, source_kind, tool, model, project, device_id)
+                PRIMARY KEY(source_path, day, session_id, source_kind, account_id, tool, model, project, device_id)
             );
             CREATE INDEX IF NOT EXISTS daily_usage_day_idx ON daily_usage(day);
             CREATE INDEX IF NOT EXISTS daily_usage_model_idx ON daily_usage(model, day);
             CREATE INDEX IF NOT EXISTS daily_usage_project_idx ON daily_usage(project, day);
+            CREATE INDEX IF NOT EXISTS daily_usage_account_idx ON daily_usage(account_id, day);
             CREATE TABLE IF NOT EXISTS rate_limits(
                 provider TEXT NOT NULL,
                 account_id TEXT NOT NULL,
@@ -465,7 +469,11 @@ namespace tokenometer
                 VALUES(1, CAST(strftime('%s','now') AS INTEGER));
             INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                 VALUES(2, CAST(strftime('%s','now') AS INTEGER));
-            PRAGMA user_version=2;
+            INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES(3, CAST(strftime('%s','now') AS INTEGER));
+            INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES(4, CAST(strftime('%s','now') AS INTEGER));
+            PRAGMA user_version=4;
                 )sql");
             });
         }
@@ -542,6 +550,10 @@ namespace tokenometer
                         PRIMARY KEY(source_path, hour_start, session_id, source_kind, tool, model, project, device_id)
                     );
                     CREATE INDEX IF NOT EXISTS hourly_usage_time_idx ON hourly_usage(hour_start);
+                    ALTER TABLE sessions ADD COLUMN account_id TEXT NOT NULL DEFAULT 'current';
+                    ALTER TABLE daily_usage ADD COLUMN account_id TEXT NOT NULL DEFAULT 'current';
+                    ALTER TABLE hourly_usage ADD COLUMN account_id TEXT NOT NULL DEFAULT 'current';
+                    CREATE INDEX IF NOT EXISTS daily_usage_account_idx ON daily_usage(account_id, day);
                     DELETE FROM usage_events;
                     DELETE FROM prompt_events;
                     DELETE FROM tool_events;
@@ -553,7 +565,111 @@ namespace tokenometer
                     DELETE FROM source_files;
                     INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                         VALUES(2, CAST(strftime('%s','now') AS INTEGER));
-                    PRAGMA user_version=2;
+                    INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                        VALUES(3, CAST(strftime('%s','now') AS INTEGER));
+                    PRAGMA user_version=3;
+                )sql");
+            });
+            version = 3;
+        }
+        else if (version == 2)
+        {
+            Transaction([&]
+            {
+                Execute(R"sql(
+                    ALTER TABLE sessions ADD COLUMN account_id TEXT NOT NULL DEFAULT 'current';
+                    ALTER TABLE daily_usage ADD COLUMN account_id TEXT NOT NULL DEFAULT 'current';
+                    ALTER TABLE hourly_usage ADD COLUMN account_id TEXT NOT NULL DEFAULT 'current';
+                    CREATE INDEX IF NOT EXISTS daily_usage_account_idx ON daily_usage(account_id, day);
+                    INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                        VALUES(3, CAST(strftime('%s','now') AS INTEGER));
+                    PRAGMA user_version=3;
+                )sql");
+            });
+            version = 3;
+        }
+
+        if (version == 3)
+        {
+            Transaction([&]
+            {
+                Execute(R"sql(
+                    ALTER TABLE hourly_usage RENAME TO hourly_usage_v3;
+                    CREATE TABLE hourly_usage(
+                        source_path TEXT NOT NULL,
+                        hour_start INTEGER NOT NULL,
+                        day TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        source_kind TEXT NOT NULL,
+                        account_id TEXT NOT NULL DEFAULT 'current',
+                        tool TEXT NOT NULL,
+                        model TEXT NOT NULL DEFAULT '',
+                        project TEXT NOT NULL DEFAULT '',
+                        device_id TEXT NOT NULL DEFAULT '',
+                        input_tokens INTEGER NOT NULL DEFAULT 0,
+                        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        output_tokens INTEGER NOT NULL DEFAULT 0,
+                        reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                        reported_total_tokens INTEGER NOT NULL DEFAULT 0,
+                        messages INTEGER NOT NULL DEFAULT 0,
+                        tool_calls INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(source_path, hour_start, session_id, source_kind, account_id, tool, model, project, device_id)
+                    );
+                    INSERT INTO hourly_usage(
+                        source_path, hour_start, day, session_id, source_kind, account_id, tool,
+                        model, project, device_id, input_tokens, cached_input_tokens,
+                        cache_write_input_tokens, output_tokens, reasoning_output_tokens,
+                        reported_total_tokens, messages, tool_calls)
+                    SELECT source_path, hour_start, day, session_id, source_kind, account_id, tool,
+                           model, project, device_id, input_tokens, cached_input_tokens,
+                           cache_write_input_tokens, output_tokens, reasoning_output_tokens,
+                           reported_total_tokens, messages, tool_calls
+                    FROM hourly_usage_v3;
+                    DROP TABLE hourly_usage_v3;
+                    CREATE INDEX hourly_usage_time_idx ON hourly_usage(hour_start);
+
+                    ALTER TABLE daily_usage RENAME TO daily_usage_v3;
+                    CREATE TABLE daily_usage(
+                        source_path TEXT NOT NULL,
+                        day TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        source_kind TEXT NOT NULL,
+                        account_id TEXT NOT NULL DEFAULT 'current',
+                        tool TEXT NOT NULL,
+                        model TEXT NOT NULL DEFAULT '',
+                        project TEXT NOT NULL DEFAULT '',
+                        device_id TEXT NOT NULL DEFAULT '',
+                        first_timestamp INTEGER NOT NULL,
+                        last_timestamp INTEGER NOT NULL,
+                        input_tokens INTEGER NOT NULL DEFAULT 0,
+                        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+                        output_tokens INTEGER NOT NULL DEFAULT 0,
+                        reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                        reported_total_tokens INTEGER NOT NULL DEFAULT 0,
+                        messages INTEGER NOT NULL DEFAULT 0,
+                        tool_calls INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(source_path, day, session_id, source_kind, account_id, tool, model, project, device_id)
+                    );
+                    INSERT INTO daily_usage(
+                        source_path, day, session_id, source_kind, account_id, tool, model,
+                        project, device_id, first_timestamp, last_timestamp, input_tokens,
+                        cached_input_tokens, cache_write_input_tokens, output_tokens,
+                        reasoning_output_tokens, reported_total_tokens, messages, tool_calls)
+                    SELECT source_path, day, session_id, source_kind, account_id, tool, model,
+                           project, device_id, first_timestamp, last_timestamp, input_tokens,
+                           cached_input_tokens, cache_write_input_tokens, output_tokens,
+                           reasoning_output_tokens, reported_total_tokens, messages, tool_calls
+                    FROM daily_usage_v3;
+                    DROP TABLE daily_usage_v3;
+                    CREATE INDEX daily_usage_day_idx ON daily_usage(day);
+                    CREATE INDEX daily_usage_model_idx ON daily_usage(model, day);
+                    CREATE INDEX daily_usage_project_idx ON daily_usage(project, day);
+                    CREATE INDEX daily_usage_account_idx ON daily_usage(account_id, day);
+                    INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                        VALUES(4, CAST(strftime('%s','now') AS INTEGER));
+                    PRAGMA user_version=4;
                 )sql");
             });
         }
@@ -743,11 +859,12 @@ namespace tokenometer
         std::scoped_lock lock(m_mutex);
         Statement statement(m_database, R"sql(
             INSERT INTO sessions(
-                id, source_path, source_kind, title, project, model, device_id,
+                id, source_path, source_kind, account_id, title, project, model, device_id,
                 started_at, updated_at, message_count)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
             ON CONFLICT(id) DO UPDATE SET
                 source_path=excluded.source_path,
+                account_id=CASE WHEN excluded.account_id='' THEN sessions.account_id ELSE excluded.account_id END,
                 title=CASE WHEN excluded.title='' THEN sessions.title ELSE excluded.title END,
                 project=CASE WHEN excluded.project='' THEN sessions.project ELSE excluded.project END,
                 model=CASE WHEN excluded.model='' THEN sessions.model ELSE excluded.model END,
@@ -761,13 +878,14 @@ namespace tokenometer
         statement.Bind(1, session.id);
         statement.Bind(2, session.sourcePath);
         statement.Bind(3, session.sourceKind);
-        statement.Bind(4, session.title);
-        statement.Bind(5, session.project);
-        statement.Bind(6, session.model);
-        statement.Bind(7, session.deviceId);
-        statement.Bind(8, session.startedAt);
-        statement.Bind(9, session.updatedAt);
-        statement.Bind(10, session.messageCount);
+        statement.Bind(4, session.accountId);
+        statement.Bind(5, session.title);
+        statement.Bind(6, session.project);
+        statement.Bind(7, session.model);
+        statement.Bind(8, session.deviceId);
+        statement.Bind(9, session.startedAt);
+        statement.Bind(10, session.updatedAt);
+        statement.Bind(11, session.messageCount);
         statement.Step();
     }
 
@@ -828,12 +946,13 @@ namespace tokenometer
 
         Statement hourlyStatement(m_database, R"sql(
             INSERT INTO hourly_usage(
-                source_path, hour_start, day, session_id, source_kind, tool, model, project,
-                device_id, input_tokens, cached_input_tokens, cache_write_input_tokens,
+                source_path, hour_start, day, session_id, source_kind, account_id, tool, model,
+                project, device_id, input_tokens, cached_input_tokens, cache_write_input_tokens,
                 output_tokens, reasoning_output_tokens, reported_total_tokens)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
-            ON CONFLICT(source_path, hour_start, session_id, source_kind, tool, model, project, device_id)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+            ON CONFLICT(source_path, hour_start, session_id, source_kind, account_id, tool, model, project, device_id)
             DO UPDATE SET
+                account_id=excluded.account_id,
                 input_tokens=input_tokens+excluded.input_tokens,
                 cached_input_tokens=cached_input_tokens+excluded.cached_input_tokens,
                 cache_write_input_tokens=cache_write_input_tokens+excluded.cache_write_input_tokens,
@@ -846,22 +965,24 @@ namespace tokenometer
         hourlyStatement.Bind(3, event.day);
         hourlyStatement.Bind(4, event.sessionId);
         hourlyStatement.Bind(5, event.sourceKind);
-        hourlyStatement.Bind(6, event.tool);
-        hourlyStatement.Bind(7, event.model);
-        hourlyStatement.Bind(8, event.project);
-        hourlyStatement.Bind(9, event.deviceId);
-        BindCounts(hourlyStatement, 10, event.counts);
+        hourlyStatement.Bind(6, event.accountId);
+        hourlyStatement.Bind(7, event.tool);
+        hourlyStatement.Bind(8, event.model);
+        hourlyStatement.Bind(9, event.project);
+        hourlyStatement.Bind(10, event.deviceId);
+        BindCounts(hourlyStatement, 11, event.counts);
         hourlyStatement.Step();
 
         Statement dailyStatement(m_database, R"sql(
             INSERT INTO daily_usage(
-                source_path, day, session_id, source_kind, tool, model, project, device_id,
+                source_path, day, session_id, source_kind, account_id, tool, model, project, device_id,
                 first_timestamp, last_timestamp, input_tokens, cached_input_tokens,
                 cache_write_input_tokens, output_tokens, reasoning_output_tokens,
                 reported_total_tokens, messages, tool_calls)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,?10,?11,?12,?13,?14,?15,0,0)
-            ON CONFLICT(source_path, day, session_id, source_kind, tool, model, project, device_id)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,?11,?12,?13,?14,?15,?16,0,0)
+            ON CONFLICT(source_path, day, session_id, source_kind, account_id, tool, model, project, device_id)
             DO UPDATE SET
+                account_id=excluded.account_id,
                 first_timestamp=MIN(first_timestamp, excluded.first_timestamp),
                 last_timestamp=MAX(last_timestamp, excluded.last_timestamp),
                 input_tokens=input_tokens+excluded.input_tokens,
@@ -875,12 +996,13 @@ namespace tokenometer
         dailyStatement.Bind(2, event.day);
         dailyStatement.Bind(3, event.sessionId);
         dailyStatement.Bind(4, event.sourceKind);
-        dailyStatement.Bind(5, event.tool);
-        dailyStatement.Bind(6, event.model);
-        dailyStatement.Bind(7, event.project);
-        dailyStatement.Bind(8, event.deviceId);
-        dailyStatement.Bind(9, event.timestamp);
-        BindCounts(dailyStatement, 10, event.counts);
+        dailyStatement.Bind(5, event.accountId);
+        dailyStatement.Bind(6, event.tool);
+        dailyStatement.Bind(7, event.model);
+        dailyStatement.Bind(8, event.project);
+        dailyStatement.Bind(9, event.deviceId);
+        dailyStatement.Bind(10, event.timestamp);
+        BindCounts(dailyStatement, 11, event.counts);
         dailyStatement.Step();
         return true;
     }
@@ -933,41 +1055,44 @@ namespace tokenometer
 
         Statement hourlyStatement(m_database, R"sql(
             INSERT INTO hourly_usage(
-                source_path, hour_start, day, session_id, source_kind, tool, model, project,
-                device_id, tool_calls)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)
-            ON CONFLICT(source_path, hour_start, session_id, source_kind, tool, model, project, device_id)
-            DO UPDATE SET tool_calls=tool_calls+1;
+                source_path, hour_start, day, session_id, source_kind, account_id, tool, model,
+                project, device_id, tool_calls)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1)
+            ON CONFLICT(source_path, hour_start, session_id, source_kind, account_id, tool, model, project, device_id)
+            DO UPDATE SET account_id=excluded.account_id, tool_calls=tool_calls+1;
         )sql");
         hourlyStatement.Bind(1, event.sourcePath);
         hourlyStatement.Bind(2, event.timestamp > 0 ? event.timestamp - event.timestamp % 3600 : 0);
         hourlyStatement.Bind(3, event.day);
         hourlyStatement.Bind(4, event.sessionId);
         hourlyStatement.Bind(5, event.sourceKind);
-        hourlyStatement.Bind(6, event.tool);
-        hourlyStatement.Bind(7, event.model);
-        hourlyStatement.Bind(8, event.project);
-        hourlyStatement.Bind(9, event.deviceId);
+        hourlyStatement.Bind(6, event.accountId);
+        hourlyStatement.Bind(7, event.tool);
+        hourlyStatement.Bind(8, event.model);
+        hourlyStatement.Bind(9, event.project);
+        hourlyStatement.Bind(10, event.deviceId);
         hourlyStatement.Step();
 
         Statement dailyStatement(m_database, R"sql(
             INSERT INTO daily_usage(
-                source_path, day, session_id, source_kind, tool, model, project, device_id,
+                source_path, day, session_id, source_kind, account_id, tool, model, project, device_id,
                 first_timestamp, last_timestamp, tool_calls)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,1)
-            ON CONFLICT(source_path, day, session_id, source_kind, tool, model, project, device_id)
-            DO UPDATE SET last_timestamp=MAX(last_timestamp, excluded.last_timestamp),
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,1)
+            ON CONFLICT(source_path, day, session_id, source_kind, account_id, tool, model, project, device_id)
+            DO UPDATE SET account_id=excluded.account_id,
+                          last_timestamp=MAX(last_timestamp, excluded.last_timestamp),
                           tool_calls=tool_calls+1;
         )sql");
         dailyStatement.Bind(1, event.sourcePath);
         dailyStatement.Bind(2, event.day);
         dailyStatement.Bind(3, event.sessionId);
         dailyStatement.Bind(4, event.sourceKind);
-        dailyStatement.Bind(5, event.tool);
-        dailyStatement.Bind(6, event.model);
-        dailyStatement.Bind(7, event.project);
-        dailyStatement.Bind(8, event.deviceId);
-        dailyStatement.Bind(9, event.timestamp);
+        dailyStatement.Bind(5, event.accountId);
+        dailyStatement.Bind(6, event.tool);
+        dailyStatement.Bind(7, event.model);
+        dailyStatement.Bind(8, event.project);
+        dailyStatement.Bind(9, event.deviceId);
+        dailyStatement.Bind(10, event.timestamp);
         dailyStatement.Step();
         return true;
     }
@@ -1038,41 +1163,44 @@ namespace tokenometer
 
         Statement hourlyStatement(m_database, R"sql(
             INSERT INTO hourly_usage(
-                source_path, hour_start, day, session_id, source_kind, tool, model, project,
-                device_id, messages)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)
-            ON CONFLICT(source_path, hour_start, session_id, source_kind, tool, model, project, device_id)
-            DO UPDATE SET messages=messages+1;
+                source_path, hour_start, day, session_id, source_kind, account_id, tool, model,
+                project, device_id, messages)
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,1)
+            ON CONFLICT(source_path, hour_start, session_id, source_kind, account_id, tool, model, project, device_id)
+            DO UPDATE SET account_id=excluded.account_id, messages=messages+1;
         )sql");
         hourlyStatement.Bind(1, event.sourcePath);
         hourlyStatement.Bind(2, event.timestamp > 0 ? event.timestamp - event.timestamp % 3600 : 0);
         hourlyStatement.Bind(3, event.day);
         hourlyStatement.Bind(4, event.sessionId);
         hourlyStatement.Bind(5, event.sourceKind);
-        hourlyStatement.Bind(6, event.tool);
-        hourlyStatement.Bind(7, event.model);
-        hourlyStatement.Bind(8, event.project);
-        hourlyStatement.Bind(9, event.deviceId);
+        hourlyStatement.Bind(6, event.accountId);
+        hourlyStatement.Bind(7, event.tool);
+        hourlyStatement.Bind(8, event.model);
+        hourlyStatement.Bind(9, event.project);
+        hourlyStatement.Bind(10, event.deviceId);
         hourlyStatement.Step();
 
         Statement dailyStatement(m_database, R"sql(
             INSERT INTO daily_usage(
-                source_path, day, session_id, source_kind, tool, model, project, device_id,
+                source_path, day, session_id, source_kind, account_id, tool, model, project, device_id,
                 first_timestamp, last_timestamp, messages)
-            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9,1)
-            ON CONFLICT(source_path, day, session_id, source_kind, tool, model, project, device_id)
-            DO UPDATE SET last_timestamp=MAX(last_timestamp, excluded.last_timestamp),
+            VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10,1)
+            ON CONFLICT(source_path, day, session_id, source_kind, account_id, tool, model, project, device_id)
+            DO UPDATE SET account_id=excluded.account_id,
+                          last_timestamp=MAX(last_timestamp, excluded.last_timestamp),
                           messages=messages+1;
         )sql");
         dailyStatement.Bind(1, event.sourcePath);
         dailyStatement.Bind(2, event.day);
         dailyStatement.Bind(3, event.sessionId);
         dailyStatement.Bind(4, event.sourceKind);
-        dailyStatement.Bind(5, event.tool);
-        dailyStatement.Bind(6, event.model);
-        dailyStatement.Bind(7, event.project);
-        dailyStatement.Bind(8, event.deviceId);
-        dailyStatement.Bind(9, event.timestamp);
+        dailyStatement.Bind(5, event.accountId);
+        dailyStatement.Bind(6, event.tool);
+        dailyStatement.Bind(7, event.model);
+        dailyStatement.Bind(8, event.project);
+        dailyStatement.Bind(9, event.deviceId);
+        dailyStatement.Bind(10, event.timestamp);
         dailyStatement.Step();
 
         Statement sessionStatement(m_database, R"sql(
@@ -1148,13 +1276,13 @@ namespace tokenometer
         std::scoped_lock lock(m_mutex);
         int64_t const since = days > 0 ? UnixNow() - static_cast<int64_t>(days) * 86400 : 0;
         Statement statement(m_database, R"sql(
-            SELECT day, source_kind, tool, model, project, device_id,
+            SELECT day, source_kind, tool, model, project, device_id, account_id,
                    SUM(input_tokens), SUM(cached_input_tokens), SUM(cache_write_input_tokens),
                    SUM(output_tokens), SUM(reasoning_output_tokens), SUM(reported_total_tokens),
                    SUM(messages), SUM(tool_calls)
             FROM daily_usage
             WHERE (?1=0 OR last_timestamp>=?1)
-            GROUP BY day, source_kind, tool, model, project, device_id
+            GROUP BY day, source_kind, tool, model, project, device_id, account_id
             ORDER BY day ASC;
         )sql");
         statement.Bind(1, since);
@@ -1168,9 +1296,10 @@ namespace tokenometer
             row.model = statement.Text(3);
             row.project = statement.Text(4);
             row.deviceId = statement.Text(5);
-            row.counts = ReadCounts(statement, 6);
-            row.messages = statement.Int64(12);
-            row.toolCalls = statement.Int64(13);
+            row.accountId = statement.Text(6);
+            row.counts = ReadCounts(statement, 7);
+            row.messages = statement.Int64(13);
+            row.toolCalls = statement.Int64(14);
             result.push_back(std::move(row));
         }
         return result;
@@ -1181,13 +1310,13 @@ namespace tokenometer
         std::scoped_lock lock(m_mutex);
         int64_t const since = days > 0 ? UnixNow() - static_cast<int64_t>(days) * 86400 : 0;
         Statement statement(m_database, R"sql(
-            SELECT hour_start, day, source_kind, tool, model, project, device_id,
+            SELECT hour_start, day, source_kind, tool, model, project, device_id, account_id,
                    SUM(input_tokens), SUM(cached_input_tokens), SUM(cache_write_input_tokens),
                    SUM(output_tokens), SUM(reasoning_output_tokens), SUM(reported_total_tokens),
                    SUM(messages), SUM(tool_calls)
             FROM hourly_usage
             WHERE (?1=0 OR hour_start>=?1)
-            GROUP BY hour_start, day, source_kind, tool, model, project, device_id
+            GROUP BY hour_start, day, source_kind, tool, model, project, device_id, account_id
             ORDER BY hour_start ASC;
         )sql");
         statement.Bind(1, since);
@@ -1202,9 +1331,10 @@ namespace tokenometer
             row.model = statement.Text(4);
             row.project = statement.Text(5);
             row.deviceId = statement.Text(6);
-            row.counts = ReadCounts(statement, 7);
-            row.messages = statement.Int64(13);
-            row.toolCalls = statement.Int64(14);
+            row.accountId = statement.Text(7);
+            row.counts = ReadCounts(statement, 8);
+            row.messages = statement.Int64(14);
+            row.toolCalls = statement.Int64(15);
             result.push_back(std::move(row));
         }
         return result;
@@ -1222,6 +1352,7 @@ namespace tokenometer
         else if (dimension == L"device") key = "device_id";
         else if (dimension == L"session") key = "session_id";
         else if (dimension == L"source") key = "source_kind";
+        else if (dimension == L"account") key = "account_id";
 
         std::string sql = "SELECT ";
         sql += key;
@@ -1256,12 +1387,14 @@ namespace tokenometer
         std::scoped_lock lock(m_mutex);
         Statement statement(m_database, R"sql(
             SELECT s.id, COALESCE(NULLIF(s.title,''), s.id), s.project, s.model, s.device_id,
-                   s.started_at, s.updated_at, COALESCE(SUM(d.messages), s.message_count),
+                   s.account_id, s.started_at, s.updated_at,
+                   MAX(COALESCE(SUM(d.messages),0), s.message_count),
                    COALESCE(SUM(d.tool_calls),0), COALESCE(SUM(d.input_tokens),0),
                    COALESCE(SUM(d.cached_input_tokens),0), COALESCE(SUM(d.cache_write_input_tokens),0),
                    COALESCE(SUM(d.output_tokens),0), COALESCE(SUM(d.reasoning_output_tokens),0),
                    COALESCE(SUM(d.reported_total_tokens),0)
-            FROM sessions s LEFT JOIN daily_usage d ON d.session_id=s.id
+            FROM sessions s LEFT JOIN daily_usage d
+              ON d.session_id=s.id AND d.account_id=s.account_id
             GROUP BY s.id
             ORDER BY s.updated_at DESC LIMIT ?1;
         )sql");
@@ -1275,11 +1408,12 @@ namespace tokenometer
             row.project = statement.Text(2);
             row.model = statement.Text(3);
             row.deviceId = statement.Text(4);
-            row.startedAt = statement.Int64(5);
-            row.updatedAt = statement.Int64(6);
-            row.messages = statement.Int64(7);
-            row.toolCalls = statement.Int64(8);
-            row.counts = ReadCounts(statement, 9);
+            row.accountId = statement.Text(5);
+            row.startedAt = statement.Int64(6);
+            row.updatedAt = statement.Int64(7);
+            row.messages = statement.Int64(8);
+            row.toolCalls = statement.Int64(9);
+            row.counts = ReadCounts(statement, 10);
             result.push_back(std::move(row));
         }
         return result;
@@ -1414,20 +1548,24 @@ namespace tokenometer
             auto const deviceId = database.GetOrCreateDeviceId(L"Test device");
             if (deviceId.empty() || database.GetOrCreateDeviceId(L"Renamed device") != deviceId) return false;
             SessionRecord session{ L"session-1", L"fixture.jsonl", L"codex", L"Fixture", L"D:\\work", L"gpt-test", L"test-device", 100, 100, 0 };
+            session.accountId = L"account-a";
             database.UpsertSession(session);
 
             PromptEvent prompt{ L"fixture.jsonl", 10, session.id, L"codex", L"Codex", L"",
                                 session.project, session.deviceId, L"turn-1", 1, 100, L"1970-01-01" };
+            prompt.accountId = session.accountId;
             if (!database.InsertPromptEvent(prompt) || database.InsertPromptEvent(prompt)) return false;
 
             UsageEvent usage{ L"fixture.jsonl", 20, session.id, L"codex", L"Codex", session.model,
                               session.project, session.deviceId, L"turn-1", 1, 101, L"1970-01-01",
                               { 1200, 900, 0, 300, 80, 1500 } };
+            usage.accountId = session.accountId;
             if (!database.InsertUsageEvent(usage) || database.InsertUsageEvent(usage)) return false;
 
             ToolEvent tool{ L"fixture.jsonl", 30, session.id, L"codex", L"Codex", session.model,
                             session.project, session.deviceId, L"turn-1", 1, 102, L"1970-01-01",
                             L"shell_command", L"call-1", 80 };
+            tool.accountId = session.accountId;
             if (!database.InsertToolEvent(tool) || database.InsertToolEvent(tool)) return false;
             if (!database.AttachToolOutput({ L"fixture.jsonl", session.id, L"call-1", 120, 60 })) return false;
 
@@ -1449,19 +1587,23 @@ namespace tokenometer
             auto const hours = database.GetHourlyUsage(0);
             int64_t hourlyMessages{};
             int64_t hourlyToolCalls{};
+            bool hourlyAccountsValid = !hours.empty();
             for (auto const& hour : hours)
             {
                 hourlyMessages += hour.messages;
                 hourlyToolCalls += hour.toolCalls;
+                hourlyAccountsValid = hourlyAccountsValid && hour.accountId == session.accountId;
             }
             bool const initialValid =
                 loaded && loaded->offset == 400 && loaded->cumulative.input == 1200 &&
                 totals.counts.reportedTotal == 1500 && totals.messages == 1 && totals.toolCalls == 1 &&
-                sessions.size() == 1 && sessions.front().counts.cachedInput == 900 &&
+                sessions.size() == 1 && sessions.front().accountId == session.accountId &&
+                sessions.front().counts.cachedInput == 900 &&
                 turns.size() == 1 && turns.front().model == session.model &&
                 turns.front().counts.reportedTotal == 1500 &&
                 tools.size() == 1 && tools.front().sourcePath == L"fixture.jsonl" &&
                 tools.front().inputLength == 80 && tools.front().outputLength == 60 &&
+                hourlyAccountsValid &&
                 hourlyMessages == 1 && hourlyToolCalls == 1;
             if (!initialValid) return false;
 
@@ -1488,8 +1630,168 @@ namespace tokenometer
                 if (!database.InsertToolEvent(tool)) throw std::runtime_error("tool rebuild failed");
                 database.SaveSourceProgress(progress);
             });
-            return database.GetTotals().counts.reportedTotal == 1500 &&
-                   database.GetSessionTurns(session.id).size() == 1;
+            SessionRecord second = session;
+            second.id = L"session-2";
+            second.sourcePath = L"fixture-2.jsonl";
+            second.title = L"Second account";
+            second.accountId = L"account-b";
+            PromptEvent secondPrompt = prompt;
+            secondPrompt.sourcePath = second.sourcePath;
+            secondPrompt.sessionId = second.id;
+            secondPrompt.accountId = second.accountId;
+            UsageEvent secondUsage = usage;
+            secondUsage.sourcePath = second.sourcePath;
+            secondUsage.sessionId = second.id;
+            secondUsage.accountId = second.accountId;
+            secondUsage.counts = { 200, 50, 0, 50, 0, 250 };
+            ToolEvent secondTool = tool;
+            secondTool.sourcePath = second.sourcePath;
+            secondTool.sessionId = second.id;
+            secondTool.name = L"other_tool";
+            secondTool.accountId = second.accountId;
+            database.Transaction([&]
+            {
+                database.UpsertSession(second);
+                if (!database.InsertPromptEvent(secondPrompt)) throw std::runtime_error("second prompt failed");
+                if (!database.InsertUsageEvent(secondUsage)) throw std::runtime_error("second usage failed");
+                if (!database.InsertToolEvent(secondTool)) throw std::runtime_error("second tool failed");
+            });
+
+            auto const accounts = database.GetBreakdown(L"account");
+            auto const firstTools = database.GetToolCalls(session.id, 1);
+            auto const secondTools = database.GetToolCalls(second.id, 1);
+            auto const firstTurns = database.GetSessionTurns(session.id);
+            auto findAccount = [&](std::wstring_view id) -> BreakdownRow const*
+            {
+                auto const found = std::find_if(accounts.begin(), accounts.end(), [&](auto const& row)
+                {
+                    return row.key == id;
+                });
+                return found == accounts.end() ? nullptr : &*found;
+            };
+            auto const accountA = findAccount(session.accountId);
+            auto const accountB = findAccount(second.accountId);
+            auto const recentSessions = database.GetRecentSessions();
+            bool const groupingValid =
+                database.GetTotals().counts.reportedTotal == 1750 &&
+                accountA && accountA->counts.cachedInput == 900 &&
+                accountA->counts.UncachedInput() == 300 &&
+                accountB && accountB->counts.reportedTotal == 250 &&
+                !database.GetBreakdown(L"tool").empty() &&
+                !database.GetBreakdown(L"model").empty() &&
+                database.GetBreakdown(L"session").size() == 2 &&
+                !database.GetBreakdown(L"device").empty() &&
+                !database.GetBreakdown(L"project").empty() &&
+                !database.GetBreakdown(L"source").empty() &&
+                recentSessions.size() == 2 &&
+                firstTools.size() == 1 && firstTools.front().name == L"shell_command" &&
+                secondTools.size() == 1 && secondTools.front().name == L"other_tool" &&
+                firstTurns.size() == 1 && firstTurns.front().tools == L"shell_command";
+            if (!groupingValid) return false;
+
+            Database accountKeys(L":memory:");
+            accountKeys.Initialize();
+            UsageEvent accountAUsage = usage;
+            accountAUsage.sourcePath = L"shared.jsonl";
+            accountAUsage.sessionId = L"shared-session";
+            accountAUsage.sourceOffset = 1;
+            accountAUsage.accountId = L"account-a";
+            accountAUsage.counts = { 100, 25, 0, 10, 0, 110 };
+            UsageEvent accountBUsage = accountAUsage;
+            accountBUsage.sourceOffset = 2;
+            accountBUsage.accountId = L"account-b";
+            accountBUsage.counts = { 200, 100, 0, 20, 0, 220 };
+            if (!accountKeys.InsertUsageEvent(accountAUsage) ||
+                !accountKeys.InsertUsageEvent(accountBUsage) ||
+                accountKeys.GetBreakdown(L"account").size() != 2 ||
+                accountKeys.GetHourlyUsage(0).size() != 2)
+            {
+                return false;
+            }
+
+            Database migrated(L":memory:");
+            migrated.Execute(R"sql(
+                CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+                CREATE TABLE sessions(
+                    id TEXT PRIMARY KEY,
+                    source_path TEXT NOT NULL DEFAULT '',
+                    source_kind TEXT NOT NULL DEFAULT 'codex'
+                );
+                CREATE TABLE daily_usage(
+                    source_path TEXT NOT NULL,
+                    day TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    project TEXT NOT NULL DEFAULT '',
+                    device_id TEXT NOT NULL DEFAULT '',
+                    first_timestamp INTEGER NOT NULL DEFAULT 0,
+                    last_timestamp INTEGER NOT NULL DEFAULT 0,
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    reported_total_tokens INTEGER NOT NULL DEFAULT 0,
+                    messages INTEGER NOT NULL DEFAULT 0,
+                    tool_calls INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(source_path, day, session_id, source_kind, tool, model, project, device_id)
+                );
+                CREATE TABLE hourly_usage(
+                    source_path TEXT NOT NULL,
+                    hour_start INTEGER NOT NULL,
+                    day TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    tool TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT '',
+                    project TEXT NOT NULL DEFAULT '',
+                    device_id TEXT NOT NULL DEFAULT '',
+                    input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    output_tokens INTEGER NOT NULL DEFAULT 0,
+                    reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    reported_total_tokens INTEGER NOT NULL DEFAULT 0,
+                    messages INTEGER NOT NULL DEFAULT 0,
+                    tool_calls INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY(source_path, hour_start, session_id, source_kind, tool, model, project, device_id)
+                );
+                PRAGMA user_version=2;
+            )sql");
+            migrated.Initialize();
+            Statement migratedVersion(migrated.m_database, "PRAGMA user_version;");
+            if (!migratedVersion.Step() || migratedVersion.Int(0) != 4) return false;
+            auto hasAccountColumn = [&](char const* table)
+            {
+                std::string sql = "PRAGMA table_info(";
+                sql += table;
+                sql += ");";
+                Statement columns(migrated.m_database, sql.c_str());
+                while (columns.Step())
+                {
+                    if (columns.Text(1) == L"account_id") return true;
+                }
+                return false;
+            };
+            auto accountIsPartOfPrimaryKey = [&](char const* table)
+            {
+                std::string sql = "PRAGMA table_info(";
+                sql += table;
+                sql += ");";
+                Statement columns(migrated.m_database, sql.c_str());
+                while (columns.Step())
+                {
+                    if (columns.Text(1) == L"account_id") return columns.Int(5) > 0;
+                }
+                return false;
+            };
+            return hasAccountColumn("sessions") &&
+                   hasAccountColumn("daily_usage") &&
+                   hasAccountColumn("hourly_usage") &&
+                   accountIsPartOfPrimaryKey("daily_usage") &&
+                   accountIsPartOfPrimaryKey("hourly_usage");
         }
         catch (...)
         {
