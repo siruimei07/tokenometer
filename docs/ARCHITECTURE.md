@@ -22,7 +22,8 @@ Codex local logs / supported account source (future)
 ```
 
 - **WPF / .NET 10:** native windowing, drawing, accessibility, and packaging.
-- **DWM interop:** rounded corners and system backdrop with a visual fallback.
+- **DWM interop:** rounded corners and transient Acrylic preserve the actual desktop color behind a neutral window.
+- **Optical control:** `BackdropGlass` adds shared-backdrop blur, four-band perimeter refraction, asymmetric highlights, and pointer-driven specular energy without coloring the sampled background.
 - **No third-party UI/chart packages:** the small chart set is drawn with WPF primitives.
 - **Read-only providers:** collectors return normalized snapshots and never mutate Codex state.
 
@@ -57,3 +58,8 @@ Only UI preferences are persisted: window bounds, capsule position, selected ski
 - Unsupported DWM effects fall back to an opaque high-contrast surface.
 - Closing the dashboard hides to the tray; only the explicit Exit action terminates the process.
 
+## Desktop lifecycle
+
+`App` owns one `DashboardViewModel`, the dashboard window, the topmost widget, and the tray icon. Hiding the dashboard does not create a second view model or collector. Opening the dashboard hides the widget; the header and tray can show the widget explicitly. Explicit tray Exit disposes the icon and view model before closing both windows.
+
+The `--snapshot` and `--widget-snapshot` switches are developer QA entry points. They render against a clean two-tone proof backdrop so no desktop or private window content is captured.
