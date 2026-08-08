@@ -101,6 +101,7 @@ namespace tokenometer
         [[nodiscard]] static bool SelfTest();
 
     private:
+        void HardenStoragePermissions();
         void Execute(char const* sql);
         [[noreturn]] void ThrowDatabaseError(char const* action) const;
 

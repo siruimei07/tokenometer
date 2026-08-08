@@ -1420,7 +1420,7 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
                 detail.Spacing(6);
                 detail.Children().Append(Text(L"工具输入 / 输出", 10.5, Color(255, 253, 142), 600));
                 detail.Children().Append(Text(
-                    L"从本地转录按需读取 · 不写入数据库",
+                    L"从本地转录按需读取 · 尽力脱敏 · 不写入数据库；屏幕共享时仍请谨慎",
                     9,
                     Color(143, 139, 140),
                     500));
@@ -3570,7 +3570,10 @@ controls::Grid DashboardView::BuildSettingsPage()
     AddColumn(effects, Star());
     AddColumn(effects, Star());
     AddColumn(effects, Star());
-    effects.Children().Append(ButtonSetting(L"模糊", L"启用玻璃模糊", m_blurToggle));
+    effects.Children().Append(ButtonSetting(
+        L"模糊",
+        L"气泡可见时本地捕获屏幕生成玻璃效果；不保存或上传",
+        m_blurToggle));
     auto transparent = ButtonSetting(L"透明窗口", L"启用透明窗口", m_transparentWindowToggle);
     controls::Grid::SetColumn(transparent, 1);
     effects.Children().Append(transparent);

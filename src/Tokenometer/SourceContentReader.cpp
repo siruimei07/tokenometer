@@ -302,9 +302,16 @@ namespace tokenometer
                 std::wstring_view{ L"secret" },
                 std::wstring_view{ L"privatekey" },
                 std::wstring_view{ L"secretaccesskey" },
+                std::wstring_view{ L"accesskey" },
+                std::wstring_view{ L"accesskeyid" },
+                std::wstring_view{ L"accountkey" },
                 std::wstring_view{ L"cookie" },
                 std::wstring_view{ L"passwd" },
                 std::wstring_view{ L"pwd" },
+                std::wstring_view{ L"passphrase" },
+                std::wstring_view{ L"connectionstring" },
+                std::wstring_view{ L"databaseurl" },
+                std::wstring_view{ L"webhookurl" },
                 std::wstring_view{ L"credential" },
                 std::wstring_view{ L"credentials" }
             };
@@ -622,6 +629,55 @@ namespace tokenometer
             }
         }
 
+        size_t FindInsensitive(
+            std::wstring_view text,
+            std::wstring_view needle,
+            size_t offset = 0)
+        {
+            if (needle.empty()) return offset <= text.size() ? offset : std::wstring_view::npos;
+            while (offset <= text.size() && needle.size() <= text.size() - offset)
+            {
+                if (StartsWithInsensitive(text, offset, needle)) return offset;
+                ++offset;
+            }
+            return std::wstring_view::npos;
+        }
+
+        void FindPrivateKeyBlocks(
+            std::wstring_view text,
+            std::vector<RedactionRange>& ranges)
+        {
+            constexpr std::wstring_view beginPrefix = L"-----BEGIN ";
+            constexpr std::wstring_view privateKey = L"PRIVATE KEY";
+            size_t offset{};
+            while ((offset = FindInsensitive(text, beginPrefix, offset)) != std::wstring_view::npos)
+            {
+                size_t const labelBegin = offset + beginPrefix.size();
+                size_t const labelEnd = text.find(L"-----", labelBegin);
+                if (labelEnd == std::wstring_view::npos || labelEnd - labelBegin > 128)
+                {
+                    offset += beginPrefix.size();
+                    continue;
+                }
+                auto const label = text.substr(labelBegin, labelEnd - labelBegin);
+                if (FindInsensitive(label, privateKey) == std::wstring_view::npos)
+                {
+                    offset = labelEnd + 5;
+                    continue;
+                }
+
+                std::wstring endMarker = L"-----END ";
+                endMarker.append(label);
+                endMarker += L"-----";
+                size_t const marker = FindInsensitive(text, endMarker, labelEnd + 5);
+                size_t const end = marker == std::wstring_view::npos
+                    ? text.size()
+                    : marker + endMarker.size();
+                AddRange(ranges, offset, end);
+                offset = end;
+            }
+        }
+
         std::wstring RedactPlainText(std::wstring_view text)
         {
             if (text.size() > maximumSanitizedCharacters)
@@ -634,6 +690,7 @@ namespace tokenometer
             FindAuthorizationSchemes(text, ranges);
             FindPrefixedTokens(text, ranges);
             FindJsonWebTokens(text, ranges);
+            FindPrivateKeyBlocks(text, ranges);
             if (ranges.empty()) return std::wstring(text);
 
             std::ranges::sort(ranges, [](auto const& left, auto const& right)
@@ -929,7 +986,15 @@ namespace tokenometer
             auto const slackToken = std::string{ "xox" } + "b-123456789012-abcdefghijklmnop";
             auto const jsonWebToken = std::string{ "ey" } +
                 "JhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlX3ZhbHVl";
-            std::string plainOutput = R"json({"type":"response_item","payload":{"type":"function_call_output","call_id":"call-2","output":"status ok\nOPENAI_API_KEY=assigned-secret-value\nAWS_SECRET_ACCESS_KEY=aws-secret-access-value\nAuthorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==\nSet-Cookie: session=cookie-secret-value; HttpOnly\nstandalone )json";
+            auto const basicCredential = std::string{ "QW" } + "xhZGRpbjpvcGVuIHNlc2FtZQ==";
+            auto const privateKeyBegin = std::string{ "-----BEGIN OPENSSH PRIVATE" } + " KEY-----";
+            auto const privateKeyEnd = std::string{ "-----END OPENSSH PRIVATE" } + " KEY-----";
+            std::string plainOutput =
+                R"json({"type":"response_item","payload":{"type":"function_call_output","call_id":"call-2","output":"status ok\nOPENAI_API_KEY=assigned-secret-value\nAWS_SECRET_ACCESS_KEY=aws-secret-access-value\nAWS_ACCESS_KEY_ID=aws-access-id-value\nAccountKey=account-key-value\nPASSPHRASE=passphrase-value\nDATABASE_URL=postgres://user:database-password@localhost/db\nAuthorization: Basic )json" +
+                basicCredential +
+                R"json(\nSet-Cookie: session=cookie-secret-value; HttpOnly\n)json" +
+                privateKeyBegin + R"json(\nprivate-key-material\n)json" + privateKeyEnd +
+                R"json(\nstandalone )json";
             for (auto const& token : {
                      openAiToken,
                      openAiProjectToken,
@@ -1001,7 +1066,12 @@ namespace tokenometer
                 plainContent.input.find(L"ghi\"\"jkl") != std::wstring::npos ||
                 plainContent.output.find(L"assigned-secret-value") != std::wstring::npos ||
                 plainContent.output.find(L"aws-secret-access-value") != std::wstring::npos ||
-                plainContent.output.find(L"QWxhZGRpbjpvcGVuIHNlc2FtZQ") != std::wstring::npos ||
+                plainContent.output.find(L"aws-access-id-value") != std::wstring::npos ||
+                plainContent.output.find(L"account-key-value") != std::wstring::npos ||
+                plainContent.output.find(L"passphrase-value") != std::wstring::npos ||
+                plainContent.output.find(L"database-password") != std::wstring::npos ||
+                plainContent.output.find(L"private-key-material") != std::wstring::npos ||
+                plainContent.output.find(wide(basicCredential)) != std::wstring::npos ||
                 plainContent.output.find(L"cookie-secret-value") != std::wstring::npos ||
                 plainContent.output.find(L"HttpOnly") != std::wstring::npos ||
                 plainContent.output.find(wide(openAiToken)) != std::wstring::npos ||

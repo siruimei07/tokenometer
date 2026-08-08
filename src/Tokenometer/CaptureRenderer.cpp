@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 
 #include <d3dcompiler.h>
@@ -32,7 +33,7 @@ namespace
                 return besideExe;
             }
         }
-        return std::filesystem::path(__FILE__).parent_path() / L"Glass.hlsl";
+        throw std::runtime_error("Glass.hlsl is missing beside Tokenometer.exe");
     }
 
     com_ptr<ID3DBlob> CompileShader(char const* entryPoint, char const* target)
@@ -88,7 +89,7 @@ CaptureRenderer::CaptureRenderer(HWND window, SwapChainPanel panel) :
 {
 }
 
-CaptureRenderer::~CaptureRenderer()
+CaptureRenderer::~CaptureRenderer() noexcept
 {
     Stop();
 }
@@ -462,7 +463,7 @@ void CaptureRenderer::Resize(uint32_t pixelWidth, uint32_t pixelHeight)
     CreateSizeResources(pixelWidth, pixelHeight);
 }
 
-void CaptureRenderer::Stop()
+void CaptureRenderer::Stop() noexcept
 {
     if (m_stopping.exchange(true, std::memory_order_acq_rel))
     {
@@ -471,27 +472,57 @@ void CaptureRenderer::Stop()
 
     if (m_framePool && m_frameArrived.value)
     {
-        m_framePool.FrameArrived(m_frameArrived);
+        try
+        {
+            m_framePool.FrameArrived(m_frameArrived);
+        }
+        catch (...)
+        {
+        }
         m_frameArrived = {};
     }
 
-    std::scoped_lock lock(m_renderMutex);
-    if (m_captureSession)
+    try
     {
-        m_captureSession.Close();
-        m_captureSession = nullptr;
-    }
-    if (m_framePool)
-    {
-        m_framePool.Close();
-        m_framePool = nullptr;
-    }
-    m_captureItem = nullptr;
+        std::scoped_lock lock(m_renderMutex);
+        if (m_captureSession)
+        {
+            try
+            {
+                m_captureSession.Close();
+            }
+            catch (...)
+            {
+            }
+            m_captureSession = nullptr;
+        }
+        if (m_framePool)
+        {
+            try
+            {
+                m_framePool.Close();
+            }
+            catch (...)
+            {
+            }
+            m_framePool = nullptr;
+        }
+        m_captureItem = nullptr;
 
-    if (m_panel)
+        if (m_panel)
+        {
+            try
+            {
+                auto const nativePanel = m_panel.as<ISwapChainPanelNative>();
+                (void)nativePanel->SetSwapChain(nullptr);
+            }
+            catch (...)
+            {
+            }
+            m_panel = nullptr;
+        }
+    }
+    catch (...)
     {
-        auto const nativePanel = m_panel.as<ISwapChainPanelNative>();
-        nativePanel->SetSwapChain(nullptr);
-        m_panel = nullptr;
     }
 }

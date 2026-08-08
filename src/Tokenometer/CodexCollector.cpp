@@ -24,6 +24,9 @@ namespace tokenometer
         namespace json = winrt::Windows::Data::Json;
 
         constexpr size_t maximumRecordBytes = 16 * 1024 * 1024;
+        constexpr int64_t maximumTokenCounter = 1'000'000'000'000;
+        constexpr int64_t maximumUnixTimestamp = 32'503'680'000;
+        constexpr int64_t maximumQuotaWindowMinutes = 10LL * 365 * 24 * 60;
 
         struct FileState
         {
@@ -171,28 +174,42 @@ namespace tokenometer
             return value && value.ValueType() != json::JsonValueType::Null;
         }
 
-        int64_t Integer(json::JsonObject const& object, wchar_t const* name)
+        std::optional<int64_t> NonNegativeInteger(
+            json::JsonObject const& object,
+            wchar_t const* name,
+            int64_t maximum)
         {
             if (!object.HasKey(name))
             {
-                return 0;
+                return int64_t{};
             }
             auto const value = object.Lookup(name);
-            return value && value.ValueType() == json::JsonValueType::Number
-                ? static_cast<int64_t>(value.GetNumber())
-                : 0;
+            if (!value || value.ValueType() != json::JsonValueType::Number)
+            {
+                return std::nullopt;
+            }
+            double const number = value.GetNumber();
+            if (!std::isfinite(number) || number < 0 || number > static_cast<double>(maximum) ||
+                std::floor(number) != number)
+            {
+                return std::nullopt;
+            }
+            return static_cast<int64_t>(number);
         }
 
-        double Number(json::JsonObject const& object, wchar_t const* name, double fallback = -1.0)
+        std::optional<double> BoundedNumber(
+            json::JsonObject const& object,
+            wchar_t const* name,
+            double minimum,
+            double maximum)
         {
-            if (!object.HasKey(name))
-            {
-                return fallback;
-            }
+            if (!object.HasKey(name)) return std::nullopt;
             auto const value = object.Lookup(name);
-            return value && value.ValueType() == json::JsonValueType::Number
-                ? value.GetNumber()
-                : fallback;
+            if (!value || value.ValueType() != json::JsonValueType::Number) return std::nullopt;
+            double const number = value.GetNumber();
+            return std::isfinite(number) && number >= minimum && number <= maximum
+                ? std::optional{ number }
+                : std::nullopt;
         }
 
         std::optional<json::JsonObject> Parse(std::string_view line)
@@ -253,16 +270,22 @@ namespace tokenometer
             return value.data();
         }
 
-        TokenCounts ReadCounts(json::JsonObject const& object)
+        std::optional<TokenCounts> ReadCounts(json::JsonObject const& object)
         {
-            return {
-                Integer(object, L"input_tokens"),
-                Integer(object, L"cached_input_tokens"),
-                Integer(object, L"cache_write_input_tokens"),
-                Integer(object, L"output_tokens"),
-                Integer(object, L"reasoning_output_tokens"),
-                Integer(object, L"total_tokens")
-            };
+            auto const input = NonNegativeInteger(object, L"input_tokens", maximumTokenCounter);
+            auto const cached = NonNegativeInteger(object, L"cached_input_tokens", maximumTokenCounter);
+            auto const cacheWrite = NonNegativeInteger(
+                object, L"cache_write_input_tokens", maximumTokenCounter);
+            auto const output = NonNegativeInteger(object, L"output_tokens", maximumTokenCounter);
+            auto const reasoning = NonNegativeInteger(
+                object, L"reasoning_output_tokens", maximumTokenCounter);
+            auto const total = NonNegativeInteger(object, L"total_tokens", maximumTokenCounter);
+            if (!input || !cached || !cacheWrite || !output || !reasoning || !total ||
+                *cached > *input || *cacheWrite > *input)
+            {
+                return std::nullopt;
+            }
+            return TokenCounts{ *input, *cached, *cacheWrite, *output, *reasoning, *total };
         }
 
         bool Decreased(TokenCounts const& current, TokenCounts const& previous)
@@ -485,6 +508,19 @@ namespace tokenometer
                     validatedTotals.counts.output == 53 &&
                     validatedTotals.counts.reasoningOutput == 12 &&
                     validatedTotals.counts.reportedTotal == 293;
+
+            std::ofstream invalidNumbers(archived, std::ios::binary | std::ios::app);
+            invalidNumbers << R"({"timestamp":"2026-01-01T00:00:11.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1e100,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":1e100}}}})" << '\n';
+            invalidNumbers << R"({"timestamp":"2026-01-01T00:00:12.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":-1,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}}}})" << '\n';
+            invalidNumbers << R"({"timestamp":"2026-01-01T00:00:13.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":11,"cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":11}}}})" << '\n';
+            invalidNumbers.close();
+            auto const rejectedNumbers = collector.CollectOnce();
+            auto const afterRejectedNumbers = database.GetTotals();
+            valid = valid && rejectedNumbers.usageEvents == 0 &&
+                    afterRejectedNumbers.counts.input == validatedTotals.counts.input &&
+                    afterRejectedNumbers.counts.cachedInput == validatedTotals.counts.cachedInput &&
+                    afterRejectedNumbers.counts.output == validatedTotals.counts.output &&
+                    afterRejectedNumbers.counts.reportedTotal == validatedTotals.counts.reportedTotal;
 
             Database externalDatabase(L":memory:");
             externalDatabase.Initialize();
@@ -981,10 +1017,14 @@ namespace tokenometer
                 }
                 else if (outerType == L"event_msg" && payloadType == L"task_started")
                 {
-                    double const reportedStart = Number(*payload, L"started_at");
+                    auto const reportedStart = BoundedNumber(
+                        *payload,
+                        L"started_at",
+                        0,
+                        static_cast<double>(maximumUnixTimestamp));
                     if (!current.forked ||
-                        (reportedStart >= 0 && current.sessionCreatedAt > 0 &&
-                         static_cast<int64_t>(std::floor(reportedStart)) >= current.sessionCreatedAt - 5))
+                        (reportedStart && current.sessionCreatedAt > 0 &&
+                         static_cast<int64_t>(std::floor(*reportedStart)) >= current.sessionCreatedAt - 5))
                     {
                         current.trackingStarted = true;
                         auto const turn = String(*payload, L"turn_id");
@@ -1021,13 +1061,13 @@ namespace tokenometer
                     {
                         if (auto const total = Object(*info, L"total_token_usage"))
                         {
-                            TokenCounts const reported = ReadCounts(*total);
-                            if (!Equal(reported, current.cumulative))
+                            auto const reported = ReadCounts(*total);
+                            if (reported && !Equal(*reported, current.cumulative))
                             {
                                 TokenCounts claimed;
                                 if (auto const last = Object(*info, L"last_token_usage"))
                                 {
-                                    claimed = ReadCounts(*last);
+                                    if (auto const parsed = ReadCounts(*last)) claimed = *parsed;
                                 }
 
                                 TokenCounts delta;
@@ -1035,22 +1075,22 @@ namespace tokenometer
                                 {
                                     delta = HasUsage(claimed)
                                         ? claimed
-                                        : Difference(reported, {});
+                                        : Difference(*reported, {});
                                 }
-                                else if (Decreased(reported, current.cumulative))
+                                else if (Decreased(*reported, current.cumulative))
                                 {
                                     delta = HasUsage(claimed)
                                         ? claimed
-                                        : Difference(reported, {});
+                                        : Difference(*reported, {});
                                 }
                                 else
                                 {
-                                    auto const expected = Difference(reported, current.cumulative);
+                                    auto const expected = Difference(*reported, current.cumulative);
                                     delta = HasUsage(claimed) && Equal(claimed, expected)
                                         ? claimed
                                         : expected;
                                 }
-                                current.cumulative = reported;
+                                current.cumulative = *reported;
                                 if (HasUsage(delta))
                                 {
                                     usageBatch.push_back({
@@ -1062,7 +1102,7 @@ namespace tokenometer
                                     });
                                 }
                             }
-                            hasCumulative = true;
+                            if (reported) hasCumulative = true;
                         }
                     }
 
@@ -1077,15 +1117,39 @@ namespace tokenometer
                             snapshot.capturedAt = timestamp;
                             if (auto const primary = Object(*limits, L"primary"))
                             {
-                                snapshot.primaryUsedPercent = Number(*primary, L"used_percent");
-                                snapshot.primaryWindowMinutes = static_cast<int>(Integer(*primary, L"window_minutes"));
-                                snapshot.primaryResetsAt = Integer(*primary, L"resets_at");
+                                if (auto const value = BoundedNumber(
+                                        *primary, L"used_percent", 0, 100))
+                                {
+                                    snapshot.primaryUsedPercent = *value;
+                                }
+                                if (auto const value = NonNegativeInteger(
+                                        *primary, L"window_minutes", maximumQuotaWindowMinutes))
+                                {
+                                    snapshot.primaryWindowMinutes = static_cast<int>(*value);
+                                }
+                                if (auto const value = NonNegativeInteger(
+                                        *primary, L"resets_at", maximumUnixTimestamp))
+                                {
+                                    snapshot.primaryResetsAt = *value;
+                                }
                             }
                             if (auto const secondary = Object(*limits, L"secondary"))
                             {
-                                snapshot.secondaryUsedPercent = Number(*secondary, L"used_percent");
-                                snapshot.secondaryWindowMinutes = static_cast<int>(Integer(*secondary, L"window_minutes"));
-                                snapshot.secondaryResetsAt = Integer(*secondary, L"resets_at");
+                                if (auto const value = BoundedNumber(
+                                        *secondary, L"used_percent", 0, 100))
+                                {
+                                    snapshot.secondaryUsedPercent = *value;
+                                }
+                                if (auto const value = NonNegativeInteger(
+                                        *secondary, L"window_minutes", maximumQuotaWindowMinutes))
+                                {
+                                    snapshot.secondaryWindowMinutes = static_cast<int>(*value);
+                                }
+                                if (auto const value = NonNegativeInteger(
+                                        *secondary, L"resets_at", maximumUnixTimestamp))
+                                {
+                                    snapshot.secondaryResetsAt = *value;
+                                }
                             }
                             limitBatch = std::move(snapshot);
                         }

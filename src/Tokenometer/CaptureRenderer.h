@@ -22,13 +22,13 @@ public:
         HWND window,
         winrt::Microsoft::UI::Xaml::Controls::SwapChainPanel const& panel);
 
-    ~CaptureRenderer();
+    ~CaptureRenderer() noexcept;
 
     CaptureRenderer(CaptureRenderer const&) = delete;
     CaptureRenderer& operator=(CaptureRenderer const&) = delete;
 
     void Resize(uint32_t pixelWidth, uint32_t pixelHeight);
-    void Stop();
+    void Stop() noexcept;
     [[nodiscard]] uint64_t PresentedFrames() const noexcept
     {
         return m_presentedFrames.load(std::memory_order_relaxed);

@@ -103,7 +103,7 @@ namespace tokenometer
         bool closeToTray{ true };
         SurfaceTheme theme{ SurfaceTheme::System };
         int glassOpacityPercent{ 75 };
-        bool blurEnabled{ true };
+        bool blurEnabled{ false };
         bool transparentWindow{};
         bool providerColors{ true };
         bool bubbleAlwaysOnTop{ true };

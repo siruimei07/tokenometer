@@ -1,5 +1,6 @@
 #include "Database.h"
 
+#include <aclapi.h>
 #include <windows.h>
 #include <shlobj.h>
 #include <winsqlite/winsqlite3.h>
@@ -7,16 +8,536 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <system_error>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace tokenometer
 {
     namespace
     {
+        [[noreturn]] void ThrowWindowsError(DWORD error, char const* action)
+        {
+            throw std::system_error(static_cast<int>(error), std::system_category(), action);
+        }
+
+        [[noreturn]] void ThrowLastWindowsError(char const* action)
+        {
+            ThrowWindowsError(GetLastError(), action);
+        }
+
+        struct HandleCloser final
+        {
+            void operator()(void* handle) const noexcept
+            {
+                if (handle && handle != INVALID_HANDLE_VALUE)
+                {
+                    CloseHandle(handle);
+                }
+            }
+        };
+
+        struct LocalMemoryCloser final
+        {
+            void operator()(void* value) const noexcept
+            {
+                if (value)
+                {
+                    LocalFree(value);
+                }
+            }
+        };
+
+        using UniqueHandle = std::unique_ptr<void, HandleCloser>;
+        using UniqueLocalMemory = std::unique_ptr<void, LocalMemoryCloser>;
+
+        struct PrivateStoragePrincipals final
+        {
+            PrivateStoragePrincipals()
+            {
+                HANDLE rawToken{};
+                if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &rawToken))
+                {
+                    ThrowLastWindowsError("OpenProcessToken failed while securing Tokenometer storage");
+                }
+                UniqueHandle token(rawToken);
+
+                DWORD tokenLength{};
+                if (GetTokenInformation(token.get(), TokenUser, nullptr, 0, &tokenLength) ||
+                    GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+                {
+                    ThrowLastWindowsError("GetTokenInformation failed while sizing the current user SID");
+                }
+                std::vector<unsigned char> tokenBuffer(tokenLength);
+                if (!GetTokenInformation(
+                        token.get(),
+                        TokenUser,
+                        tokenBuffer.data(),
+                        tokenLength,
+                        &tokenLength))
+                {
+                    ThrowLastWindowsError("GetTokenInformation failed while reading the current user SID");
+                }
+                auto const tokenUser = reinterpret_cast<TOKEN_USER const*>(tokenBuffer.data());
+                DWORD const userSidLength = GetLengthSid(tokenUser->User.Sid);
+                currentUser.resize(userSidLength);
+                if (!CopySid(userSidLength, currentUser.data(), tokenUser->User.Sid))
+                {
+                    ThrowLastWindowsError("CopySid failed while securing Tokenometer storage");
+                }
+
+                DWORD systemLength = static_cast<DWORD>(system.size());
+                if (!CreateWellKnownSid(WinLocalSystemSid, nullptr, system.data(), &systemLength))
+                {
+                    ThrowLastWindowsError("CreateWellKnownSid failed for LocalSystem");
+                }
+                DWORD administratorsLength = static_cast<DWORD>(administrators.size());
+                if (!CreateWellKnownSid(
+                        WinBuiltinAdministratorsSid,
+                        nullptr,
+                        administrators.data(),
+                        &administratorsLength))
+                {
+                    ThrowLastWindowsError("CreateWellKnownSid failed for Administrators");
+                }
+            }
+
+            [[nodiscard]] PSID User() noexcept
+            {
+                return currentUser.data();
+            }
+
+            [[nodiscard]] PSID System() noexcept
+            {
+                return system.data();
+            }
+
+            [[nodiscard]] PSID Administrators() noexcept
+            {
+                return administrators.data();
+            }
+
+            std::vector<unsigned char> currentUser;
+            std::array<unsigned char, SECURITY_MAX_SID_SIZE> system{};
+            std::array<unsigned char, SECURITY_MAX_SID_SIZE> administrators{};
+        };
+
+        class PrivateSecurityDescriptor final
+        {
+        public:
+            explicit PrivateSecurityDescriptor(bool directory)
+            {
+                DWORD const inheritance = directory
+                    ? OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+                    : NO_INHERITANCE;
+                std::array<EXPLICIT_ACCESSW, 3> entries{};
+                Configure(entries[0], m_principals.User(), TRUSTEE_IS_USER, inheritance);
+                Configure(entries[1], m_principals.System(), TRUSTEE_IS_USER, inheritance);
+                Configure(
+                    entries[2],
+                    m_principals.Administrators(),
+                    TRUSTEE_IS_GROUP,
+                    inheritance);
+
+                PACL acl{};
+                DWORD const aclResult = SetEntriesInAclW(
+                    static_cast<ULONG>(entries.size()),
+                    entries.data(),
+                    nullptr,
+                    &acl);
+                if (aclResult != ERROR_SUCCESS)
+                {
+                    ThrowWindowsError(aclResult, "SetEntriesInAclW failed for Tokenometer storage");
+                }
+                m_acl.reset(acl);
+
+                if (!InitializeSecurityDescriptor(&m_descriptor, SECURITY_DESCRIPTOR_REVISION) ||
+                    !SetSecurityDescriptorDacl(&m_descriptor, TRUE, Acl(), FALSE) ||
+                    !SetSecurityDescriptorControl(
+                        &m_descriptor,
+                        SE_DACL_PROTECTED,
+                        SE_DACL_PROTECTED))
+                {
+                    ThrowLastWindowsError("Could not build the Tokenometer storage security descriptor");
+                }
+            }
+
+            [[nodiscard]] SECURITY_ATTRIBUTES Attributes() noexcept
+            {
+                SECURITY_ATTRIBUTES attributes{};
+                attributes.nLength = sizeof(attributes);
+                attributes.lpSecurityDescriptor = &m_descriptor;
+                return attributes;
+            }
+
+            void Apply(std::filesystem::path const& path, bool directory) const
+            {
+                UniqueHandle object(CreateFileW(
+                    path.c_str(),
+                    READ_CONTROL | WRITE_DAC,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr,
+                    OPEN_EXISTING,
+                    FILE_FLAG_OPEN_REPARSE_POINT |
+                        (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0),
+                    nullptr));
+                if (object.get() == INVALID_HANDLE_VALUE)
+                {
+                    object.release();
+                    ThrowLastWindowsError("Could not open Tokenometer storage while restricting permissions");
+                }
+
+                FILE_ATTRIBUTE_TAG_INFO information{};
+                if (!GetFileInformationByHandleEx(
+                        object.get(),
+                        FileAttributeTagInfo,
+                        &information,
+                        sizeof(information)))
+                {
+                    ThrowLastWindowsError("Could not inspect Tokenometer storage while restricting permissions");
+                }
+                if ((information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+                {
+                    throw std::runtime_error("Tokenometer storage cannot be a reparse point");
+                }
+                bool const isDirectory =
+                    (information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                if (isDirectory != directory)
+                {
+                    throw std::runtime_error(directory
+                        ? "Tokenometer storage path is not a directory"
+                        : "Tokenometer database path is not a regular file");
+                }
+
+                DWORD const result = SetSecurityInfo(
+                    object.get(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    nullptr,
+                    nullptr,
+                    Acl(),
+                    nullptr);
+                if (result != ERROR_SUCCESS)
+                {
+                    ThrowWindowsError(result, "Could not restrict Tokenometer storage permissions");
+                }
+            }
+
+        private:
+            static void Configure(
+                EXPLICIT_ACCESSW& entry,
+                PSID sid,
+                TRUSTEE_TYPE type,
+                DWORD inheritance) noexcept
+            {
+                entry.grfAccessPermissions = FILE_ALL_ACCESS;
+                entry.grfAccessMode = SET_ACCESS;
+                entry.grfInheritance = inheritance;
+                entry.Trustee.pMultipleTrustee = nullptr;
+                entry.Trustee.MultipleTrusteeOperation = NO_MULTIPLE_TRUSTEE;
+                entry.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+                entry.Trustee.TrusteeType = type;
+                entry.Trustee.ptstrName = static_cast<LPWSTR>(sid);
+            }
+
+            [[nodiscard]] PACL Acl() const noexcept
+            {
+                return static_cast<PACL>(m_acl.get());
+            }
+
+            PrivateStoragePrincipals m_principals;
+            UniqueLocalMemory m_acl;
+            SECURITY_DESCRIPTOR m_descriptor{};
+        };
+
+        [[nodiscard]] DWORD FileAttributes(std::filesystem::path const& path)
+        {
+            return GetFileAttributesW(path.c_str());
+        }
+
+        void EnsurePrivateDirectory(std::filesystem::path const& path)
+        {
+            if (path.empty())
+            {
+                throw std::runtime_error("Tokenometer database directory is empty");
+            }
+
+            PrivateSecurityDescriptor security(true);
+            DWORD attributes = FileAttributes(path);
+            if (attributes == INVALID_FILE_ATTRIBUTES)
+            {
+                DWORD const error = GetLastError();
+                if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+                {
+                    ThrowWindowsError(error, "Could not inspect the Tokenometer data directory");
+                }
+                SECURITY_ATTRIBUTES createAttributes = security.Attributes();
+                if (!CreateDirectoryW(path.c_str(), &createAttributes))
+                {
+                    DWORD const createError = GetLastError();
+                    if (createError != ERROR_ALREADY_EXISTS)
+                    {
+                        ThrowWindowsError(createError, "Could not create the private Tokenometer data directory");
+                    }
+                }
+                attributes = FileAttributes(path);
+                if (attributes == INVALID_FILE_ATTRIBUTES)
+                {
+                    ThrowLastWindowsError("Could not inspect the created Tokenometer data directory");
+                }
+            }
+            security.Apply(path, true);
+        }
+
+        void EnsurePrivateFile(std::filesystem::path const& path)
+        {
+            PrivateSecurityDescriptor security(false);
+            DWORD attributes = FileAttributes(path);
+            if (attributes == INVALID_FILE_ATTRIBUTES)
+            {
+                DWORD const error = GetLastError();
+                if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+                {
+                    ThrowWindowsError(error, "Could not inspect the Tokenometer database");
+                }
+
+                SECURITY_ATTRIBUTES createAttributes = security.Attributes();
+                UniqueHandle file(CreateFileW(
+                    path.c_str(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    &createAttributes,
+                    CREATE_NEW,
+                    FILE_ATTRIBUTE_NORMAL,
+                    nullptr));
+                if (file.get() == INVALID_HANDLE_VALUE)
+                {
+                    file.release();
+                    DWORD const createError = GetLastError();
+                    if (createError != ERROR_FILE_EXISTS && createError != ERROR_ALREADY_EXISTS)
+                    {
+                        ThrowWindowsError(createError, "Could not create the private Tokenometer database");
+                    }
+                }
+
+                attributes = FileAttributes(path);
+                if (attributes == INVALID_FILE_ATTRIBUTES)
+                {
+                    ThrowLastWindowsError("Could not inspect the created Tokenometer database");
+                }
+            }
+            security.Apply(path, false);
+        }
+
+        void HardenSidecarIfPresent(
+            std::filesystem::path const& databasePath,
+            wchar_t const* suffix,
+            PrivateSecurityDescriptor const& security)
+        {
+            std::filesystem::path sidecar = databasePath;
+            sidecar += suffix;
+            DWORD const attributes = FileAttributes(sidecar);
+            if (attributes == INVALID_FILE_ATTRIBUTES)
+            {
+                DWORD const error = GetLastError();
+                if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+                {
+                    return;
+                }
+                ThrowWindowsError(error, "Could not inspect a Tokenometer database sidecar");
+            }
+            security.Apply(sidecar, false);
+        }
+
+        void HardenPrivateStorage(std::filesystem::path const& databasePath)
+        {
+            EnsurePrivateDirectory(databasePath.parent_path());
+            EnsurePrivateFile(databasePath);
+            PrivateSecurityDescriptor fileSecurity(false);
+            HardenSidecarIfPresent(databasePath, L"-wal", fileSecurity);
+            HardenSidecarIfPresent(databasePath, L"-shm", fileSecurity);
+            HardenSidecarIfPresent(databasePath, L"-journal", fileSecurity);
+        }
+
+        [[nodiscard]] bool HasPrivateDacl(std::filesystem::path const& path, bool directory)
+        {
+            PACL dacl{};
+            PSECURITY_DESCRIPTOR rawDescriptor{};
+            DWORD const result = GetNamedSecurityInfoW(
+                const_cast<LPWSTR>(path.c_str()),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                nullptr,
+                nullptr,
+                &dacl,
+                nullptr,
+                &rawDescriptor);
+            if (result != ERROR_SUCCESS)
+            {
+                return false;
+            }
+            UniqueLocalMemory descriptor(rawDescriptor);
+
+            SECURITY_DESCRIPTOR_CONTROL control{};
+            DWORD revision{};
+            if (!GetSecurityDescriptorControl(rawDescriptor, &control, &revision) ||
+                (control & SE_DACL_PROTECTED) == 0 || !dacl)
+            {
+                return false;
+            }
+
+            PrivateStoragePrincipals principals;
+            bool hasUser{};
+            bool hasSystem{};
+            bool hasAdministrators{};
+            ACL_SIZE_INFORMATION information{};
+            if (!GetAclInformation(dacl, &information, sizeof(information), AclSizeInformation))
+            {
+                return false;
+            }
+            for (DWORD index = 0; index < information.AceCount; ++index)
+            {
+                void* rawAce{};
+                if (!GetAce(dacl, index, &rawAce))
+                {
+                    return false;
+                }
+                auto const header = static_cast<ACE_HEADER const*>(rawAce);
+                if (header->AceType != ACCESS_ALLOWED_ACE_TYPE ||
+                    (header->AceFlags & INHERITED_ACE) != 0)
+                {
+                    return false;
+                }
+                DWORD const inheritance = header->AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE);
+                if ((directory && inheritance != (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)) ||
+                    (!directory && inheritance != 0))
+                {
+                    return false;
+                }
+                auto const ace = static_cast<ACCESS_ALLOWED_ACE const*>(rawAce);
+                if ((ace->Mask & FILE_ALL_ACCESS) != FILE_ALL_ACCESS)
+                {
+                    return false;
+                }
+                PSID sid = const_cast<DWORD*>(&ace->SidStart);
+                bool const isUser = EqualSid(sid, principals.User()) != FALSE;
+                bool const isSystem = EqualSid(sid, principals.System()) != FALSE;
+                bool const isAdministrators = EqualSid(sid, principals.Administrators()) != FALSE;
+                if (!isUser && !isSystem && !isAdministrators)
+                {
+                    return false;
+                }
+                hasUser = hasUser || isUser;
+                hasSystem = hasSystem || isSystem;
+                hasAdministrators = hasAdministrators || isAdministrators;
+            }
+            return hasUser && hasSystem && hasAdministrators;
+        }
+
+        class TemporaryStorageDirectory final
+        {
+        public:
+            explicit TemporaryStorageDirectory(std::filesystem::path path) : m_path(std::move(path)) {}
+
+            ~TemporaryStorageDirectory()
+            {
+                std::error_code ignored;
+                std::filesystem::remove_all(m_path, ignored);
+            }
+
+            [[nodiscard]] std::filesystem::path const& Path() const noexcept
+            {
+                return m_path;
+            }
+
+        private:
+            std::filesystem::path m_path;
+        };
+
+        [[nodiscard]] TemporaryStorageDirectory NewTemporaryStorageDirectory()
+        {
+            std::array<wchar_t, 32768> temporaryPath{};
+            DWORD const length = GetTempPathW(
+                static_cast<DWORD>(temporaryPath.size()),
+                temporaryPath.data());
+            if (length == 0 || length >= temporaryPath.size())
+            {
+                ThrowLastWindowsError("Could not locate the temporary directory for the storage self-test");
+            }
+            GUID id{};
+            if (FAILED(CoCreateGuid(&id)))
+            {
+                throw std::runtime_error("Could not create a storage self-test identifier");
+            }
+            std::array<wchar_t, 40> idText{};
+            StringFromGUID2(id, idText.data(), static_cast<int>(idText.size()));
+            return TemporaryStorageDirectory(
+                std::filesystem::path(temporaryPath.data()) /
+                (std::wstring(L"Tokenometer-storage-self-test-") + idText.data()));
+        }
+
+        [[nodiscard]] bool PrivateStoragePermissionsSelfTest()
+        {
+            auto temporary = NewTemporaryStorageDirectory();
+            auto storageIsPrivate = [](std::filesystem::path const& directory, std::filesystem::path const& databasePath)
+            {
+                std::filesystem::path walPath = databasePath;
+                walPath += L"-wal";
+                std::filesystem::path shmPath = databasePath;
+                shmPath += L"-shm";
+                return HasPrivateDacl(directory, true) &&
+                       HasPrivateDacl(databasePath, false) &&
+                       FileAttributes(walPath) != INVALID_FILE_ATTRIBUTES &&
+                       FileAttributes(shmPath) != INVALID_FILE_ATTRIBUTES &&
+                       HasPrivateDacl(walPath, false) &&
+                       HasPrivateDacl(shmPath, false);
+            };
+
+            std::filesystem::path const databasePath = temporary.Path() / L"tokenometer.db";
+            {
+                Database database(databasePath);
+                database.Initialize();
+                if (!storageIsPrivate(temporary.Path(), databasePath))
+                {
+                    return false;
+                }
+            }
+
+            std::filesystem::path const existingDirectory = temporary.Path() / L"existing";
+            if (!CreateDirectoryW(existingDirectory.c_str(), nullptr))
+            {
+                return false;
+            }
+            std::filesystem::path const existingDatabasePath = existingDirectory / L"existing.db";
+            UniqueHandle existingFile(CreateFileW(
+                existingDatabasePath.c_str(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr));
+            if (existingFile.get() == INVALID_HANDLE_VALUE)
+            {
+                existingFile.release();
+                return false;
+            }
+            existingFile.reset();
+            {
+                Database database(existingDatabasePath);
+                database.Initialize();
+                if (!storageIsPrivate(existingDirectory, existingDatabasePath))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         void ThrowIfCancelled(std::stop_token stopToken)
         {
             if (stopToken.stop_requested())
@@ -259,7 +780,7 @@ namespace tokenometer
     {
         if (m_path != L":memory:")
         {
-            std::filesystem::create_directories(m_path.parent_path());
+            HardenStoragePermissions();
         }
         auto const utf8Path = Utf8(m_path.wstring());
         int const result = sqlite3_open_v2(
@@ -276,6 +797,19 @@ namespace tokenometer
                 m_database = nullptr;
             }
             throw std::runtime_error(message);
+        }
+        if (m_path != L":memory:")
+        {
+            try
+            {
+                HardenStoragePermissions();
+            }
+            catch (...)
+            {
+                sqlite3_close(m_database);
+                m_database = nullptr;
+                throw;
+            }
         }
     }
 
@@ -921,6 +1455,10 @@ namespace tokenometer
                     PRAGMA user_version=6;
                 )sql");
             });
+        }
+        if (m_path != L":memory:")
+        {
+            HardenStoragePermissions();
         }
     }
 
@@ -2510,6 +3048,8 @@ namespace tokenometer
     {
         try
         {
+            if (!PrivateStoragePermissionsSelfTest()) return false;
+
             Database database(L":memory:");
             database.Initialize();
             auto const deviceId = database.GetOrCreateDeviceId(L"Test device");
@@ -3095,6 +3635,24 @@ namespace tokenometer
         catch (...)
         {
             return false;
+        }
+    }
+
+    void Database::HardenStoragePermissions()
+    {
+        if (m_path == L":memory:")
+        {
+            return;
+        }
+        try
+        {
+            HardenPrivateStorage(m_path);
+        }
+        catch (std::exception const& error)
+        {
+            throw std::runtime_error(
+                std::string("Tokenometer refused to use local storage because its permissions could not be restricted: ") +
+                error.what());
         }
     }
 

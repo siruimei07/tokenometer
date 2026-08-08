@@ -16,7 +16,6 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
-#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <system_error>
@@ -32,17 +31,146 @@ namespace tokenometer
     {
         namespace json = winrt::Windows::Data::Json;
 
-        constexpr size_t maximumConversationBytes = 64 * 1024 * 1024;
-        constexpr size_t maximumBranchNodes = 100'000;
+        constexpr int64_t maximumUnixTimestamp = 32'503'680'000;
+        constexpr int64_t maximumExportBytes = 256LL * 1024 * 1024;
+        constexpr size_t maximumConversationBytes = 32 * 1024 * 1024;
+        constexpr size_t maximumExportConversations = 25'000;
+        constexpr size_t maximumExportPrompts = 100'000;
+        constexpr size_t maximumBranchNodes = 25'000;
         constexpr size_t maximumIdentifierChars = 512;
         constexpr size_t maximumModelChars = 256;
+
+        struct FileIdentity
+        {
+            DWORD volumeSerial{};
+            DWORD fileIndexHigh{};
+            DWORD fileIndexLow{};
+
+            bool operator==(FileIdentity const&) const = default;
+        };
 
         struct FileMetadata
         {
             int64_t size{};
             int64_t modifiedAt{};
+            FileIdentity identity;
 
             bool operator==(FileMetadata const&) const = default;
+        };
+
+        class StableFile final
+        {
+        public:
+            explicit StableFile(std::filesystem::path const& path)
+                : m_value(CreateFileW(
+                    path.c_str(),
+                    GENERIC_READ,
+                    FILE_SHARE_READ,
+                    nullptr,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+                    nullptr))
+            {
+                if (m_value == INVALID_HANDLE_VALUE)
+                {
+                    throw std::runtime_error(
+                        "The selected ChatGPT export file is unavailable or is being modified");
+                }
+            }
+
+            ~StableFile()
+            {
+                if (m_value != INVALID_HANDLE_VALUE) CloseHandle(m_value);
+            }
+
+            StableFile(StableFile const&) = delete;
+            StableFile& operator=(StableFile const&) = delete;
+
+            [[nodiscard]] HANDLE Get() const noexcept { return m_value; }
+
+        private:
+            HANDLE m_value{ INVALID_HANDLE_VALUE };
+        };
+
+        class HandleReader final
+        {
+        public:
+            explicit HandleReader(HANDLE file) : m_file(file)
+            {
+                Reset();
+            }
+
+            void Reset()
+            {
+                LARGE_INTEGER start{};
+                if (!SetFilePointerEx(m_file, start, nullptr, FILE_BEGIN))
+                {
+                    throw std::runtime_error("The selected ChatGPT export file cannot be read");
+                }
+                m_offset = 0;
+                m_size = 0;
+                m_eof = false;
+            }
+
+            bool Get(char& value)
+            {
+                if (m_offset == m_size)
+                {
+                    DWORD received{};
+                    if (!ReadFile(
+                            m_file,
+                            m_buffer.data(),
+                            static_cast<DWORD>(m_buffer.size()),
+                            &received,
+                            nullptr))
+                    {
+                        throw std::runtime_error("The selected ChatGPT export file cannot be read");
+                    }
+                    m_offset = 0;
+                    m_size = received;
+                    if (received == 0)
+                    {
+                        m_eof = true;
+                        return false;
+                    }
+                }
+                value = m_buffer[m_offset++];
+                return true;
+            }
+
+            [[nodiscard]] bool Eof() const noexcept { return m_eof; }
+
+        private:
+            HANDLE m_file{ INVALID_HANDLE_VALUE };
+            std::array<char, 64 * 1024> m_buffer{};
+            size_t m_offset{};
+            size_t m_size{};
+            bool m_eof{};
+        };
+
+        struct ImportBudget
+        {
+            size_t conversations{};
+            size_t prompts{};
+
+            void AddConversation()
+            {
+                if (conversations >= maximumExportConversations)
+                {
+                    throw std::runtime_error(
+                        "The ChatGPT export contains too many conversations");
+                }
+                ++conversations;
+            }
+
+            void AddPrompts(size_t count)
+            {
+                if (prompts > maximumExportPrompts || count > maximumExportPrompts - prompts)
+                {
+                    throw std::runtime_error("The ChatGPT export contains too many prompts");
+                }
+                prompts += count;
+            }
         };
 
         struct ParsedConversation
@@ -94,22 +222,35 @@ namespace tokenometer
                 : 0;
         }
 
-        FileMetadata ReadMetadata(std::filesystem::path const& path)
+        void ValidateExportSize(uint64_t size)
         {
-            WIN32_FILE_ATTRIBUTE_DATA data{};
-            if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data) ||
-                (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+            if (size > static_cast<uint64_t>(maximumExportBytes))
+            {
+                throw std::runtime_error("The ChatGPT export exceeds the 256 MiB import limit");
+            }
+        }
+
+        FileMetadata ReadMetadata(HANDLE file)
+        {
+            BY_HANDLE_FILE_INFORMATION information{};
+            if (!GetFileInformationByHandle(file, &information) ||
+                (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
             {
                 throw std::runtime_error("The selected ChatGPT export file is unavailable");
             }
             ULARGE_INTEGER size{};
-            size.LowPart = data.nFileSizeLow;
-            size.HighPart = data.nFileSizeHigh;
-            if (size.QuadPart > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
-            {
-                throw std::runtime_error("The selected ChatGPT export file is too large");
-            }
-            return { static_cast<int64_t>(size.QuadPart), FileTimeToUnix(data.ftLastWriteTime) };
+            size.LowPart = information.nFileSizeLow;
+            size.HighPart = information.nFileSizeHigh;
+            ValidateExportSize(size.QuadPart);
+            return {
+                static_cast<int64_t>(size.QuadPart),
+                FileTimeToUnix(information.ftLastWriteTime),
+                {
+                    information.dwVolumeSerialNumber,
+                    information.nFileIndexHigh,
+                    information.nFileIndexLow
+                }
+            };
         }
 
         std::wstring Lower(std::wstring value)
@@ -155,7 +296,7 @@ namespace tokenometer
             return result;
         }
 
-        std::wstring Sha256(std::filesystem::path const& path, std::stop_token stopToken)
+        std::wstring Sha256(HANDLE file, std::stop_token stopToken)
         {
             ThrowIfCancelled(stopToken);
             HashResources resources;
@@ -186,15 +327,15 @@ namespace tokenometer
                 throw std::runtime_error("SHA-256 initialization failed");
             }
 
-            std::ifstream stream(path, std::ios::binary);
-            if (!stream) throw std::runtime_error("The selected ChatGPT export file cannot be read");
+            HandleReader stream(file);
             std::array<char, 64 * 1024> buffer{};
-            while (stream)
+            while (true)
             {
                 ThrowIfCancelled(stopToken);
-                stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-                auto const size = stream.gcount();
-                if (size > 0 && !BCRYPT_SUCCESS(BCryptHashData(
+                size_t size{};
+                while (size < buffer.size() && stream.Get(buffer[size])) ++size;
+                if (size == 0) break;
+                if (!BCRYPT_SUCCESS(BCryptHashData(
                         resources.hash,
                         reinterpret_cast<PUCHAR>(buffer.data()),
                         static_cast<ULONG>(size),
@@ -203,7 +344,7 @@ namespace tokenometer
                     throw std::runtime_error("SHA-256 calculation failed");
                 }
             }
-            if (!stream.eof()) throw std::runtime_error("The selected ChatGPT export file cannot be read");
+            if (!stream.Eof()) throw std::runtime_error("The selected ChatGPT export file cannot be read");
             if (!BCRYPT_SUCCESS(BCryptFinishHash(
                     resources.hash, digest.data(), static_cast<ULONG>(digest.size()), 0)))
             {
@@ -253,7 +394,7 @@ namespace tokenometer
             if (!value || value.ValueType() != json::JsonValueType::Number) return 0;
             double const number = value.GetNumber();
             return std::isfinite(number) && number > 0 &&
-                   number <= static_cast<double>(std::numeric_limits<int64_t>::max())
+                   number <= static_cast<double>(maximumUnixTimestamp)
                 ? static_cast<int64_t>(std::floor(number))
                 : 0;
         }
@@ -469,22 +610,20 @@ namespace tokenometer
         }
 
         void ForEachObject(
-            std::filesystem::path const& path,
+            HANDLE file,
             std::function<void(json::JsonObject const&)> const& callback,
             std::stop_token stopToken)
         {
             ThrowIfCancelled(stopToken);
-            std::ifstream stream(path, std::ios::binary);
-            if (!stream) throw std::runtime_error("The selected ChatGPT export file cannot be read");
+            HandleReader stream(file);
             std::array<char, 3> prefix{};
-            stream.read(prefix.data(), static_cast<std::streamsize>(prefix.size()));
-            auto const prefixSize = stream.gcount();
-            stream.clear();
+            size_t prefixSize{};
+            while (prefixSize < prefix.size() && stream.Get(prefix[prefixSize])) ++prefixSize;
             if (prefixSize != 3 || static_cast<unsigned char>(prefix[0]) != 0xef ||
                 static_cast<unsigned char>(prefix[1]) != 0xbb ||
                 static_cast<unsigned char>(prefix[2]) != 0xbf)
             {
-                stream.seekg(0);
+                stream.Reset();
             }
 
             bool opened{};
@@ -498,7 +637,7 @@ namespace tokenometer
             std::string objectText;
             char value{};
             size_t bytesUntilCancellationCheck = 64 * 1024;
-            while (stream.get(value))
+            while (stream.Get(value))
             {
                 if (--bytesUntilCancellationCheck == 0)
                 {
@@ -509,7 +648,7 @@ namespace tokenometer
                 {
                     if (objectText.size() >= maximumConversationBytes)
                     {
-                        throw std::runtime_error("A ChatGPT conversation exceeds the 64 MiB import limit");
+                        throw std::runtime_error("A ChatGPT conversation exceeds the 32 MiB import limit");
                     }
                     objectText.push_back(value);
                     if (inString)
@@ -586,7 +725,7 @@ namespace tokenometer
                 }
             }
             ThrowIfCancelled(stopToken);
-            if (!stream.eof() || !opened || !closed || collecting) InvalidExport();
+            if (!stream.Eof() || !opened || !closed || collecting) InvalidExport();
         }
     }
 
@@ -609,10 +748,11 @@ namespace tokenometer
         auto const path = std::filesystem::canonical(selectedFile, error);
         if (error) throw std::runtime_error("The selected ChatGPT export file is unavailable");
 
-        auto const initialMetadata = ReadMetadata(path);
-        auto const sourceHash = Sha256(path, stopToken);
+        StableFile file(path);
+        auto const initialMetadata = ReadMetadata(file.Get());
+        auto const sourceHash = Sha256(file.Get(), stopToken);
         ThrowIfCancelled(stopToken);
-        if (ReadMetadata(path) != initialMetadata)
+        if (ReadMetadata(file.Get()) != initialMetadata)
         {
             throw std::runtime_error("The ChatGPT export changed while it was being read");
         }
@@ -634,9 +774,11 @@ namespace tokenometer
         std::unordered_map<std::wstring, ParsedConversation> conversations;
         int64_t elements{};
         int64_t skipped{};
-        ForEachObject(path, [&](json::JsonObject const& conversation)
+        ImportBudget budget;
+        ForEachObject(file.Get(), [&](json::JsonObject const& conversation)
         {
             ThrowIfCancelled(stopToken);
+            budget.AddConversation();
             ++elements;
             if (!LooksLikeConversation(conversation))
             {
@@ -649,10 +791,11 @@ namespace tokenometer
                 ++skipped;
                 return;
             }
+            budget.AddPrompts(parsed->prompts.size());
             conversations.insert_or_assign(parsed->session.id, std::move(*parsed));
         }, stopToken);
         if (elements > 0 && conversations.empty()) InvalidExport();
-        if (ReadMetadata(path) != initialMetadata)
+        if (ReadMetadata(file.Get()) != initialMetadata)
         {
             throw std::runtime_error("The ChatGPT export changed while it was being read");
         }
@@ -754,6 +897,126 @@ namespace tokenometer
                 replacedTotals.estimatedSessions != 1)
             {
                 return false;
+            }
+
+            bool fileLimitRejected{};
+            bool conversationLimitRejected{};
+            bool promptLimitRejected{};
+            json::JsonObject timestampFixture;
+            timestampFixture.SetNamedValue(
+                L"value",
+                json::JsonValue::CreateNumberValue(static_cast<double>(maximumUnixTimestamp)));
+            if (Timestamp(timestampFixture, L"value") != maximumUnixTimestamp)
+            {
+                return false;
+            }
+            timestampFixture.SetNamedValue(
+                L"value",
+                json::JsonValue::CreateNumberValue(
+                    static_cast<double>(maximumUnixTimestamp) + 1.0));
+            if (Timestamp(timestampFixture, L"value") != 0)
+            {
+                return false;
+            }
+            timestampFixture.SetNamedValue(
+                L"value",
+                json::JsonValue::CreateNumberValue(9.223372036854776e18));
+            if (Timestamp(timestampFixture, L"value") != 0)
+            {
+                return false;
+            }
+            try
+            {
+                ValidateExportSize(static_cast<uint64_t>(maximumExportBytes));
+            }
+            catch (std::runtime_error const&)
+            {
+                return false;
+            }
+            try
+            {
+                ValidateExportSize(static_cast<uint64_t>(maximumExportBytes) + 1);
+            }
+            catch (std::runtime_error const&)
+            {
+                fileLimitRejected = true;
+            }
+            ImportBudget conversationBudget;
+            conversationBudget.conversations = maximumExportConversations - 1;
+            try
+            {
+                conversationBudget.AddConversation();
+            }
+            catch (std::runtime_error const&)
+            {
+                return false;
+            }
+            try
+            {
+                conversationBudget.AddConversation();
+            }
+            catch (std::runtime_error const&)
+            {
+                conversationLimitRejected = true;
+            }
+            ImportBudget promptBudget;
+            promptBudget.prompts = maximumExportPrompts - 1;
+            try
+            {
+                promptBudget.AddPrompts(1);
+            }
+            catch (std::runtime_error const&)
+            {
+                return false;
+            }
+            try
+            {
+                promptBudget.AddPrompts(1);
+            }
+            catch (std::runtime_error const&)
+            {
+                promptLimitRejected = true;
+            }
+            if (!fileLimitRejected || !conversationLimitRejected || !promptLimitRejected)
+            {
+                return false;
+            }
+
+            auto const replacement = root / L"replacement.tmp";
+            std::filesystem::copy_file(
+                fixture, replacement, std::filesystem::copy_options::overwrite_existing);
+            {
+                std::fstream replacementStream(
+                    replacement, std::ios::binary | std::ios::in | std::ios::out);
+                replacementStream.put(' ');
+                if (!replacementStream) return false;
+            }
+            auto const fixtureWriteTime = std::filesystem::last_write_time(fixture);
+            std::filesystem::last_write_time(replacement, fixtureWriteTime);
+            if (std::filesystem::file_size(replacement) != std::filesystem::file_size(fixture) ||
+                std::filesystem::last_write_time(replacement) != fixtureWriteTime)
+            {
+                return false;
+            }
+            {
+                StableFile locked(fixture);
+                auto const before = ReadMetadata(locked.Get());
+                auto const lockedHash = Sha256(locked.Get(), {});
+                if (lockedHash.empty() || ReadMetadata(locked.Get()) != before) return false;
+
+                if (MoveFileExW(
+                        replacement.c_str(),
+                        fixture.c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+                {
+                    return false;
+                }
+                auto const moveError = GetLastError();
+                if (moveError != ERROR_SHARING_VIOLATION && moveError != ERROR_ACCESS_DENIED &&
+                    moveError != ERROR_LOCK_VIOLATION)
+                {
+                    return false;
+                }
             }
 
             auto const unsupported = root / L"other.json";

@@ -402,7 +402,7 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
         }
         StartDashboardRefresh();
         WireInteractions();
-        if (startHidden) ShowWindow(m_hwnd, SW_HIDE);
+        if (startHidden) HideCurrentSurface();
     }
 
 private:
@@ -835,12 +835,7 @@ private:
             auto presenter = m_window.AppWindow().Presenter().as<windowing::OverlappedPresenter>();
             presenter.IsAlwaysOnTop(m_surfacePreferences.bubbleAlwaysOnTop);
             if (m_surfacePreferences.blurEnabled && !m_backdropDisabled) StartBackdrop();
-            else if (m_renderer)
-            {
-                m_renderer->Stop();
-                m_renderer.reset();
-                SetWindowDisplayAffinity(m_hwnd, WDA_NONE);
-            }
+            else StopBackdrop();
         }
         PushSurfacePreferencesView();
         if (m_trayIcon) (void)m_trayIcon->UpdateTooltip(BuildTrayTooltip());
@@ -854,7 +849,7 @@ private:
         {
             m_hoverPreviewActive = false;
             m_hoverRestoreDashboard = false;
-            if (IsWindowVisible(m_hwnd)) ShowWindow(m_hwnd, SW_HIDE);
+            if (IsWindowVisible(m_hwnd)) HideCurrentSurface();
             else if (m_bubbleMode) ShowBubbleSurface();
             else ShowDashboardSurface();
         };
@@ -874,7 +869,7 @@ private:
         {
             m_hoverPreviewActive = false;
             m_hoverRestoreDashboard = false;
-            if (m_bubbleMode && IsWindowVisible(m_hwnd)) ShowWindow(m_hwnd, SW_HIDE);
+            if (m_bubbleMode && IsWindowVisible(m_hwnd)) HideCurrentSurface();
             else ShowBubbleSurface();
         };
         callbacks.hoverChanged = [this](bool entered)
@@ -890,7 +885,7 @@ private:
             {
                 m_hoverPreviewActive = false;
                 if (m_hoverRestoreDashboard) ShowDashboardSurface(false);
-                ShowWindow(m_hwnd, SW_HIDE);
+                HideCurrentSurface();
             }
         };
         callbacks.exit = [this]
@@ -913,13 +908,7 @@ private:
         if (m_bubbleMode)
         {
             SaveBubblePosition();
-            if (m_statusTimer) m_statusTimer.Stop();
-            if (m_renderer)
-            {
-                m_renderer->Stop();
-                m_renderer.reset();
-            }
-            SetWindowDisplayAffinity(m_hwnd, WDA_NONE);
+            StopBackdrop();
             m_bubbleMode = false;
             m_window.Content(m_dashboard->Root());
             ConfigureDashboardWindow();
@@ -944,12 +933,47 @@ private:
             ApplySurfacePreferences();
         }
         ShowWindow(m_hwnd, activate ? SW_SHOWNORMAL : SW_SHOWNOACTIVATE);
+        if (m_surfacePreferences.blurEnabled && !m_backdropDisabled) StartBackdrop();
         if (activate)
         {
             m_window.Activate();
             SetForegroundWindow(m_hwnd);
         }
         RefreshBubble();
+    }
+
+    void StopBackdrop() noexcept
+    {
+        try
+        {
+            if (m_statusTimer) m_statusTimer.Stop();
+        }
+        catch (...)
+        {
+        }
+        if (m_renderer)
+        {
+            try
+            {
+                m_renderer->Stop();
+            }
+            catch (...)
+            {
+            }
+            m_renderer.reset();
+        }
+        if (m_hwnd) (void)SetWindowDisplayAffinity(m_hwnd, WDA_NONE);
+    }
+
+    void HideCurrentSurface() noexcept
+    {
+        if (!m_hwnd) return;
+        if (m_bubbleMode)
+        {
+            SaveBubblePosition();
+            StopBackdrop();
+        }
+        ShowWindow(m_hwnd, SW_HIDE);
     }
 
     void SaveBubblePosition() noexcept
@@ -968,7 +992,7 @@ private:
         if (!m_explicitExit && m_surfacePreferences.closeToTray &&
             m_trayIcon && m_trayIcon->IsAdded())
         {
-            ShowWindow(m_hwnd, SW_HIDE);
+            HideCurrentSurface();
             return;
         }
         m_explicitExit = true;
@@ -1014,7 +1038,7 @@ private:
             if (message == WM_CLOSE && !m_explicitExit && m_surfacePreferences.closeToTray &&
                 m_trayIcon && m_trayIcon->IsAdded())
             {
-                ShowWindow(window, SW_HIDE);
+                HideCurrentSurface();
                 return 0;
             }
             if (message == WM_EXITSIZEMOVE && m_bubbleMode) SaveBubblePosition();
@@ -1953,18 +1977,13 @@ private:
         {
             m_explicitExit = true;
             m_trayIcon.reset();
-            if (m_statusTimer)
+            StopBackdrop();
+            try
             {
-                m_statusTimer.Stop();
+                if (m_usageTimer) m_usageTimer.Stop();
             }
-            if (m_usageTimer)
+            catch (...)
             {
-                m_usageTimer.Stop();
-            }
-            if (m_renderer)
-            {
-                m_renderer->Stop();
-                m_renderer.reset();
             }
             StopBackgroundWorkers();
         });
@@ -2459,7 +2478,8 @@ private:
 
     void StartBackdrop()
     {
-        if (m_renderer || m_backdropDisabled || !m_bubbleMode ||
+        if (m_renderer || m_backdropDisabled || !m_bubbleMode || !m_hwnd ||
+            !IsWindowVisible(m_hwnd) ||
             !m_surfacePreferences.blurEnabled || !m_swapChainPanel)
         {
             return;
@@ -2478,26 +2498,43 @@ private:
         {
             OutputDebugStringW(error.message().c_str());
             OutputDebugStringW(L"\nTokenometer: capture renderer unavailable; using static background.\n");
+            StopBackdrop();
             return;
         }
         catch (...)
         {
             OutputDebugStringW(L"Tokenometer: capture renderer unavailable; using static background.\n");
+            StopBackdrop();
             return;
         }
 
-        if (m_statusTimer) m_statusTimer.Stop();
-        m_statusTimer = mux::DispatcherTimer{};
-        m_statusTimer.Interval(std::chrono::milliseconds(250));
-        m_statusTimer.Tick([this](auto const&, auto const&)
+        try
         {
-            if (m_renderer && m_renderer->PresentedFrames() > 0)
+            if (m_statusTimer) m_statusTimer.Stop();
+            m_statusTimer = mux::DispatcherTimer{};
+            m_statusTimer.Interval(std::chrono::milliseconds(250));
+            m_statusTimer.Tick([this](auto const&, auto const&)
             {
-                m_window.Title(L"Tokenometer [presenting]");
-                m_statusTimer.Stop();
-            }
-        });
-        m_statusTimer.Start();
+                if (m_renderer && m_renderer->PresentedFrames() > 0)
+                {
+                    m_window.Title(L"Tokenometer [presenting]");
+                    try
+                    {
+                        m_statusTimer.Stop();
+                    }
+                    catch (...)
+                    {
+                    }
+                }
+            });
+            m_statusTimer.Start();
+        }
+        catch (...)
+        {
+            OutputDebugStringW(
+                L"Tokenometer: capture status timer unavailable; using static background.\n");
+            StopBackdrop();
+        }
     }
 
     mux::Window m_window{ nullptr };
