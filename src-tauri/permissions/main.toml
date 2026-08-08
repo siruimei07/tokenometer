@@ -1,0 +1,10 @@
+[[permission]]
+identifier = "allow-get-bootstrap"
+description = "Allows the main local window to read the bounded bootstrap projection."
+commands.allow = ["get_bootstrap"]
+
+[[permission]]
+identifier = "allow-refresh-now"
+description = "Allows the main local window to request a coalesced Codex refresh."
+commands.allow = ["refresh_now"]
+

@@ -1,0 +1,33 @@
+{
+  "historyRevision": 7,
+  "liveRevision": 0,
+  "deviceId": "device-synthetic-contract",
+  "reportingTimeZone": {
+    "id": "Synthetic Standard Time",
+    "displayName": "Synthetic Time",
+    "source": "windowsSystem"
+  },
+  "implementedCapabilities": [
+    {
+      "provider": "codex",
+      "capabilities": ["usage", "sessions", "context", "quota"]
+    }
+  ],
+  "runtimeHealth": [
+    {
+      "runtime": "usage",
+      "status": "healthy",
+      "updatedAt": 1786147200000
+    },
+    {
+      "runtime": "live",
+      "status": "notStarted",
+      "updatedAt": 1786147200000
+    },
+    {
+      "runtime": "limits",
+      "status": "notStarted",
+      "updatedAt": 1786147200000
+    }
+  ]
+}

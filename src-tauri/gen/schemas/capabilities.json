@@ -1,0 +1,1 @@
+{"main":{"identifier":"main","description":"Minimal local capability for the main Tokenometer window.","local":true,"windows":["main"],"permissions":["core:event:allow-listen","core:event:allow-unlisten","core:window:allow-close","core:window:allow-is-visible","core:window:allow-set-focus","core:window:allow-show","allow-get-bootstrap","allow-refresh-now"]}}
