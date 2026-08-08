@@ -533,11 +533,7 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
         m_dashboardStyle = GetWindowLongPtrW(m_hwnd, GWL_STYLE);
         m_dashboardExtendedStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
         InstallWindowProcedure();
-        if (m_bubbleMode)
-        {
-            ConfigureWindow();
-        }
-        else
+        if (!m_bubbleMode)
         {
             ConfigureDashboardWindow();
         }
@@ -545,7 +541,19 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
         ApplySurfacePreferences();
         bool const startHidden = m_surfacePreferences.launchToTray &&
             m_trayIcon && m_trayIcon->IsAdded();
-        if (!startHidden) m_window.Activate();
+        if (m_bubbleMode)
+        {
+            ConfigureWindow(false);
+            m_window.Activate();
+            if (startHidden) m_window.AppWindow().Hide();
+            StopBackdrop();
+            ConfigureWindow();
+            if (!startHidden) ShowBubbleSurface(false);
+        }
+        else if (!startHidden)
+        {
+            m_window.Activate();
+        }
         if (!HasArgument(L"--no-collection"))
         {
             StartCollection();
@@ -2105,7 +2113,7 @@ private:
         m_root.Children().Append(m_closeButton);
     }
 
-    void ConfigureWindow()
+    void ConfigureWindow(bool finalizeStyle = true)
     {
         auto appWindow = m_window.AppWindow();
         auto presenter = appWindow.Presenter().as<windowing::OverlappedPresenter>();
@@ -2114,21 +2122,6 @@ private:
         presenter.IsMaximizable(false);
         presenter.IsMinimizable(false);
         presenter.IsAlwaysOnTop(m_surfacePreferences.bubbleAlwaysOnTop);
-        appWindow.IsShownInSwitchers(false);
-
-        auto const style = GetWindowLongPtrW(m_hwnd, GWL_STYLE);
-        winrt::check_bool(SetWindowLongPtrW(
-            m_hwnd,
-            GWL_STYLE,
-            (style & ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU |
-                       WS_MINIMIZEBOX | WS_MAXIMIZEBOX)) |
-                WS_POPUP));
-        auto const extendedStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
-        winrt::check_bool(SetWindowLongPtrW(
-            m_hwnd,
-            GWL_EXSTYLE,
-            extendedStyle & ~(WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE |
-                              WS_EX_DLGMODALFRAME | WS_EX_STATICEDGE)));
 
         UINT const dpi = GetDpiForWindow(m_hwnd);
         int const width = MulDiv(widgetWidthDip, dpi, 96);
@@ -2149,14 +2142,6 @@ private:
         int const y = m_surfacePreferences.hasBubblePosition
             ? std::clamp(m_surfacePreferences.bubbleY, static_cast<int>(info.rcWork.top), maxY)
             : info.rcWork.top + ((info.rcWork.bottom - info.rcWork.top) - height) / 2;
-        winrt::check_bool(SetWindowPos(
-            m_hwnd,
-            m_surfacePreferences.bubbleAlwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST,
-            x,
-            y,
-            0,
-            0,
-            SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED));
 
         int const diameter = MulDiv(cornerRadiusDip * 2, dpi, 96);
         HRGN const region = CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
@@ -2166,6 +2151,35 @@ private:
             DeleteObject(region);
             winrt::throw_last_error();
         }
+
+        if (!finalizeStyle)
+        {
+            appWindow.Move({ x, y });
+            return;
+        }
+
+        appWindow.IsShownInSwitchers(false);
+        auto const style = GetWindowLongPtrW(m_hwnd, GWL_STYLE);
+        winrt::check_bool(SetWindowLongPtrW(
+            m_hwnd,
+            GWL_STYLE,
+            (style & ~(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU |
+                       WS_MINIMIZEBOX | WS_MAXIMIZEBOX)) |
+                WS_POPUP));
+        auto const extendedStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
+        winrt::check_bool(SetWindowLongPtrW(
+            m_hwnd,
+            GWL_EXSTYLE,
+            extendedStyle & ~(WS_EX_WINDOWEDGE | WS_EX_CLIENTEDGE |
+                              WS_EX_DLGMODALFRAME | WS_EX_STATICEDGE)));
+        winrt::check_bool(SetWindowPos(
+            m_hwnd,
+            m_surfacePreferences.bubbleAlwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST,
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED));
     }
 
     void ConfigureDashboardWindow()
