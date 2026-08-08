@@ -278,6 +278,8 @@ namespace tokenometer
         void UpdateTrendButtons();
         void UpdateChatGptImportLayout();
         void ApplyOverviewLayout();
+        void ApplyProviderPreferences();
+        [[nodiscard]] bool IsToolVisible(SurfaceTool tool) const noexcept;
         void RebuildOverviewEditor();
         void NormalizeSurfacePreferences();
         void UpdateSurfacePreferencesLayout();
@@ -358,6 +360,7 @@ namespace tokenometer
         winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition m_detailsCacheProgressRest{ nullptr };
         std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_detailsDimensionButtons;
         std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_detailsScopeButtons;
+        winrt::Microsoft::UI::Xaml::Controls::StackPanel m_detailsScopePanel{ nullptr };
         UsageScope m_detailsScope{ UsageScope::CodexExact };
         DetailsDimension m_detailsDimension{ DetailsDimension::Tool };
         DetailsCallbacks m_detailsCallbacks;
@@ -374,6 +377,7 @@ namespace tokenometer
         std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_trendChartButtons;
         std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_trendRangeButtons;
         std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_trendScopeButtons;
+        winrt::Microsoft::UI::Xaml::Controls::StackPanel m_trendScopePanel{ nullptr };
         UsageScope m_trendScope{ UsageScope::CodexExact };
         TrendGroup m_trendGroup{ TrendGroup::Tool };
         TrendChart m_trendChart{ TrendChart::Bars };

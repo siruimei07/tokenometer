@@ -218,7 +218,9 @@ namespace
         winrt::check_hresult(dialog->SetDefaultExtension(L"json"));
 
         auto customize = dialog.as<IFileDialogCustomize>();
-        winrt::check_hresult(customize->AddText(1000, L"账户标签（可选）"));
+        winrt::check_hresult(customize->AddText(
+            1000,
+            L"本地账户标签（可选，仅用于分组；不验证或切换登录）"));
         winrt::check_hresult(customize->AddEditBox(
             chatGptAccountLabelControl,
             std::wstring{ accountLabel }.c_str()));
@@ -344,6 +346,153 @@ namespace
         if (minutes > 0) return std::to_wstring(minutes) + L"分钟额度";
         return L"额度";
     }
+
+    struct SelectedQuotaWindow
+    {
+        double usedPercent{-1.0};
+        double remainingPercent{-1.0};
+        int minutes{};
+        int64_t resetsAt{};
+    };
+
+    std::optional<SelectedQuotaWindow> SelectQuotaWindow(
+        BubbleUsageSnapshot const& snapshot,
+        tokenometer::SurfaceQuotaWindow requested)
+    {
+        if (!snapshot.codexLimit) return std::nullopt;
+
+        std::optional<SelectedQuotaWindow> selected;
+        int selectedDistance = std::numeric_limits<int>::max();
+        int64_t const now = UnixNow();
+        auto consider = [&](double used, int minutes, int64_t resetsAt)
+        {
+            if (used < 0.0 || used > 100.0 || minutes <= 0 || resetsAt <= now) return;
+            int distance{};
+            switch (requested)
+            {
+            case tokenometer::SurfaceQuotaWindow::FiveHour:
+                if (minutes < 4 * 60 || minutes > 6 * 60) return;
+                distance = minutes > 5 * 60 ? minutes - 5 * 60 : 5 * 60 - minutes;
+                break;
+            case tokenometer::SurfaceQuotaWindow::Weekly:
+                if (minutes < 6 * 24 * 60 || minutes > 8 * 24 * 60) return;
+                distance = minutes > 7 * 24 * 60
+                    ? minutes - 7 * 24 * 60
+                    : 7 * 24 * 60 - minutes;
+                break;
+            case tokenometer::SurfaceQuotaWindow::Nearest:
+                distance = 0;
+                break;
+            }
+            if (!selected ||
+                (requested == tokenometer::SurfaceQuotaWindow::Nearest
+                    ? used > selected->usedPercent
+                    : distance < selectedDistance))
+            {
+                selected = SelectedQuotaWindow{
+                    used,
+                    std::clamp(100.0 - used, 0.0, 100.0),
+                    minutes,
+                    resetsAt,
+                };
+                selectedDistance = distance;
+            }
+        };
+        consider(
+            snapshot.codexLimit->primaryUsedPercent,
+            snapshot.codexLimit->primaryWindowMinutes,
+            snapshot.codexLimit->primaryResetsAt);
+        consider(
+            snapshot.codexLimit->secondaryUsedPercent,
+            snapshot.codexLimit->secondaryWindowMinutes,
+            snapshot.codexLimit->secondaryResetsAt);
+        return selected;
+    }
+
+    std::wstring RequestedQuotaLabel(
+        tokenometer::SurfaceQuotaWindow requested,
+        std::optional<SelectedQuotaWindow> const& selected)
+    {
+        if (selected) return FormatQuotaWindow(selected->minutes);
+        switch (requested)
+        {
+        case tokenometer::SurfaceQuotaWindow::FiveHour: return L"5 小时额度";
+        case tokenometer::SurfaceQuotaWindow::Weekly: return L"周额度";
+        default: return L"最近额度";
+        }
+    }
+
+    std::wstring SurfaceToolName(tokenometer::SurfaceTool tool)
+    {
+        return tool == tokenometer::SurfaceTool::Codex ? L"Codex" : L"ChatGPT";
+    }
+
+    std::wstring QuotaBarText(double remaining)
+    {
+        int const filled = std::clamp(static_cast<int>((remaining + 5.0) / 10.0), 0, 10);
+        return L"[" + std::wstring(static_cast<size_t>(filled), L'#') +
+            std::wstring(static_cast<size_t>(10 - filled), L'-') + L"]";
+    }
+
+    std::wstring FormatSurfaceLayoutItem(
+        tokenometer::SurfaceLayoutItem const& item,
+        BubbleUsageSnapshot const& snapshot)
+    {
+        if (item.kind == tokenometer::SurfaceLayoutItemKind::CustomText)
+        {
+            return item.customText;
+        }
+        auto const tool = SurfaceToolName(item.tool);
+        if (item.kind == tokenometer::SurfaceLayoutItemKind::ToolIcon)
+        {
+            return tool + (item.accountLabel.empty() ? L"" : L" · " + item.accountLabel);
+        }
+        if (item.kind == tokenometer::SurfaceLayoutItemKind::Cost)
+        {
+            return tool + L" 费用不可用";
+        }
+
+        auto const quota = item.tool == tokenometer::SurfaceTool::Codex
+            ? SelectQuotaWindow(snapshot, item.quotaWindow)
+            : std::nullopt;
+        auto const quotaLabel = RequestedQuotaLabel(item.quotaWindow, quota);
+        if (!quota)
+        {
+            return tool + L" " + quotaLabel +
+                (item.tool == tokenometer::SurfaceTool::ChatGpt ? L"不可用" : L"尚未上报");
+        }
+        switch (item.kind)
+        {
+        case tokenometer::SurfaceLayoutItemKind::QuotaBar:
+            return tool + L" " + quotaLabel + L"条 " + QuotaBarText(quota->remainingPercent);
+        case tokenometer::SurfaceLayoutItemKind::Percentage:
+            return tool + L" " + quotaLabel + L" " +
+                std::to_wstring(static_cast<int>(quota->remainingPercent + 0.5)) + L"% 可用";
+        case tokenometer::SurfaceLayoutItemKind::ResetTime:
+            return tool + L" " + quotaLabel + L" · " + FormatResetCountdown(quota->resetsAt);
+        default:
+            return {};
+        }
+    }
+
+    void ApplySurfaceFont(
+        controls::TextBlock const& text,
+        tokenometer::SurfaceFontStyle style)
+    {
+        switch (style)
+        {
+        case tokenometer::SurfaceFontStyle::Mono:
+            text.FontFamily(media::FontFamily{ L"Cascadia Mono" });
+            break;
+        case tokenometer::SurfaceFontStyle::Emphasis:
+            text.FontWeight({ 700 });
+            text.FontSize(text.FontSize() + 1.0);
+            break;
+        default:
+            text.FontFamily(media::FontFamily{ L"Segoe UI Variable Display" });
+            break;
+        }
+    }
 }
 
 struct TokenometerApp : mux::ApplicationT<TokenometerApp>
@@ -442,6 +591,11 @@ private:
             });
         }
 
+        m_standardBubblePanel = controls::Canvas{};
+        m_standardBubblePanel.Width(widgetWidthDip);
+        m_standardBubblePanel.Height(widgetHeightDip);
+        m_root.Children().Append(m_standardBubblePanel);
+
         m_usageCard = controls::Border{};
         m_usageCard.Width(400);
         m_usageCard.Height(124);
@@ -449,7 +603,7 @@ private:
         m_usageCard.BorderThickness({ 0.5 });
         m_usageCard.IsHitTestVisible(false);
         Place(m_usageCard, 10, 10);
-        m_root.Children().Append(m_usageCard);
+        m_standardBubblePanel.Children().Append(m_usageCard);
 
         m_resetCard = controls::Border{};
         m_resetCard.Width(400);
@@ -458,8 +612,22 @@ private:
         m_resetCard.BorderThickness({ 0.5 });
         m_resetCard.IsHitTestVisible(false);
         Place(m_resetCard, 10, 144);
-        m_root.Children().Append(m_resetCard);
+        m_standardBubblePanel.Children().Append(m_resetCard);
         BuildContent();
+
+        m_customCard = controls::Border{};
+        m_customCard.Width(400);
+        m_customCard.Height(220);
+        m_customCard.CornerRadius(Radius(18));
+        m_customCard.BorderThickness({ 0.5 });
+        m_customCard.Padding({ 16, 12, 16, 12 });
+        m_customCard.IsHitTestVisible(false);
+        Place(m_customCard, 10, 10);
+        m_customPanel = controls::StackPanel{};
+        m_customPanel.Spacing(4);
+        m_customCard.Child(m_customPanel);
+        m_customCard.Visibility(mux::Visibility::Collapsed);
+        m_root.Children().Append(m_customCard);
     }
 
     void ConfigureDashboardCallbacks()
@@ -512,6 +680,7 @@ private:
         };
         callbacks.onSessionSelected = [this](tokenometer::SessionRef const& session)
         {
+            if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
             bool const selected = m_selectedSession.sessionId == session.sessionId &&
                 m_selectedSession.accountId == session.accountId &&
                 m_selectedSession.sourceKind == session.sourceKind;
@@ -655,17 +824,26 @@ private:
         return match != m_surfacePreferences.tools.end() && match->visible;
     }
 
-    [[nodiscard]] std::optional<tokenometer::SurfaceTool> PrimarySurfaceTool() const noexcept
+    [[nodiscard]] std::vector<tokenometer::SurfaceTool> OrderedSurfaceTools() const
     {
-        for (auto const& item : m_surfacePreferences.tools)
+        std::vector<tokenometer::SurfaceTool> ordered;
+        ordered.reserve(m_surfacePreferences.tools.size());
+        for (bool const pinned : { true, false })
         {
-            if (item.visible && item.pinned) return item.tool;
+            for (auto const& item : m_surfacePreferences.tools)
+            {
+                if (item.visible && item.pinned == pinned) ordered.push_back(item.tool);
+            }
         }
-        for (auto const& item : m_surfacePreferences.tools)
-        {
-            if (item.visible) return item.tool;
-        }
-        return std::nullopt;
+        return ordered;
+    }
+
+    [[nodiscard]] std::optional<tokenometer::SurfaceTool> PrimarySurfaceTool() const
+    {
+        auto const ordered = OrderedSurfaceTools();
+        return ordered.empty()
+            ? std::nullopt
+            : std::optional<tokenometer::SurfaceTool>{ ordered.front() };
     }
 
     [[nodiscard]] std::wstring BuildSurfaceText()
@@ -674,30 +852,6 @@ private:
         {
             std::scoped_lock lock(m_bubbleSnapshotMutex);
             snapshot = m_bubbleSnapshot;
-        }
-
-        struct Quota
-        {
-            double remaining{-1.0};
-            int64_t resetsAt{};
-        } quota;
-        if (snapshot.codexLimit)
-        {
-            int64_t const now = UnixNow();
-            auto consider = [&](double used, int64_t resetsAt)
-            {
-                if (used >= 0.0 && used <= 100.0 && resetsAt > now &&
-                    100.0 - used < quota.remaining)
-                {
-                    quota = { 100.0 - used, resetsAt };
-                }
-                else if (used >= 0.0 && used <= 100.0 && resetsAt > now && quota.remaining < 0.0)
-                {
-                    quota = { 100.0 - used, resetsAt };
-                }
-            };
-            consider(snapshot.codexLimit->primaryUsedPercent, snapshot.codexLimit->primaryResetsAt);
-            consider(snapshot.codexLimit->secondaryUsedPercent, snapshot.codexLimit->secondaryResetsAt);
         }
 
         auto toolUsage = [&](tokenometer::SurfaceTool tool)
@@ -710,13 +864,6 @@ private:
                 ? L"ChatGPT 已导入估算 " + FormatCompactTokens(snapshot.chatGptEstimatedTokens) + L" token"
                 : std::wstring{ L"ChatGPT 等待导入" };
         };
-        auto quotaPercent = [&]()
-        {
-            return quota.remaining >= 0.0
-                ? L"Codex " + std::to_wstring(static_cast<int>(quota.remaining + 0.5)) + L"% 可用"
-                : std::wstring{ L"Codex 额度尚未上报" };
-        };
-
         std::wstring result;
         auto append = [&result](std::wstring value)
         {
@@ -727,17 +874,28 @@ private:
         switch (m_surfacePreferences.layoutPreset)
         {
         case tokenometer::SurfaceLayoutPreset::LiveUsage:
-            for (auto const& tool : m_surfacePreferences.tools)
+            for (auto const tool : OrderedSurfaceTools())
             {
-                if (tool.visible) append(toolUsage(tool.tool));
+                append(toolUsage(tool));
             }
             break;
         case tokenometer::SurfaceLayoutPreset::ProviderLimits:
-            if (ToolVisible(tokenometer::SurfaceTool::Codex)) append(quotaPercent());
-            if (ToolVisible(tokenometer::SurfaceTool::ChatGpt)) append(L"ChatGPT 额度不可用");
+            for (auto const tool : OrderedSurfaceTools())
+            {
+                tokenometer::SurfaceLayoutItem item;
+                item.kind = tokenometer::SurfaceLayoutItemKind::Percentage;
+                item.tool = tool;
+                append(FormatSurfaceLayoutItem(item, snapshot));
+            }
             break;
         case tokenometer::SurfaceLayoutPreset::CostFocus:
-            append(L"订阅费用不可用");
+            for (auto const tool : OrderedSurfaceTools())
+            {
+                tokenometer::SurfaceLayoutItem item;
+                item.kind = tokenometer::SurfaceLayoutItemKind::Cost;
+                item.tool = tool;
+                append(FormatSurfaceLayoutItem(item, snapshot));
+            }
             break;
         case tokenometer::SurfaceLayoutPreset::Custom:
             for (auto const& item : m_surfacePreferences.customLayout)
@@ -746,27 +904,7 @@ private:
                 {
                     continue;
                 }
-                switch (item.kind)
-                {
-                case tokenometer::SurfaceLayoutItemKind::ToolIcon:
-                    append(item.tool == tokenometer::SurfaceTool::Codex ? L"Codex" : L"ChatGPT");
-                    break;
-                case tokenometer::SurfaceLayoutItemKind::QuotaBar:
-                case tokenometer::SurfaceLayoutItemKind::Percentage:
-                    append(item.tool == tokenometer::SurfaceTool::Codex
-                        ? quotaPercent() : L"ChatGPT 额度不可用");
-                    break;
-                case tokenometer::SurfaceLayoutItemKind::ResetTime:
-                    append(item.tool == tokenometer::SurfaceTool::Codex && quota.resetsAt > 0
-                        ? FormatResetCountdown(quota.resetsAt) : L"重置时间不可用");
-                    break;
-                case tokenometer::SurfaceLayoutItemKind::Cost:
-                    append(L"费用不可用");
-                    break;
-                case tokenometer::SurfaceLayoutItemKind::CustomText:
-                    append(item.customText);
-                    break;
-                }
+                append(FormatSurfaceLayoutItem(item, snapshot));
             }
             break;
         }
@@ -775,17 +913,7 @@ private:
 
     [[nodiscard]] std::wstring BuildTrayTooltip()
     {
-        auto text = BuildSurfaceText();
-        if (text.find(L"Codex") == std::wstring::npos)
-        {
-            BubbleUsageSnapshot snapshot;
-            {
-                std::scoped_lock lock(m_bubbleSnapshotMutex);
-                snapshot = m_bubbleSnapshot;
-            }
-            text += L"  ·  Codex 今日 " + FormatCompactTokens(snapshot.today.DisplayTotal()) + L" token";
-        }
-        return L"Tokenometer · " + text;
+        return L"Tokenometer · " + BuildSurfaceText();
     }
 
     void PushSurfacePreferencesView()
@@ -827,7 +955,7 @@ private:
                     ? Color(0, 0, 0, 0)
                     : light ? Color(239, 236, 228) : Color(18, 16, 17)));
         }
-        for (auto const& card : { m_usageCard, m_resetCard })
+        for (auto const& card : { m_usageCard, m_resetCard, m_customCard })
         {
             if (!card) continue;
             card.Background(Brush(cardColor));
@@ -1488,6 +1616,22 @@ private:
                     data.rows = m_database->GetChatGPTEstimatedBreakdown(
                         DetailsDimensionKey(m_detailsDimension), 0, lookahead(m_breakdownLimit));
                     trimLookahead(data.rows, m_breakdownLimit, data.breakdownHasMore);
+                    if (m_detailsDimension == tokenometer::DetailsDimension::Account)
+                    {
+                        for (auto& row : data.rows)
+                        {
+                            row.displayName = (row.displayName.empty() ? row.key : row.displayName) +
+                                L" · 本地标签（仅分组）";
+                        }
+                    }
+                    else if (m_detailsDimension == tokenometer::DetailsDimension::Model)
+                    {
+                        for (auto& row : data.rows)
+                        {
+                            row.displayName = (row.displayName.empty() ? row.key : row.displayName) +
+                                L" · 导出模型标签";
+                        }
+                    }
                 }
 
                 auto sessions = m_database->GetChatGPTEstimatedSessions({}, lookahead(m_sessionLimit));
@@ -1568,6 +1712,16 @@ private:
                                 : device->id;
                             row.displayName = (device->displayName.empty() ? device->id : device->displayName) +
                                 L" · " + kind + L" · " + shortId;
+                        }
+                    }
+                }
+                else if (m_detailsDimension == tokenometer::DetailsDimension::Account)
+                {
+                    for (auto& row : data.rows)
+                    {
+                        if (row.key == L"current")
+                        {
+                            row.displayName = L"当前 CODEX_HOME（非登录身份）";
                         }
                     }
                 }
@@ -1797,17 +1951,17 @@ private:
     {
         auto usageIcon = Icon(L"✳", Color(240, 63, 22), 13);
         Place(usageIcon, 28, 27);
-        m_root.Children().Append(usageIcon);
+        m_standardBubblePanel.Children().Append(usageIcon);
 
         m_bubbleTitle = Text(L"Codex 今日 Token", 15, Color(247, 247, 245), 600);
         Place(m_bubbleTitle, 64, 25);
-        m_root.Children().Append(m_bubbleTitle);
+        m_standardBubblePanel.Children().Append(m_bubbleTitle);
 
         m_bubbleTotal = Text(L"—", 32, Color(247, 247, 245), 650);
         m_bubbleTotal.Width(150);
         m_bubbleTotal.TextAlignment(mux::TextAlignment::Right);
         Place(m_bubbleTotal, 242, 14);
-        m_root.Children().Append(m_bubbleTotal);
+        m_standardBubblePanel.Children().Append(m_bubbleTotal);
 
         m_bubbleTrack = controls::Border{};
         m_bubbleTrack.Width(364);
@@ -1817,7 +1971,7 @@ private:
         m_bubbleTrack.BorderBrush(Brush(Color(255, 255, 255, 20)));
         m_bubbleTrack.BorderThickness({ 0.5 });
         Place(m_bubbleTrack, 28, 70);
-        m_root.Children().Append(m_bubbleTrack);
+        m_standardBubblePanel.Children().Append(m_bubbleTrack);
 
         m_bubbleFill = controls::Border{};
         m_bubbleFill.Width(0);
@@ -1825,7 +1979,7 @@ private:
         m_bubbleFill.CornerRadius(Radius(4));
         m_bubbleFill.Background(Brush(Color(98, 223, 125)));
         Place(m_bubbleFill, 29, 71);
-        m_root.Children().Append(m_bubbleFill);
+        m_standardBubblePanel.Children().Append(m_bubbleFill);
 
         m_bubbleMarker = shapes::Ellipse{};
         m_bubbleMarker.Width(12);
@@ -1834,43 +1988,43 @@ private:
         m_bubbleMarker.Stroke(Brush(Color(98, 223, 125)));
         m_bubbleMarker.StrokeThickness(3);
         Place(m_bubbleMarker, 23, 69);
-        m_root.Children().Append(m_bubbleMarker);
+        m_standardBubblePanel.Children().Append(m_bubbleMarker);
 
         m_bubbleInput = Text(L"输入 —", 11.5, Color(247, 247, 245), 600);
         Place(m_bubbleInput, 28, 91);
-        m_root.Children().Append(m_bubbleInput);
+        m_standardBubblePanel.Children().Append(m_bubbleInput);
 
         m_bubbleOutput = Text(L"输出 —", 11.5, Color(167, 163, 164));
         Place(m_bubbleOutput, 125, 91);
-        m_root.Children().Append(m_bubbleOutput);
+        m_standardBubblePanel.Children().Append(m_bubbleOutput);
 
         m_bubbleCache = Text(L"缓存 —", 11.5, Color(167, 163, 164));
         m_bubbleCache.Width(110);
         m_bubbleCache.TextAlignment(mux::TextAlignment::Right);
         Place(m_bubbleCache, 282, 91);
-        m_root.Children().Append(m_bubbleCache);
+        m_standardBubblePanel.Children().Append(m_bubbleCache);
 
         auto resetIcon = Icon(L"⌛", Color(255, 253, 142), 12, Color(38, 36, 37));
         Place(resetIcon, 28, 160);
-        m_root.Children().Append(resetIcon);
+        m_standardBubblePanel.Children().Append(resetIcon);
 
         m_bubbleLimitTitle = Text(L"Codex 额度", 15, Color(247, 247, 245), 600);
         Place(m_bubbleLimitTitle, 64, 158);
-        m_root.Children().Append(m_bubbleLimitTitle);
+        m_standardBubblePanel.Children().Append(m_bubbleLimitTitle);
 
         m_bubbleLimit = Text(L"—", 24, Color(255, 253, 142), 600);
         m_bubbleLimit.Width(110);
         m_bubbleLimit.TextAlignment(mux::TextAlignment::Right);
         Place(m_bubbleLimit, 282, 150);
-        m_root.Children().Append(m_bubbleLimit);
+        m_standardBubblePanel.Children().Append(m_bubbleLimit);
 
         auto refresh = Text(L"↻", 10, Color(133, 129, 130), 600);
         Place(refresh, 28, 215);
-        m_root.Children().Append(refresh);
+        m_standardBubblePanel.Children().Append(refresh);
 
         m_bubbleUpdated = Text(L"等待首次同步", 9.5, Color(133, 129, 130));
         Place(m_bubbleUpdated, 43, 215);
-        m_root.Children().Append(m_bubbleUpdated);
+        m_standardBubblePanel.Children().Append(m_bubbleUpdated);
 
         m_closeButton = controls::Border{};
         m_closeButton.Width(22);
@@ -1889,6 +2043,7 @@ private:
         controls::ToolTipService::SetToolTip(m_closeButton, winrt::box_value(L"Close"));
         automation::AutomationProperties::SetName(m_closeButton, L"Close Tokenometer");
         Place(m_closeButton, 2, 2);
+        controls::Canvas::SetZIndex(m_closeButton, 10);
         m_root.Children().Append(m_closeButton);
     }
 
@@ -2224,10 +2379,133 @@ private:
         m_usageTimer.Start();
     }
 
+    void RefreshCustomBubble(BubbleUsageSnapshot const& snapshot)
+    {
+        if (!m_customPanel) return;
+        m_customPanel.Children().Clear();
+        auto const primaryText = m_surfaceLight ? Color(26, 24, 25) : Color(247, 247, 245);
+        auto const mutedText = m_surfaceLight ? Color(105, 99, 101) : Color(143, 139, 140);
+        auto const trackColor = m_surfaceLight ? Color(206, 200, 189) : Color(52, 49, 50);
+        size_t displayed{};
+
+        for (auto const& item : m_surfacePreferences.customLayout)
+        {
+            if (item.kind != tokenometer::SurfaceLayoutItemKind::CustomText &&
+                !ToolVisible(item.tool))
+            {
+                continue;
+            }
+            auto const accent = m_surfacePreferences.providerColors
+                ? item.tool == tokenometer::SurfaceTool::Codex
+                    ? Color(98, 223, 125)
+                    : Color(255, 253, 142)
+                : primaryText;
+
+            if (item.kind == tokenometer::SurfaceLayoutItemKind::QuotaBar)
+            {
+                auto const quota = item.tool == tokenometer::SurfaceTool::Codex
+                    ? SelectQuotaWindow(snapshot, item.quotaWindow)
+                    : std::nullopt;
+                controls::StackPanel row;
+                row.Spacing(1);
+                controls::Grid heading;
+                controls::ColumnDefinition labelColumn;
+                labelColumn.Width(mux::GridLengthHelper::FromValueAndType(1, mux::GridUnitType::Star));
+                heading.ColumnDefinitions().Append(labelColumn);
+                controls::ColumnDefinition valueColumn;
+                valueColumn.Width(mux::GridLengthHelper::Auto());
+                heading.ColumnDefinitions().Append(valueColumn);
+                auto label = Text(
+                    SurfaceToolName(item.tool) + L" · " +
+                        RequestedQuotaLabel(item.quotaWindow, quota) + L"条",
+                    10.5,
+                    primaryText,
+                    600);
+                ApplySurfaceFont(label, item.font);
+                heading.Children().Append(label);
+                auto value = Text(
+                    quota
+                        ? std::to_wstring(static_cast<int>(quota->remainingPercent + 0.5)) + L"%"
+                        : item.tool == tokenometer::SurfaceTool::ChatGpt ? L"不可用" : L"未上报",
+                    10,
+                    quota ? accent : mutedText,
+                    600);
+                ApplySurfaceFont(value, item.font);
+                value.TextAlignment(mux::TextAlignment::Right);
+                controls::Grid::SetColumn(value, 1);
+                heading.Children().Append(value);
+                row.Children().Append(heading);
+
+                controls::ProgressBar bar;
+                bar.Minimum(0);
+                bar.Maximum(100);
+                bar.Value(quota ? quota->remainingPercent : 0.0);
+                bar.Height(5);
+                bar.Width(348);
+                bar.HorizontalAlignment(mux::HorizontalAlignment::Left);
+                bar.IsIndeterminate(false);
+                bar.Foreground(Brush(accent));
+                bar.Background(Brush(trackColor));
+                bar.Opacity(quota ? 1.0 : 0.45);
+                row.Children().Append(bar);
+                m_customPanel.Children().Append(row);
+                ++displayed;
+                continue;
+            }
+
+            auto copy = FormatSurfaceLayoutItem(item, snapshot);
+            if (copy.empty()) continue;
+            if (item.kind == tokenometer::SurfaceLayoutItemKind::ToolIcon)
+            {
+                copy = (item.tool == tokenometer::SurfaceTool::Codex ? L"✳  " : L"◉  ") + copy;
+            }
+            auto text = Text(
+                copy,
+                item.kind == tokenometer::SurfaceLayoutItemKind::ToolIcon ? 13.0 : 11.5,
+                item.kind == tokenometer::SurfaceLayoutItemKind::ToolIcon ? accent :
+                    item.kind == tokenometer::SurfaceLayoutItemKind::Cost ? mutedText : primaryText,
+                item.kind == tokenometer::SurfaceLayoutItemKind::ToolIcon ? 650 : 500);
+            text.Width(348);
+            text.TextTrimming(mux::TextTrimming::CharacterEllipsis);
+            ApplySurfaceFont(text, item.font);
+            m_customPanel.Children().Append(text);
+            ++displayed;
+        }
+
+        if (displayed == 0)
+        {
+            auto empty = Text(L"未选择可显示的自定义布局项", 12, mutedText, 600);
+            m_customPanel.Children().Append(empty);
+        }
+    }
+
     void RefreshBubble()
     {
         if (!m_bubbleMode || !m_bubbleTotal)
         {
+            return;
+        }
+
+        bool const custom = m_surfacePreferences.layoutPreset ==
+            tokenometer::SurfaceLayoutPreset::Custom;
+        if (m_standardBubblePanel)
+        {
+            m_standardBubblePanel.Visibility(
+                custom ? mux::Visibility::Collapsed : mux::Visibility::Visible);
+        }
+        if (m_customCard)
+        {
+            m_customCard.Visibility(
+                custom ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+        }
+        if (custom)
+        {
+            BubbleUsageSnapshot snapshot;
+            {
+                std::scoped_lock lock(m_bubbleSnapshotMutex);
+                snapshot = m_bubbleSnapshot;
+            }
+            RefreshCustomBubble(snapshot);
             return;
         }
 
@@ -2605,10 +2883,13 @@ private:
 
     mux::Window m_window{ nullptr };
     controls::Canvas m_root{ nullptr };
+    controls::Canvas m_standardBubblePanel{ nullptr };
     controls::SwapChainPanel m_swapChainPanel{ nullptr };
     controls::Border m_bubbleBackground{ nullptr };
     controls::Border m_usageCard{ nullptr };
     controls::Border m_resetCard{ nullptr };
+    controls::Border m_customCard{ nullptr };
+    controls::StackPanel m_customPanel{ nullptr };
     controls::Border m_closeButton{ nullptr };
     controls::TextBlock m_bubbleTitle{ nullptr };
     controls::TextBlock m_bubbleTotal{ nullptr };

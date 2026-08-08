@@ -800,6 +800,7 @@ DashboardView::DashboardView()
     UpdateDetails({});
     UpdateTrends({});
     UpdateSurfacePreferences({});
+    ApplyProviderPreferences();
     UpdateChatGptImport({});
     ShowPage(DashboardPage::Overview);
 }
@@ -1306,7 +1307,7 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
             detail += L" · " + FormatInteger(session.messages) + L" msgs";
             if (session.measurement == MeasurementKind::Estimated)
             {
-                detail += L" · 官方导出估算";
+                detail += L" · 官方导出估算 · 模型为导出标签";
             }
             copy.Children().Append(Text(detail, 9, Color(143, 139, 140)));
             content.Children().Append(copy);
@@ -1575,7 +1576,11 @@ void DashboardView::UpdateTrends(TrendViewData const& data)
         m_trendChartHost.Children().Append(panel);
     };
 
-    auto const groupLabel = data.group == TrendGroup::Tool ? L"按工具" : L"按模型";
+    auto const groupLabel = data.group == TrendGroup::Tool
+        ? L"按工具"
+        : data.scope == UsageScope::ChatGptEstimated
+            ? L"按模型（导出标签，可能缺失/非账单模型）"
+            : L"按模型";
     auto const sourceLabel = data.scope == UsageScope::ChatGptEstimated
         ? L"ChatGPT 官方导出估算"
         : L"Codex 精确";
@@ -2041,6 +2046,81 @@ void DashboardView::SetSurfacePreferencesCallbacks(SurfacePreferencesCallbacks c
     m_surfacePreferencesCallbacks = std::move(callbacks);
 }
 
+bool DashboardView::IsToolVisible(SurfaceTool tool) const noexcept
+{
+    auto const match = std::find_if(
+        m_surfacePreferences.tools.begin(),
+        m_surfacePreferences.tools.end(),
+        [tool](auto const& item) { return item.tool == tool; });
+    return match != m_surfacePreferences.tools.end() && match->visible;
+}
+
+void DashboardView::ApplyProviderPreferences()
+{
+    std::vector<SurfaceTool> ordered;
+    ordered.reserve(m_surfacePreferences.tools.size());
+    for (bool const pinned : { true, false })
+    {
+        for (auto const& item : m_surfacePreferences.tools)
+        {
+            if (item.visible && item.pinned == pinned)
+            {
+                ordered.push_back(item.tool);
+            }
+        }
+    }
+    if (ordered.empty())
+    {
+        return;
+    }
+
+    auto const scopeFor = [](SurfaceTool tool)
+    {
+        return tool == SurfaceTool::Codex
+            ? UsageScope::CodexExact
+            : UsageScope::ChatGptEstimated;
+    };
+    auto const visible = [this](UsageScope scope)
+    {
+        return IsToolVisible(scope == UsageScope::CodexExact
+            ? SurfaceTool::Codex
+            : SurfaceTool::ChatGpt);
+    };
+    bool const detailsChanged = !visible(m_detailsScope);
+    bool const trendsChanged = !visible(m_trendScope);
+    if (detailsChanged) m_detailsScope = scopeFor(ordered.front());
+    if (trendsChanged) m_trendScope = scopeFor(ordered.front());
+
+    auto rebuild = [&ordered](
+        controls::StackPanel const& panel,
+        std::vector<controls::Button> const& buttons)
+    {
+        if (!panel || buttons.size() < 2) return;
+        panel.Children().Clear();
+        for (auto const tool : ordered)
+        {
+            auto const index = tool == SurfaceTool::Codex ? 0u : 1u;
+            buttons[index].Visibility(mux::Visibility::Visible);
+            panel.Children().Append(buttons[index]);
+        }
+    };
+    rebuild(m_detailsScopePanel, m_detailsScopeButtons);
+    rebuild(m_trendScopePanel, m_trendScopeButtons);
+    UpdateDetailsScopeButtons();
+    UpdateDetailsDimensionButtons();
+    UpdateTrendScopeButtons();
+    ApplyOverviewLayout();
+
+    if (detailsChanged && m_detailsCallbacks.onScopeChanged)
+    {
+        m_detailsCallbacks.onScopeChanged(m_detailsScope);
+    }
+    if (trendsChanged && m_trendCallbacks.onScopeChanged)
+    {
+        m_trendCallbacks.onScopeChanged(m_trendScope);
+    }
+}
+
 void DashboardView::ApplyOverviewLayout()
 {
     if (!m_overviewPage || m_overviewCards.size() != 5)
@@ -2050,17 +2130,23 @@ void DashboardView::ApplyOverviewLayout()
 
     std::vector<OverviewModule> visible;
     visible.reserve(5);
+    bool const codexVisible = IsToolVisible(SurfaceTool::Codex);
+    bool const chatGptVisible = IsToolVisible(SurfaceTool::ChatGpt);
     for (auto const& preference : m_surfacePreferences.overviewModules)
     {
         auto const index = static_cast<size_t>(preference.module);
-        if (index < m_overviewCards.size() && preference.visible)
+        bool const providerVisible = preference.module == OverviewModule::RecentSessions
+            ? codexVisible || chatGptVisible
+            : codexVisible;
+        if (index < m_overviewCards.size() && preference.visible && providerVisible)
         {
             visible.push_back(preference.module);
         }
     }
-    if (visible.empty())
+    if (visible.empty() && chatGptVisible)
     {
-        return;
+        // Keep the ChatGPT estimate reachable when every Codex-only module is filtered out.
+        visible.push_back(OverviewModule::RecentSessions);
     }
 
     for (auto const& card : m_overviewCards)
@@ -2071,6 +2157,41 @@ void DashboardView::ApplyOverviewLayout()
         controls::Grid::SetRowSpan(card, 1);
         controls::Grid::SetColumnSpan(card, 1);
     }
+    if (m_chatGptOverviewPanel)
+    {
+        m_chatGptOverviewPanel.Visibility(
+            chatGptVisible ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    }
+    if (m_overviewRecentLabel)
+    {
+        m_overviewRecentLabel.Visibility(
+            codexVisible ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    }
+    for (size_t index = 0; index < m_sessionRows.size(); ++index)
+    {
+        m_sessionRows[index].Visibility(
+            codexVisible && index < m_recentSessionCount
+                ? mux::Visibility::Visible
+                : mux::Visibility::Collapsed);
+    }
+    if (m_recentEmptyState)
+    {
+        m_recentEmptyState.Visibility(
+            codexVisible && m_recentSessionCount == 0
+                ? mux::Visibility::Visible
+                : mux::Visibility::Collapsed);
+    }
+    if (m_overviewDevicesLabel)
+    {
+        m_overviewDevicesLabel.Visibility(
+            codexVisible ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    }
+    if (m_devicePanel)
+    {
+        m_devicePanel.Visibility(
+            codexVisible ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    }
+    if (visible.empty()) return;
 
     auto const setColumns = [this](double first, double second, double third, double spacing)
     {
@@ -2260,15 +2381,20 @@ void DashboardView::UpdateSurfacePreferences(SurfacePreferencesViewData const& d
 {
     m_updatingSurfacePreferences = true;
     auto const previousOverviewModules = m_surfacePreferences.overviewModules;
+    auto const previousTools = m_surfacePreferences.tools;
+    auto const previousLayout = m_surfacePreferences.customLayout;
     m_surfacePreferences = data;
     NormalizeSurfacePreferences();
-    if (m_surfacePreferences.overviewModules != previousOverviewModules)
+    bool const overviewChanged = m_surfacePreferences.overviewModules != previousOverviewModules;
+    bool const toolsChanged = m_surfacePreferences.tools != previousTools;
+    if (overviewChanged)
     {
         RebuildOverviewEditor();
-        ApplyOverviewLayout();
     }
-    RebuildSurfaceLayoutEditor();
-    RebuildSurfaceToolEditor();
+    if (toolsChanged) ApplyProviderPreferences();
+    else if (overviewChanged) ApplyOverviewLayout();
+    if (m_surfacePreferences.customLayout != previousLayout) RebuildSurfaceLayoutEditor();
+    if (toolsChanged) RebuildSurfaceToolEditor();
     UpdateSurfacePreferencesLayout();
     m_updatingSurfacePreferences = false;
 }
@@ -2392,6 +2518,10 @@ void DashboardView::NormalizeSurfacePreferences()
     if (!hasChatGpt)
     {
         tools.push_back({ SurfaceTool::ChatGpt, true, false });
+    }
+    if (std::none_of(tools.begin(), tools.end(), [](auto const& item) { return item.visible; }))
+    {
+        tools.front().visible = true;
     }
     m_surfacePreferences.tools = std::move(tools);
 
@@ -2621,7 +2751,7 @@ void DashboardView::RebuildSurfaceLayoutEditor()
         auto font = CompactButton(SurfaceFontLabel(item.font), 80);
         font.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
         automation::AutomationProperties::SetName(font, L"布局项字体");
-        automation::AutomationProperties::SetHelpText(font, L"点击循环切换字体样式");
+        automation::AutomationProperties::SetHelpText(font, L"点击循环切换气泡字体样式；托盘提示使用系统字体");
         font.Click([this, index](auto const& sender, auto const&)
         {
             if (m_updatingSurfacePreferences || index >= m_surfacePreferences.customLayout.size())
@@ -2814,9 +2944,30 @@ void DashboardView::RebuildSurfaceToolEditor()
             {
                 return;
             }
-            m_surfacePreferences.tools[index].visible = !m_surfacePreferences.tools[index].visible;
+            auto& selected = m_surfacePreferences.tools[index];
+            bool const next = !selected.visible;
+            bool otherVisible = false;
+            for (size_t other = 0; other < m_surfacePreferences.tools.size(); ++other)
+            {
+                otherVisible = otherVisible ||
+                    (other != index && m_surfacePreferences.tools[other].visible);
+            }
+            if (!next && !otherVisible)
+            {
+                for (size_t other = 0; other < m_surfacePreferences.tools.size(); ++other)
+                {
+                    if (other != index)
+                    {
+                        m_surfacePreferences.tools[other].visible = true;
+                        break;
+                    }
+                }
+            }
+            selected.visible = next;
+            NormalizeSurfacePreferences();
             RebuildSurfaceToolEditor();
             UpdateSurfacePreferencesLayout();
+            ApplyProviderPreferences();
             NotifySurfacePreferencesChanged();
         });
         controls::Grid::SetColumn(visible, 1);
@@ -2835,6 +2986,7 @@ void DashboardView::RebuildSurfaceToolEditor()
             m_surfacePreferences.tools[index].pinned = !m_surfacePreferences.tools[index].pinned;
             RebuildSurfaceToolEditor();
             UpdateSurfacePreferencesLayout();
+            ApplyProviderPreferences();
             NotifySurfacePreferencesChanged();
         });
         controls::Grid::SetColumn(pinned, 2);
@@ -2852,6 +3004,7 @@ void DashboardView::RebuildSurfaceToolEditor()
             std::swap(m_surfacePreferences.tools[index - 1], m_surfacePreferences.tools[index]);
             RebuildSurfaceToolEditor();
             UpdateSurfacePreferencesLayout();
+            ApplyProviderPreferences();
             NotifySurfacePreferencesChanged();
         });
         controls::Grid::SetColumn(up, 3);
@@ -2869,6 +3022,7 @@ void DashboardView::RebuildSurfaceToolEditor()
             std::swap(m_surfacePreferences.tools[index], m_surfacePreferences.tools[index + 1]);
             RebuildSurfaceToolEditor();
             UpdateSurfacePreferencesLayout();
+            ApplyProviderPreferences();
             NotifySurfacePreferencesChanged();
         });
         controls::Grid::SetColumn(down, 4);
@@ -3212,9 +3366,9 @@ controls::Grid DashboardView::BuildDetailsPage()
 
     controls::StackPanel breakdown;
     breakdown.Spacing(10);
-    controls::StackPanel scopeButtons;
-    scopeButtons.Orientation(controls::Orientation::Horizontal);
-    scopeButtons.Spacing(4);
+    m_detailsScopePanel = controls::StackPanel{};
+    m_detailsScopePanel.Orientation(controls::Orientation::Horizontal);
+    m_detailsScopePanel.Spacing(4);
     constexpr std::array<std::wstring_view, 2> scopeLabels{ L"Codex 精确", L"ChatGPT 估算" };
     constexpr std::array scopeValues{ UsageScope::CodexExact, UsageScope::ChatGptEstimated };
     for (size_t index = 0; index < scopeLabels.size(); ++index)
@@ -3240,10 +3394,10 @@ controls::Grid DashboardView::BuildDetailsPage()
                 m_detailsCallbacks.onScopeChanged(scope);
             }
         });
-        scopeButtons.Children().Append(button);
+        m_detailsScopePanel.Children().Append(button);
         m_detailsScopeButtons.push_back(button);
     }
-    breakdown.Children().Append(scopeButtons);
+    breakdown.Children().Append(m_detailsScopePanel);
     controls::StackPanel dimensions;
     dimensions.Orientation(controls::Orientation::Horizontal);
     dimensions.Spacing(4);
@@ -3286,7 +3440,7 @@ controls::Grid DashboardView::BuildDetailsPage()
     }
     breakdown.Children().Append(dimensions);
     breakdown.Children().Append(Text(
-        L"ChatGPT 官方导出不含设备、项目、缓存、费用或工具调用。",
+        L"ChatGPT 官方导出不含设备、项目、缓存、费用或工具调用；模型仅为导出标签，可能缺失且不等同账单模型。",
         8.5,
         Color(143, 139, 140)));
     m_breakdownList = controls::StackPanel{};
@@ -3432,10 +3586,10 @@ controls::Grid DashboardView::BuildTrendsPage()
     controls::Grid::SetColumn(chartButtons, 1);
     controlsRow.Children().Append(chartButtons);
 
-    controls::StackPanel sourceButtons;
-    sourceButtons.Orientation(controls::Orientation::Horizontal);
-    sourceButtons.Spacing(4);
-    sourceButtons.HorizontalAlignment(mux::HorizontalAlignment::Right);
+    m_trendScopePanel = controls::StackPanel{};
+    m_trendScopePanel.Orientation(controls::Orientation::Horizontal);
+    m_trendScopePanel.Spacing(4);
+    m_trendScopePanel.HorizontalAlignment(mux::HorizontalAlignment::Right);
     auto codexSource = makeChoice(L"Codex 精确");
     codexSource.Click([this](auto const&, auto const&)
     {
@@ -3456,12 +3610,12 @@ controls::Grid DashboardView::BuildTrendsPage()
             m_trendCallbacks.onScopeChanged(m_trendScope);
         }
     });
-    sourceButtons.Children().Append(codexSource);
-    sourceButtons.Children().Append(chatGptSource);
+    m_trendScopePanel.Children().Append(codexSource);
+    m_trendScopePanel.Children().Append(chatGptSource);
     m_trendScopeButtons.push_back(codexSource);
     m_trendScopeButtons.push_back(chatGptSource);
-    controls::Grid::SetColumn(sourceButtons, 2);
-    controlsRow.Children().Append(sourceButtons);
+    controls::Grid::SetColumn(m_trendScopePanel, 2);
+    controlsRow.Children().Append(m_trendScopePanel);
 
     controls::StackPanel rangeButtons;
     rangeButtons.Orientation(controls::Orientation::Horizontal);
@@ -3813,7 +3967,7 @@ controls::Grid DashboardView::BuildSettingsPage()
 
     auto layoutCard = SettingsCard(
         L"托盘与气泡布局",
-        L"选择预设，或展开并按顺序组合最多 6 个信息项。",
+        L"按顺序组合最多 6 个信息项；字体仅影响气泡，帐户标签仅显示且不会切换登录。",
         Color(255, 253, 142),
         layoutBody);
     editorRow.Children().Append(layoutCard);
@@ -3848,8 +4002,8 @@ controls::Grid DashboardView::BuildSettingsPage()
     toolsBody.Children().Append(m_surfaceToolEditorPanel);
 
     auto toolsCard = SettingsCard(
-        L"托盘与气泡工具列表",
-        L"隐藏、置顶或调整表面顺序；不会改变主仪表盘或删除追踪数据。",
+        L"主界面与浮动表面工具列表",
+        L"显示、置顶与顺序会应用于概览、明细、趋势、托盘和气泡；采集与已有数据不变。",
         Color(98, 223, 125),
         toolsBody);
     controls::Grid::SetColumn(toolsCard, 1);
@@ -3870,7 +4024,7 @@ controls::Grid DashboardView::BuildSettingsPage()
     AddColumn(importHeader, mux::GridLengthHelper::Auto());
     controls::StackPanel accountCopy;
     accountCopy.Spacing(1);
-    accountCopy.Children().Append(Text(L"导入帐户", 9, Color(143, 139, 140), 600));
+    accountCopy.Children().Append(Text(L"本地账户标签（仅分组）", 9, Color(143, 139, 140), 600));
     m_chatGptAccountLabel = Text(L"ChatGPT", 10.5, Color(247, 247, 245), 650, true);
     accountCopy.Children().Append(m_chatGptAccountLabel);
     importHeader.Children().Append(accountCopy);
@@ -3973,7 +4127,7 @@ controls::Grid DashboardView::BuildSettingsPage()
 
     auto importCard = SettingsCard(
         L"ChatGPT 数据导入",
-        L"仅读取官方 JSON 导出；保留聚合统计与来源标识，不保存提示或回答正文。",
+        L"仅读取官方 JSON 导出；账户标签只用于本地分组，不验证或切换登录；不保存提示或回答正文。",
         Color(240, 63, 22),
         importContent);
     controls::Grid::SetRow(importCard, 2);

@@ -273,14 +273,17 @@ namespace tokenometer
                 return false;
             }
         }
+        bool anyToolVisible = false;
         for (size_t index = 0; index < tools.size(); ++index)
         {
             if (tools[index].tool > SurfaceTool::ChatGpt) return false;
+            anyToolVisible = anyToolVisible || tools[index].visible;
             for (size_t prior = 0; prior < index; ++prior)
             {
                 if (tools[index].tool == tools[prior].tool) return false;
             }
         }
+        if (!anyToolVisible) return false;
         if (overviewModules.size() != 5) return false;
         bool anyOverviewModuleVisible = false;
         for (size_t index = 0; index < overviewModules.size(); ++index)
@@ -551,6 +554,9 @@ namespace tokenometer
             if (invalid.IsValid()) return false;
             invalid = fixture;
             invalid.tools.push_back(invalid.tools.front());
+            if (invalid.IsValid()) return false;
+            invalid = fixture;
+            for (auto& tool : invalid.tools) tool.visible = false;
             if (invalid.IsValid()) return false;
             invalid = fixture;
             invalid.overviewModules.pop_back();
