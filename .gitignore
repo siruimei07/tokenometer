@@ -1,24 +1,38 @@
-.vs/
-bin/
-obj/
-packages/
-AppPackages/
-artifacts/
+# Frontend
+node_modules/
 dist/
-*.appx
-*.msix
-*.user
-*.suo
-*.pdb
+coverage/
+.vite/
+*.tsbuildinfo
+
+# Rust / Tauri
+target/
+src-tauri/target/
+
+# Local application data and diagnostics
+/.local/
+/data/
+/tmp/
 *.db
 *.db-wal
 *.db-shm
 *.sqlite
 *.sqlite3
-*.jsonl
 *.log
+
+# Secrets and signing material
 .env
 .env.*
+!.env.example
 *.pem
 *.pfx
 *.key
+
+# Editors and operating systems
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
