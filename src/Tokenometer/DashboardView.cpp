@@ -36,9 +36,103 @@ namespace
         return std::array<uint8_t, 3>{ 18, 16, 17 };
     }
 
+    bool IsColor(
+        winrt::Windows::UI::Color const& value,
+        uint8_t red,
+        uint8_t green,
+        uint8_t blue,
+        uint8_t alpha = 255) noexcept
+    {
+        return value.R == red && value.G == green && value.B == blue && value.A == alpha;
+    }
+
+    struct SemanticBrushPalette
+    {
+        media::SolidColorBrush shell{ Color(18, 16, 17) };
+        media::SolidColorBrush card{ Color(38, 36, 37) };
+        media::SolidColorBrush inset{ Color(29, 27, 28) };
+        media::SolidColorBrush track{ Color(52, 49, 50) };
+        media::SolidColorBrush selected{ Color(55, 52, 53) };
+        media::SolidColorBrush navigation{ Color(28, 26, 27, 248) };
+        media::SolidColorBrush primary{ Color(247, 247, 245) };
+        media::SolidColorBrush secondaryStrong{ Color(214, 211, 210) };
+        media::SolidColorBrush secondary{ Color(154, 150, 151) };
+        media::SolidColorBrush muted{ Color(143, 139, 140) };
+        media::SolidColorBrush borderSubtle{ Color(255, 255, 255, 12) };
+        media::SolidColorBrush border{ Color(255, 255, 255, 18) };
+        media::SolidColorBrush borderStrong{ Color(255, 255, 255, 20) };
+        media::SolidColorBrush navigationBorder{ Color(255, 255, 255, 22) };
+        media::SolidColorBrush brandOrangeText{ Color(240, 63, 22) };
+        media::SolidColorBrush brandGreenText{ Color(98, 223, 125) };
+        media::SolidColorBrush brandYellowText{ Color(255, 253, 142) };
+        media::SolidColorBrush dangerText{ Color(240, 126, 96) };
+
+        void SetLight(bool light)
+        {
+            shell.Color(light ? Color(239, 236, 228) : Color(18, 16, 17));
+            card.Color(light ? Color(247, 245, 239) : Color(38, 36, 37));
+            inset.Color(light ? Color(230, 225, 216) : Color(29, 27, 28));
+            track.Color(light ? Color(206, 200, 189) : Color(52, 49, 50));
+            selected.Color(light ? Color(216, 210, 200) : Color(55, 52, 53));
+            navigation.Color(light ? Color(247, 245, 239, 248) : Color(28, 26, 27, 248));
+            primary.Color(light ? Color(26, 24, 25) : Color(247, 247, 245));
+            secondaryStrong.Color(light ? Color(73, 68, 69) : Color(214, 211, 210));
+            secondary.Color(light ? Color(73, 68, 69) : Color(154, 150, 151));
+            muted.Color(light ? Color(105, 99, 101) : Color(143, 139, 140));
+            borderSubtle.Color(light ? Color(0, 0, 0, 16) : Color(255, 255, 255, 12));
+            border.Color(light ? Color(0, 0, 0, 24) : Color(255, 255, 255, 18));
+            borderStrong.Color(light ? Color(0, 0, 0, 30) : Color(255, 255, 255, 20));
+            navigationBorder.Color(light ? Color(0, 0, 0, 34) : Color(255, 255, 255, 22));
+            brandOrangeText.Color(light ? Color(185, 45, 15) : Color(240, 63, 22));
+            brandGreenText.Color(light ? Color(22, 122, 60) : Color(98, 223, 125));
+            brandYellowText.Color(light ? Color(118, 105, 0) : Color(255, 253, 142));
+            dangerText.Color(light ? Color(162, 47, 23) : Color(240, 126, 96));
+        }
+    };
+
+    constexpr int WeightedLuminance(int red, int green, int blue) noexcept
+    {
+        return red * 299 + green * 587 + blue * 114;
+    }
+
+    static_assert(WeightedLuminance(247, 245, 239) - WeightedLuminance(185, 45, 15) > 100000);
+    static_assert(WeightedLuminance(247, 245, 239) - WeightedLuminance(22, 122, 60) > 100000);
+    static_assert(WeightedLuminance(247, 245, 239) - WeightedLuminance(118, 105, 0) > 100000);
+
+    SemanticBrushPalette& SemanticBrushes()
+    {
+        static SemanticBrushPalette palette;
+        return palette;
+    }
+
     media::SolidColorBrush Brush(winrt::Windows::UI::Color const& color)
     {
+        auto& palette = SemanticBrushes();
+        if (IsColor(color, 18, 16, 17)) return palette.shell;
+        if (IsColor(color, 38, 36, 37)) return palette.card;
+        if (IsColor(color, 29, 27, 28)) return palette.inset;
+        if (IsColor(color, 52, 49, 50)) return palette.track;
+        if (IsColor(color, 55, 52, 53)) return palette.selected;
+        if (IsColor(color, 28, 26, 27, 248)) return palette.navigation;
+        if (IsColor(color, 247, 247, 245)) return palette.primary;
+        if (IsColor(color, 214, 211, 210)) return palette.secondaryStrong;
+        if (IsColor(color, 154, 150, 151)) return palette.secondary;
+        if (IsColor(color, 143, 139, 140)) return palette.muted;
+        if (IsColor(color, 255, 255, 255, 12)) return palette.borderSubtle;
+        if (IsColor(color, 255, 255, 255, 18)) return palette.border;
+        if (IsColor(color, 255, 255, 255, 20)) return palette.borderStrong;
+        if (IsColor(color, 255, 255, 255, 22)) return palette.navigationBorder;
         return media::SolidColorBrush{ color };
+    }
+
+    media::SolidColorBrush TextBrush(winrt::Windows::UI::Color const& color)
+    {
+        auto& palette = SemanticBrushes();
+        if (IsColor(color, 240, 63, 22)) return palette.brandOrangeText;
+        if (IsColor(color, 98, 223, 125)) return palette.brandGreenText;
+        if (IsColor(color, 255, 253, 142)) return palette.brandYellowText;
+        if (IsColor(color, 240, 126, 96)) return palette.dangerText;
+        return Brush(color);
     }
 
     mux::CornerRadius Radius(double value)
@@ -82,7 +176,7 @@ namespace
         text.FontFamily(media::FontFamily{ numeric ? L"Cascadia Mono" : L"Segoe UI Variable Display" });
         text.FontSize(size);
         text.FontWeight({ weight });
-        text.Foreground(Brush(color));
+        text.Foreground(TextBrush(color));
         text.TextTrimming(mux::TextTrimming::CharacterEllipsis);
         return text;
     }
@@ -307,6 +401,24 @@ namespace
     std::wstring_view SurfaceToolLabel(tokenometer::SurfaceTool tool)
     {
         return tool == tokenometer::SurfaceTool::ChatGpt ? L"ChatGPT" : L"Codex";
+    }
+
+    std::wstring_view OverviewModuleLabel(tokenometer::OverviewModule module)
+    {
+        switch (module)
+        {
+        case tokenometer::OverviewModule::TokenSummary:
+            return L"Token 汇总";
+        case tokenometer::OverviewModule::TokenActivity:
+            return L"Token 活动";
+        case tokenometer::OverviewModule::CodexLimits:
+            return L"Codex 限额";
+        case tokenometer::OverviewModule::ActivityHeatmap:
+            return L"活动热图";
+        case tokenometer::OverviewModule::RecentSessions:
+            return L"近期会话与设备";
+        }
+        return L"总览模块";
     }
 
     std::wstring_view SurfaceLayoutItemLabel(tokenometer::SurfaceLayoutItemKind kind)
@@ -653,7 +765,7 @@ namespace
         copy.Children().Append(Text(description, 11.5, Color(154, 150, 151)));
         layout.Children().Append(copy);
 
-        auto live = Text(L"LIVE", 11, Color(18, 16, 17), 700, true);
+        auto live = Text(L"LIVE", 11, Color(17, 15, 16), 700, true);
         live.HorizontalAlignment(mux::HorizontalAlignment::Center);
         live.VerticalAlignment(mux::VerticalAlignment::Center);
 
@@ -810,6 +922,7 @@ void DashboardView::UpdateOverview(OverviewViewData const& data)
     }
 
     auto const sessionCount = std::min<size_t>(data.recent.size(), m_sessionRows.size());
+    m_recentSessionCount = sessionCount;
     for (size_t index = 0; index < m_sessionRows.size(); ++index)
     {
         auto const visible = index < sessionCount;
@@ -860,6 +973,7 @@ void DashboardView::UpdateOverview(OverviewViewData const& data)
     {
         m_devicePanel.Children().Clear();
         auto const visibleDevices = std::min<size_t>(data.devices.size(), 2);
+        m_deviceCount = visibleDevices;
         for (size_t index = 0; index < visibleDevices; ++index)
         {
             auto const& device = data.devices[index];
@@ -900,6 +1014,7 @@ void DashboardView::UpdateOverview(OverviewViewData const& data)
         }
     }
     UpdateDailyVisuals(data.daily);
+    ApplyOverviewLayout();
 }
 
 void DashboardView::UpdateDailyVisuals(std::vector<DailyUsage> const& daily)
@@ -1866,21 +1981,232 @@ void DashboardView::SetSurfacePreferencesCallbacks(SurfacePreferencesCallbacks c
     m_surfacePreferencesCallbacks = std::move(callbacks);
 }
 
+void DashboardView::ApplyOverviewLayout()
+{
+    if (!m_overviewPage || m_overviewCards.size() != 5)
+    {
+        return;
+    }
+
+    std::vector<OverviewModule> visible;
+    visible.reserve(5);
+    for (auto const& preference : m_surfacePreferences.overviewModules)
+    {
+        auto const index = static_cast<size_t>(preference.module);
+        if (index < m_overviewCards.size() && preference.visible)
+        {
+            visible.push_back(preference.module);
+        }
+    }
+    if (visible.empty())
+    {
+        return;
+    }
+
+    for (auto const& card : m_overviewCards)
+    {
+        card.Visibility(mux::Visibility::Collapsed);
+        controls::Grid::SetRow(card, 0);
+        controls::Grid::SetColumn(card, 0);
+        controls::Grid::SetRowSpan(card, 1);
+        controls::Grid::SetColumnSpan(card, 1);
+    }
+
+    auto const setColumns = [this](double first, double second, double third, double spacing)
+    {
+        m_overviewPage.ColumnDefinitions().GetAt(0).Width(first > 0 ? Star(first) : Pixels(0));
+        m_overviewPage.ColumnDefinitions().GetAt(1).Width(second > 0 ? Star(second) : Pixels(0));
+        m_overviewPage.ColumnDefinitions().GetAt(2).Width(third > 0 ? Star(third) : Pixels(0));
+        m_overviewPage.ColumnSpacing(spacing);
+    };
+    auto const place = [this](OverviewModule module, int column, int row, int rowSpan)
+    {
+        auto const index = static_cast<size_t>(module);
+        auto const& card = m_overviewCards[index];
+        card.Visibility(mux::Visibility::Visible);
+        controls::Grid::SetColumn(card, column);
+        controls::Grid::SetRow(card, row);
+        controls::Grid::SetRowSpan(card, rowSpan);
+    };
+
+    bool recentIsTall = false;
+    if (visible.size() <= 3)
+    {
+        setColumns(1, visible.size() >= 2 ? 1 : 0, visible.size() >= 3 ? 1 : 0,
+            visible.size() > 1 ? 16 : 0);
+        for (size_t index = 0; index < visible.size(); ++index)
+        {
+            place(visible[index], static_cast<int>(index), 0, 2);
+        }
+        recentIsTall = std::find(visible.begin(), visible.end(), OverviewModule::RecentSessions)
+            != visible.end();
+    }
+    else if (visible.size() == 4)
+    {
+        setColumns(1, 1, 0, 16);
+        for (size_t index = 0; index < visible.size(); ++index)
+        {
+            place(visible[index], static_cast<int>(index % 2), static_cast<int>(index / 2), 1);
+        }
+    }
+    else
+    {
+        setColumns(0.92, 1.42, 1.02, 16);
+        for (size_t index = 0; index < 4; ++index)
+        {
+            place(visible[index], static_cast<int>(index % 2), static_cast<int>(index / 2), 1);
+        }
+        place(visible[4], 2, 0, 2);
+        recentIsTall = visible[4] == OverviewModule::RecentSessions;
+    }
+
+    auto const sessionLimit = recentIsTall ? size_t{ 3 } : size_t{ 1 };
+    for (size_t index = 0; index < m_sessionRows.size(); ++index)
+    {
+        m_sessionRows[index].Visibility(
+            index < m_recentSessionCount && index < sessionLimit
+                ? mux::Visibility::Visible
+                : mux::Visibility::Collapsed);
+    }
+    if (m_recentEmptyState)
+    {
+        m_recentEmptyState.Visibility(
+            m_recentSessionCount == 0 ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    }
+    auto const deviceVisibility = recentIsTall ? mux::Visibility::Visible : mux::Visibility::Collapsed;
+    if (m_overviewDevicesLabel) m_overviewDevicesLabel.Visibility(deviceVisibility);
+    if (m_devicePanel) m_devicePanel.Visibility(deviceVisibility);
+}
+
+void DashboardView::RebuildOverviewEditor()
+{
+    if (!m_overviewEditor)
+    {
+        return;
+    }
+
+    m_overviewEditor.Children().Clear();
+    auto heading = Text(L"总览模块", 13, Color(247, 247, 245), 650);
+    m_overviewEditor.Children().Append(heading);
+
+    auto hint = Text(L"选择显示内容，并用箭头调整顺序。", 9.5, Color(143, 139, 140));
+    hint.TextWrapping(mux::TextWrapping::Wrap);
+    hint.TextTrimming(mux::TextTrimming::None);
+    m_overviewEditor.Children().Append(hint);
+
+    auto const visibleCount = static_cast<size_t>(std::count_if(
+        m_surfacePreferences.overviewModules.begin(),
+        m_surfacePreferences.overviewModules.end(),
+        [](auto const& item) { return item.visible; }));
+    for (size_t index = 0; index < m_surfacePreferences.overviewModules.size(); ++index)
+    {
+        auto const preference = m_surfacePreferences.overviewModules[index];
+        controls::Grid row;
+        row.MinWidth(338);
+        row.ColumnSpacing(7);
+        AddColumn(row, Star());
+        AddColumn(row, mux::GridLengthHelper::Auto());
+        AddColumn(row, mux::GridLengthHelper::Auto());
+        AddColumn(row, mux::GridLengthHelper::Auto());
+
+        auto label = Text(OverviewModuleLabel(preference.module), 10.5, Color(247, 247, 245), 600);
+        label.VerticalAlignment(mux::VerticalAlignment::Center);
+        row.Children().Append(label);
+
+        auto visibility = CompactButton(preference.visible ? L"显示" : L"隐藏", 52);
+        visibility.IsEnabled(!preference.visible || visibleCount > 1);
+        visibility.Background(Brush(preference.visible ? Color(240, 63, 22) : Color(29, 27, 28)));
+        visibility.BorderBrush(Brush(preference.visible ? Color(240, 63, 22) : Color(255, 255, 255, 20)));
+        auto const moduleName = std::wstring{ OverviewModuleLabel(preference.module) };
+        automation::AutomationProperties::SetName(
+            visibility,
+            winrt::hstring{ (preference.visible ? L"隐藏 " : L"显示 ") + moduleName });
+        automation::AutomationProperties::SetHelpText(
+            visibility,
+            preference.visible && visibleCount == 1
+                ? L"至少保留一个总览模块"
+                : L"切换此模块在总览中的显示状态");
+        visibility.Click([this, index](auto const&, auto const&)
+        {
+            if (index >= m_surfacePreferences.overviewModules.size()) return;
+            auto& item = m_surfacePreferences.overviewModules[index];
+            if (item.visible && std::count_if(
+                m_surfacePreferences.overviewModules.begin(),
+                m_surfacePreferences.overviewModules.end(),
+                [](auto const& candidate) { return candidate.visible; }) == 1)
+            {
+                return;
+            }
+            item.visible = !item.visible;
+            RebuildOverviewEditor();
+            ApplyOverviewLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(visibility, 1);
+        row.Children().Append(visibility);
+
+        auto up = CompactButton(L"↑", 30);
+        up.IsEnabled(index > 0);
+        automation::AutomationProperties::SetName(up, winrt::hstring{ L"上移 " + moduleName });
+        automation::AutomationProperties::SetHelpText(up, L"将模块向前移动一位");
+        up.Click([this, index](auto const&, auto const&)
+        {
+            if (index == 0 || index >= m_surfacePreferences.overviewModules.size()) return;
+            std::swap(
+                m_surfacePreferences.overviewModules[index - 1],
+                m_surfacePreferences.overviewModules[index]);
+            RebuildOverviewEditor();
+            ApplyOverviewLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(up, 2);
+        row.Children().Append(up);
+
+        auto down = CompactButton(L"↓", 30);
+        down.IsEnabled(index + 1 < m_surfacePreferences.overviewModules.size());
+        automation::AutomationProperties::SetName(down, winrt::hstring{ L"下移 " + moduleName });
+        automation::AutomationProperties::SetHelpText(down, L"将模块向后移动一位");
+        down.Click([this, index](auto const&, auto const&)
+        {
+            if (index + 1 >= m_surfacePreferences.overviewModules.size()) return;
+            std::swap(
+                m_surfacePreferences.overviewModules[index],
+                m_surfacePreferences.overviewModules[index + 1]);
+            RebuildOverviewEditor();
+            ApplyOverviewLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(down, 3);
+        row.Children().Append(down);
+        m_overviewEditor.Children().Append(SoftPanel(row));
+    }
+}
+
 void DashboardView::ApplySurfaceTheme(SurfaceTheme theme)
 {
+    m_surfaceTheme = theme;
     m_root.RequestedTheme(
         theme == SurfaceTheme::Light
             ? mux::ElementTheme::Light
             : theme == SurfaceTheme::Dark
                 ? mux::ElementTheme::Dark
                 : mux::ElementTheme::Default);
+    bool const light = theme == SurfaceTheme::Light ||
+        (theme == SurfaceTheme::System && m_root.ActualTheme() == mux::ElementTheme::Light);
+    SemanticBrushes().SetLight(light);
 }
 
 void DashboardView::UpdateSurfacePreferences(SurfacePreferencesViewData const& data)
 {
     m_updatingSurfacePreferences = true;
+    auto const previousOverviewModules = m_surfacePreferences.overviewModules;
     m_surfacePreferences = data;
     NormalizeSurfacePreferences();
+    if (m_surfacePreferences.overviewModules != previousOverviewModules)
+    {
+        RebuildOverviewEditor();
+        ApplyOverviewLayout();
+    }
     RebuildSurfaceLayoutEditor();
     RebuildSurfaceToolEditor();
     UpdateSurfacePreferencesLayout();
@@ -2008,6 +2334,32 @@ void DashboardView::NormalizeSurfacePreferences()
         tools.push_back({ SurfaceTool::ChatGpt, true, false });
     }
     m_surfacePreferences.tools = std::move(tools);
+
+    std::array<bool, 5> seenOverview{};
+    std::vector<OverviewModulePreference> overviewModules;
+    overviewModules.reserve(5);
+    for (auto const& candidate : m_surfacePreferences.overviewModules)
+    {
+        auto const value = static_cast<size_t>(candidate.module);
+        if (value < seenOverview.size() && !seenOverview[value])
+        {
+            overviewModules.push_back(candidate);
+            seenOverview[value] = true;
+        }
+    }
+    for (size_t value = 0; value < seenOverview.size(); ++value)
+    {
+        if (!seenOverview[value])
+        {
+            overviewModules.push_back({ static_cast<OverviewModule>(value), true });
+        }
+    }
+    if (std::none_of(overviewModules.begin(), overviewModules.end(),
+        [](auto const& item) { return item.visible; }))
+    {
+        overviewModules.front().visible = true;
+    }
+    m_surfacePreferences.overviewModules = std::move(overviewModules);
 }
 
 void DashboardView::UpdateSurfacePreferencesLayout()
@@ -2052,36 +2404,9 @@ void DashboardView::UpdateSurfacePreferencesLayout()
     m_surfaceLayoutAddButton.IsEnabled(m_surfacePreferences.customLayout.size() < 6);
 
     std::wstring preview = m_surfacePreferences.livePreview;
-    if (preview.empty()) switch (m_surfacePreferences.layoutPreset)
+    if (preview.empty())
     {
-    case SurfaceLayoutPreset::LiveUsage:
-        preview = L"Codex  12.4K tok  ·  ChatGPT  3.1K tok";
-        break;
-    case SurfaceLayoutPreset::ProviderLimits:
-        preview = L"Codex  68%  ·  4d 8h 后重置";
-        break;
-    case SurfaceLayoutPreset::CostFocus:
-        preview = L"订阅费用不可用：Codex / ChatGPT 本地记录不提供可靠费用。";
-        break;
-    case SurfaceLayoutPreset::Custom:
-        for (auto const& item : m_surfacePreferences.customLayout)
-        {
-            if (!preview.empty())
-            {
-                preview += L"  ·  ";
-            }
-            if (item.kind == SurfaceLayoutItemKind::CustomText && !item.customText.empty())
-            {
-                preview += item.customText;
-            }
-            else
-            {
-                preview += SurfaceToolLabel(item.tool);
-                preview += L" ";
-                preview += SurfaceLayoutItemLabel(item.kind);
-            }
-        }
-        break;
+        preview = L"等待本地数据";
     }
     m_surfacePreviewText.Text(winrt::hstring{ preview });
 
@@ -2113,17 +2438,20 @@ void DashboardView::UpdateScrollState()
     bool const expanded =
         (m_currentPage == DashboardPage::Details && m_detailsExpanded) ||
         (m_currentPage == DashboardPage::Settings &&
-         (m_surfacePreferences.layoutEditorExpanded ||
-          m_surfacePreferences.toolManagerExpanded ||
-          m_chatGptDetailsExpanded));
-    if (!expanded)
+          (m_surfacePreferences.layoutEditorExpanded ||
+           m_surfacePreferences.toolManagerExpanded ||
+           m_chatGptDetailsExpanded));
+    bool const constrainedHeight =
+        m_scroller.ViewportHeight() > 0 && m_scroller.ViewportHeight() < 548.0;
+    bool const scrollingRequired = expanded || constrainedHeight;
+    if (!scrollingRequired)
     {
         m_scroller.ScrollToVerticalOffset(0.0);
     }
     m_scroller.VerticalScrollMode(
-        expanded ? controls::ScrollMode::Enabled : controls::ScrollMode::Disabled);
+        scrollingRequired ? controls::ScrollMode::Enabled : controls::ScrollMode::Disabled);
     m_scroller.VerticalScrollBarVisibility(
-        expanded ? controls::ScrollBarVisibility::Auto : controls::ScrollBarVisibility::Hidden);
+        scrollingRequired ? controls::ScrollBarVisibility::Auto : controls::ScrollBarVisibility::Hidden);
 }
 
 void DashboardView::NotifySurfacePreferencesChanged()
@@ -2338,7 +2666,7 @@ void DashboardView::RebuildSurfaceLayoutEditor()
 
         auto remove = CompactButton(L"移除", 48);
         remove.IsEnabled(m_surfacePreferences.customLayout.size() > 1);
-        remove.Foreground(Brush(Color(240, 126, 96)));
+        remove.Foreground(TextBrush(Color(240, 126, 96)));
         automation::AutomationProperties::SetName(remove, L"移除布局项");
         remove.Click([this, index](auto const&, auto const&)
         {
@@ -2496,6 +2824,11 @@ void DashboardView::ShowPage(DashboardPage page)
     m_detailsPage.Visibility(page == DashboardPage::Details ? mux::Visibility::Visible : mux::Visibility::Collapsed);
     m_trendsPage.Visibility(page == DashboardPage::Trends ? mux::Visibility::Visible : mux::Visibility::Collapsed);
     m_settingsPage.Visibility(page == DashboardPage::Settings ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    if (m_overviewCustomizeButton)
+    {
+        m_overviewCustomizeButton.Visibility(
+            page == DashboardPage::Overview ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    }
     UpdateScrollState();
     UpdateNavigationState();
 }
@@ -2505,6 +2838,13 @@ void DashboardView::BuildShell()
     auto const shell = ShellColor();
     m_root = controls::Grid{};
     m_root.Background(Brush(Color(shell[0], shell[1], shell[2])));
+    m_root.ActualThemeChanged([this](auto const&, auto const&)
+    {
+        if (m_surfaceTheme == SurfaceTheme::System)
+        {
+            SemanticBrushes().SetLight(m_root.ActualTheme() == mux::ElementTheme::Light);
+        }
+    });
 
     AddRow(m_root, Pixels(72));
     AddRow(m_root, Star());
@@ -2533,6 +2873,7 @@ void DashboardView::BuildShell()
     m_scroller.HorizontalContentAlignment(mux::HorizontalAlignment::Stretch);
     m_scroller.VerticalContentAlignment(mux::VerticalAlignment::Top);
     m_scroller.Content(m_pageHost);
+    m_scroller.SizeChanged([this](auto const&, auto const&) { UpdateScrollState(); });
     controls::Grid::SetRow(m_scroller, 1);
     m_root.Children().Append(m_scroller);
 
@@ -2547,13 +2888,14 @@ controls::Grid DashboardView::BuildHeader()
     header.Padding({ 28, 12, 28, 8 });
     AddColumn(header, Star());
     AddColumn(header, mux::GridLengthHelper::Auto());
+    AddColumn(header, mux::GridLengthHelper::Auto());
 
     controls::StackPanel brand;
     brand.Orientation(controls::Orientation::Horizontal);
     brand.Spacing(12);
     brand.VerticalAlignment(mux::VerticalAlignment::Center);
 
-    auto markText = Text(L"T·", 16, Color(18, 16, 17), 700, true);
+    auto markText = Text(L"T·", 16, Color(17, 15, 16), 700, true);
     markText.HorizontalAlignment(mux::HorizontalAlignment::Center);
     markText.VerticalAlignment(mux::VerticalAlignment::Center);
 
@@ -2571,6 +2913,25 @@ controls::Grid DashboardView::BuildHeader()
     title.Children().Append(Text(L"Codex + ChatGPT usage intelligence", 10.5, Color(143, 139, 140)));
     brand.Children().Append(title);
     header.Children().Append(brand);
+
+    m_overviewCustomizeButton = CompactButton(L"自定义总览  +", 124);
+    m_overviewCustomizeButton.Height(36);
+    m_overviewCustomizeButton.Margin({ 0, 0, 10, 0 });
+    m_overviewCustomizeButton.Background(Brush(Color(240, 63, 22)));
+    m_overviewCustomizeButton.BorderBrush(Brush(Color(240, 63, 22)));
+    automation::AutomationProperties::SetName(m_overviewCustomizeButton, L"自定义总览模块");
+    automation::AutomationProperties::SetHelpText(
+        m_overviewCustomizeButton,
+        L"打开总览模块显示与排序编辑器");
+    m_overviewEditor = controls::StackPanel{};
+    m_overviewEditor.Spacing(8);
+    m_overviewEditor.Margin({ 4 });
+    RebuildOverviewEditor();
+    controls::Flyout overviewFlyout;
+    overviewFlyout.Content(m_overviewEditor);
+    m_overviewCustomizeButton.Flyout(overviewFlyout);
+    controls::Grid::SetColumn(m_overviewCustomizeButton, 1);
+    header.Children().Append(m_overviewCustomizeButton);
 
     controls::StackPanel status;
     status.Orientation(controls::Orientation::Horizontal);
@@ -2599,7 +2960,7 @@ controls::Grid DashboardView::BuildHeader()
     statusPanel.CornerRadius(Radius(17));
     statusPanel.Padding({ 14, 8, 14, 8 });
     statusPanel.Child(status);
-    controls::Grid::SetColumn(statusPanel, 1);
+    controls::Grid::SetColumn(statusPanel, 2);
     header.Children().Append(statusPanel);
     return header;
 }
@@ -2615,6 +2976,8 @@ controls::Grid DashboardView::BuildOverviewPage()
     AddColumn(page, Star(1.02));
     AddRow(page, Pixels(254));
     AddRow(page, Pixels(278));
+    m_overviewCards.clear();
+    m_overviewCards.resize(5);
 
     controls::StackPanel overview;
     overview.Spacing(8);
@@ -2644,6 +3007,7 @@ controls::Grid DashboardView::BuildOverviewPage()
         L"Output", m_outputTokensText, L"0"));
     overview.Children().Append(m_overviewMetricsPanel);
     auto overviewCard = Card(L"Codex Token（精确）", Color(98, 223, 125), overview);
+    m_overviewCards[static_cast<size_t>(OverviewModule::TokenSummary)] = overviewCard;
     page.Children().Append(overviewCard);
 
     controls::StackPanel activity;
@@ -2651,20 +3015,19 @@ controls::Grid DashboardView::BuildOverviewPage()
     activity.Children().Append(DynamicStatLine(
         L"过去 24 小时", m_dayTokensText, L"0", Color(255, 253, 142)));
 
-    controls::StackPanel bars;
+    controls::Grid bars;
     bars.Height(104);
-    bars.Orientation(controls::Orientation::Horizontal);
-    bars.Spacing(8);
-    bars.VerticalAlignment(mux::VerticalAlignment::Bottom);
+    bars.ColumnSpacing(8);
     for (size_t index = 0; index < 12; ++index)
     {
+        AddColumn(bars, Star());
         controls::Border bar;
-        bar.Width(16);
         bar.Height(12);
         bar.CornerRadius(Radius(8));
         bar.Background(Brush(Color(98, 223, 125)));
         bar.Opacity(0.2);
         bar.VerticalAlignment(mux::VerticalAlignment::Bottom);
+        controls::Grid::SetColumn(bar, static_cast<int>(index));
         bars.Children().Append(bar);
         m_dailyBars.push_back(bar);
     }
@@ -2674,6 +3037,7 @@ controls::Grid DashboardView::BuildOverviewPage()
     activity.Children().Append(DynamicStatLine(
         L"Tool calls", m_dayToolCallsText, L"0"));
     auto activityCard = Card(L"Codex Token 活动", Color(255, 253, 142), activity);
+    m_overviewCards[static_cast<size_t>(OverviewModule::TokenActivity)] = activityCard;
     controls::Grid::SetColumn(activityCard, 1);
     page.Children().Append(activityCard);
 
@@ -2700,6 +3064,7 @@ controls::Grid DashboardView::BuildOverviewPage()
         9.5,
         Color(143, 139, 140)));
     auto limitsCard = Card(L"Codex 限额", Color(240, 63, 22), limits);
+    m_overviewCards[static_cast<size_t>(OverviewModule::CodexLimits)] = limitsCard;
     controls::Grid::SetRow(limitsCard, 1);
     page.Children().Append(limitsCard);
 
@@ -2711,6 +3076,7 @@ controls::Grid DashboardView::BuildOverviewPage()
     m_heatmapCaption = Text(L"尚无活动数据", 10.5, Color(143, 139, 140));
     heat.Children().Append(m_heatmapCaption);
     auto heatCard = Card(L"活动热图", Color(255, 253, 142), heat);
+    m_overviewCards[static_cast<size_t>(OverviewModule::ActivityHeatmap)] = heatCard;
     controls::Grid::SetColumn(heatCard, 1);
     controls::Grid::SetRow(heatCard, 1);
     page.Children().Append(heatCard);
@@ -2724,8 +3090,10 @@ controls::Grid DashboardView::BuildOverviewPage()
     m_chatGptOverviewDetail = Text(L"实时 token 不可用", 9.5, Color(143, 139, 140));
     chatgptCopy.Children().Append(m_chatGptOverviewValue);
     chatgptCopy.Children().Append(m_chatGptOverviewDetail);
-    accounts.Children().Append(SoftPanel(chatgptCopy));
-    accounts.Children().Append(Text(L"Codex 近期会话", 12, Color(143, 139, 140), 600));
+    m_chatGptOverviewPanel = SoftPanel(chatgptCopy);
+    accounts.Children().Append(m_chatGptOverviewPanel);
+    m_overviewRecentLabel = Text(L"Codex 近期会话", 12, Color(143, 139, 140), 600);
+    accounts.Children().Append(m_overviewRecentLabel);
     for (int index = 0; index < 3; ++index)
     {
         controls::TextBlock title{ nullptr };
@@ -2746,14 +3114,17 @@ controls::Grid DashboardView::BuildOverviewPage()
     m_recentEmptyState = SoftPanel(noSessions);
     accounts.Children().Append(m_recentEmptyState);
 
-    accounts.Children().Append(Text(L"本机 / WSL 设备", 12, Color(143, 139, 140), 600));
+    m_overviewDevicesLabel = Text(L"本机 / WSL 设备", 12, Color(143, 139, 140), 600);
+    accounts.Children().Append(m_overviewDevicesLabel);
     m_devicePanel = controls::StackPanel{};
     m_devicePanel.Spacing(7);
     accounts.Children().Append(m_devicePanel);
     auto accountsCard = Card(L"ChatGPT 估算与设备", Color(240, 63, 22), accounts);
+    m_overviewCards[static_cast<size_t>(OverviewModule::RecentSessions)] = accountsCard;
     controls::Grid::SetColumn(accountsCard, 2);
     controls::Grid::SetRowSpan(accountsCard, 2);
     page.Children().Append(accountsCard);
+    ApplyOverviewLayout();
     return page;
 }
 
@@ -3150,7 +3521,7 @@ controls::Grid DashboardView::BuildSettingsPage()
     controls::StackPanel themeChoices;
     themeChoices.Orientation(controls::Orientation::Horizontal);
     themeChoices.Spacing(5);
-    constexpr std::array<std::wstring_view, 3> themeLabels{ L"跟随系统", L"深色", L"浅色*" };
+    constexpr std::array<std::wstring_view, 3> themeLabels{ L"跟随系统", L"深色", L"浅色" };
     for (size_t index = 0; index < themeLabels.size(); ++index)
     {
         auto button = CompactButton(themeLabels[index], index == 0 ? 76 : 56);
@@ -3232,7 +3603,7 @@ controls::Grid DashboardView::BuildSettingsPage()
 
     auto appearanceCard = SettingsCard(
         L"外观与表面",
-        L"玻璃、透明、模糊与供应商色会实时应用于气泡。*浅色已应用于系统控件和气泡，主仪表盘完整换色将在 v0.2 完成。",
+        L"主题会实时应用于主仪表盘和气泡；玻璃、透明、模糊与供应商色应用于浮动表面。",
         Color(240, 63, 22),
         appearance);
     surfaceRow.Children().Append(appearanceCard);
@@ -3514,7 +3885,7 @@ controls::Grid DashboardView::BuildSettingsPage()
 
     m_chatGptDetailsButton = CompactButton(L"查看详情", 84);
     m_chatGptDetailsButton.HorizontalAlignment(mux::HorizontalAlignment::Right);
-    m_chatGptDetailsButton.Foreground(Brush(Color(255, 253, 142)));
+    m_chatGptDetailsButton.Foreground(TextBrush(Color(255, 253, 142)));
     automation::AutomationProperties::SetName(m_chatGptDetailsButton, L"查看 ChatGPT 导入详情");
     m_chatGptDetailsButton.Click([this](auto const&, auto const&)
     {

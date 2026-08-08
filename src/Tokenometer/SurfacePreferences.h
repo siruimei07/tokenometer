@@ -56,6 +56,15 @@ namespace tokenometer
         Emphasis,
     };
 
+    enum class OverviewModule : uint8_t
+    {
+        TokenSummary,
+        TokenActivity,
+        CodexLimits,
+        ActivityHeatmap,
+        RecentSessions,
+    };
+
     struct SurfaceLayoutItem
     {
         SurfaceLayoutItemKind kind{ SurfaceLayoutItemKind::ToolIcon };
@@ -75,6 +84,14 @@ namespace tokenometer
         bool pinned{};
 
         bool operator==(SurfaceToolPreference const&) const = default;
+    };
+
+    struct OverviewModulePreference
+    {
+        OverviewModule module{ OverviewModule::TokenSummary };
+        bool visible{ true };
+
+        bool operator==(OverviewModulePreference const&) const = default;
     };
 
     struct SurfacePreferences
@@ -99,6 +116,13 @@ namespace tokenometer
         std::vector<SurfaceToolPreference> tools{
             { SurfaceTool::Codex, true, true },
             { SurfaceTool::ChatGpt, true, false },
+        };
+        std::vector<OverviewModulePreference> overviewModules{
+            { OverviewModule::TokenSummary, true },
+            { OverviewModule::TokenActivity, true },
+            { OverviewModule::CodexLimits, true },
+            { OverviewModule::ActivityHeatmap, true },
+            { OverviewModule::RecentSessions, true },
         };
 
         [[nodiscard]] bool IsValid() const noexcept;

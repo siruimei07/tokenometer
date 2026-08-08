@@ -410,6 +410,13 @@ private:
     {
         m_root = controls::Canvas{};
         m_root.Background(Brush(Color(0, 0, 0, 0)));
+        m_root.ActualThemeChanged([this](auto const&, auto const&)
+        {
+            if (m_bubbleMode && m_surfacePreferences.theme == tokenometer::SurfaceTheme::System)
+            {
+                ApplySurfacePreferences();
+            }
+        });
 
         m_bubbleBackground = controls::Border{};
         m_bubbleBackground.Width(widgetWidthDip);
@@ -764,7 +771,9 @@ private:
                         : mux::ElementTheme::Default);
         }
 
-        bool const light = theme == tokenometer::SurfaceTheme::Light;
+        bool const light = theme == tokenometer::SurfaceTheme::Light ||
+            (theme == tokenometer::SurfaceTheme::System &&
+             m_root.ActualTheme() == mux::ElementTheme::Light);
         uint8_t const cardAlpha = static_cast<uint8_t>(
             std::clamp(m_surfacePreferences.glassOpacityPercent, 25, 90) * 255 / 100);
         auto const cardColor = light ? Color(247, 245, 239, cardAlpha) : Color(38, 36, 37, cardAlpha);
@@ -784,13 +793,31 @@ private:
         }
         auto const primaryText = light ? Color(26, 24, 25) : Color(247, 247, 245);
         auto const secondaryText = light ? Color(91, 86, 87) : Color(167, 163, 164);
-        for (auto const& text : { m_bubbleTitle, m_bubbleTotal, m_bubbleInput })
+        for (auto const& text : { m_bubbleTitle, m_bubbleTotal, m_bubbleInput, m_bubbleLimitTitle })
         {
             if (text) text.Foreground(Brush(primaryText));
         }
         for (auto const& text : { m_bubbleOutput, m_bubbleCache, m_bubbleUpdated })
         {
             if (text) text.Foreground(Brush(secondaryText));
+        }
+        m_surfaceLight = light;
+        if (m_bubbleLimit)
+        {
+            m_bubbleLimit.Foreground(Brush(
+                light ? Color(118, 105, 0) : Color(255, 253, 142)));
+        }
+        if (m_bubbleTrack)
+        {
+            m_bubbleTrack.Background(Brush(
+                light ? Color(206, 200, 189) : Color(52, 49, 50)));
+            m_bubbleTrack.BorderBrush(Brush(
+                light ? Color(0, 0, 0, 30) : Color(255, 255, 255, 20)));
+        }
+        if (m_bubbleMarker)
+        {
+            m_bubbleMarker.Fill(Brush(
+                light ? Color(247, 245, 239) : Color(38, 36, 37)));
         }
         auto const providerAccent = m_surfacePreferences.providerColors
             ? Color(98, 223, 125) : Color(154, 150, 151);
@@ -1692,15 +1719,15 @@ private:
         Place(m_bubbleTotal, 242, 14);
         m_root.Children().Append(m_bubbleTotal);
 
-        controls::Border track;
-        track.Width(364);
-        track.Height(10);
-        track.CornerRadius(Radius(5));
-        track.Background(Brush(Color(52, 49, 50)));
-        track.BorderBrush(Brush(Color(255, 255, 255, 20)));
-        track.BorderThickness({ 0.5 });
-        Place(track, 28, 70);
-        m_root.Children().Append(track);
+        m_bubbleTrack = controls::Border{};
+        m_bubbleTrack.Width(364);
+        m_bubbleTrack.Height(10);
+        m_bubbleTrack.CornerRadius(Radius(5));
+        m_bubbleTrack.Background(Brush(Color(52, 49, 50)));
+        m_bubbleTrack.BorderBrush(Brush(Color(255, 255, 255, 20)));
+        m_bubbleTrack.BorderThickness({ 0.5 });
+        Place(m_bubbleTrack, 28, 70);
+        m_root.Children().Append(m_bubbleTrack);
 
         m_bubbleFill = controls::Border{};
         m_bubbleFill.Width(0);
@@ -2119,7 +2146,11 @@ private:
             return;
         }
 
-        auto setUnavailable = [this](std::wstring_view message)
+        auto const errorText = m_surfaceLight ? Color(185, 45, 15) : Color(240, 63, 22);
+        auto const warningText = m_surfaceLight ? Color(118, 105, 0) : Color(255, 253, 142);
+        auto const mutedText = m_surfaceLight ? Color(105, 99, 101) : Color(143, 139, 140);
+
+        auto setUnavailable = [this, errorText](std::wstring_view message)
         {
             m_bubbleTotal.Text(L"—");
             m_bubbleInput.Text(L"输入 —");
@@ -2129,7 +2160,7 @@ private:
             controls::Canvas::SetLeft(m_bubbleMarker, 23);
             m_bubbleLimitTitle.Text(L"同步状态");
             m_bubbleLimit.Text(L"异常");
-            m_bubbleLimit.Foreground(Brush(Color(240, 63, 22)));
+            m_bubbleLimit.Foreground(Brush(errorText));
             m_bubbleUpdated.Text(message);
         };
         if (!m_database)
@@ -2156,7 +2187,7 @@ private:
                 }
                 m_bubbleLimitTitle.Text(L"同步状态");
                 m_bubbleLimit.Text(L"等待中");
-                m_bubbleLimit.Foreground(Brush(Color(255, 253, 142)));
+                m_bubbleLimit.Foreground(Brush(warningText));
                 m_bubbleUpdated.Text(L"等待首次索引完成");
                 return;
             }
@@ -2185,7 +2216,7 @@ private:
                 controls::Canvas::SetLeft(m_bubbleMarker, 23);
                 m_bubbleLimitTitle.Text(L"ChatGPT 额度");
                 m_bubbleLimit.Text(L"不可用");
-                m_bubbleLimit.Foreground(Brush(Color(143, 139, 140)));
+                m_bubbleLimit.Foreground(Brush(mutedText));
                 m_bubbleUpdated.Text(L"官方 JSON 导出不包含实时 token、缓存或订阅费用");
                 return;
             }
@@ -2205,7 +2236,7 @@ private:
             m_bubbleFill.Width(fillWidth);
             controls::Canvas::SetLeft(m_bubbleMarker, 23 + fillWidth);
 
-            m_bubbleLimit.Foreground(Brush(Color(255, 253, 142)));
+            m_bubbleLimit.Foreground(Brush(warningText));
             auto const& limit = snapshot.codexLimit;
             if (limit)
             {
@@ -2274,7 +2305,7 @@ private:
             {
                 m_bubbleLimitTitle.Text(L"同步状态");
                 m_bubbleLimit.Text(L"重试中");
-                m_bubbleLimit.Foreground(Brush(Color(240, 63, 22)));
+                m_bubbleLimit.Foreground(Brush(errorText));
                 m_bubbleUpdated.Text(L"保留上次成功数据");
             }
             else if (m_bubbleSnapshotFailed.load(std::memory_order_relaxed) ||
@@ -2282,7 +2313,7 @@ private:
             {
                 m_bubbleLimitTitle.Text(L"快照状态");
                 m_bubbleLimit.Text(L"重试中");
-                m_bubbleLimit.Foreground(Brush(Color(240, 63, 22)));
+                m_bubbleLimit.Foreground(Brush(errorText));
                 m_bubbleUpdated.Text(
                     snapshotAge < 60
                         ? std::to_wstring(snapshotAge) + L" 秒前的数据"
@@ -2298,7 +2329,7 @@ private:
             {
                 m_bubbleLimitTitle.Text(L"订阅费用");
                 m_bubbleLimit.Text(L"不可用");
-                m_bubbleLimit.Foreground(Brush(Color(143, 139, 140)));
+                m_bubbleLimit.Foreground(Brush(mutedText));
                 m_bubbleUpdated.Text(L"本地记录不提供可靠费用，不显示估算金额");
             }
         }
@@ -2484,6 +2515,7 @@ private:
     controls::TextBlock m_bubbleLimitTitle{ nullptr };
     controls::TextBlock m_bubbleLimit{ nullptr };
     controls::TextBlock m_bubbleUpdated{ nullptr };
+    controls::Border m_bubbleTrack{ nullptr };
     controls::Border m_bubbleFill{ nullptr };
     shapes::Ellipse m_bubbleMarker{ nullptr };
     std::unique_ptr<tokenometer::DashboardView> m_dashboard;
@@ -2535,6 +2567,7 @@ private:
     bool m_toolManagerExpanded{};
     bool m_hoverPreviewActive{};
     bool m_hoverRestoreDashboard{};
+    bool m_surfaceLight{};
 };
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)

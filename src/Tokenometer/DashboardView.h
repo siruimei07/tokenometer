@@ -269,6 +269,8 @@ namespace tokenometer
         void UpdateTrendScopeButtons();
         void UpdateTrendButtons();
         void UpdateChatGptImportLayout();
+        void ApplyOverviewLayout();
+        void RebuildOverviewEditor();
         void NormalizeSurfacePreferences();
         void UpdateSurfacePreferencesLayout();
         void UpdateScrollState();
@@ -289,6 +291,8 @@ namespace tokenometer
         winrt::Microsoft::UI::Xaml::Controls::Button m_detailsButton{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::Button m_trendsButton{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::Button m_settingsButton{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_overviewCustomizeButton{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::StackPanel m_overviewEditor{ nullptr };
 
         winrt::Microsoft::UI::Xaml::Controls::TextBlock m_statusText{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::TextBlock m_statusDetail{ nullptr };
@@ -312,7 +316,13 @@ namespace tokenometer
         winrt::Microsoft::UI::Xaml::Controls::Border m_overviewEmptyState{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::StackPanel m_overviewMetricsPanel{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::Border m_recentEmptyState{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Border m_chatGptOverviewPanel{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_overviewRecentLabel{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_overviewDevicesLabel{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::StackPanel m_devicePanel{ nullptr };
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Border> m_overviewCards;
+        size_t m_recentSessionCount{};
+        size_t m_deviceCount{};
 
         winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition m_cacheProgressFill{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition m_cacheProgressRest{ nullptr };
@@ -402,6 +412,7 @@ namespace tokenometer
         SurfacePreferencesViewData m_surfacePreferences;
         SurfacePreferencesCallbacks m_surfacePreferencesCallbacks;
         bool m_updatingSurfacePreferences{};
+        SurfaceTheme m_surfaceTheme{ SurfaceTheme::System };
 
         DashboardPage m_currentPage{ DashboardPage::Overview };
     };

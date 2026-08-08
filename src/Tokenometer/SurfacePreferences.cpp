@@ -11,7 +11,8 @@ namespace tokenometer
     namespace
     {
         constexpr std::wstring_view StateKey = L"surface_preferences_v1";
-        constexpr std::wstring_view Header = L"TSP2;";
+        constexpr std::wstring_view Header = L"TSP3;";
+        constexpr std::wstring_view LegacyHeader = L"TSP2;";
         constexpr size_t MaxSerializedCharacters = 12 * 1024;
         constexpr size_t MaxAccountCharacters = 40;
         constexpr size_t MaxCustomTextCharacters = 48;
@@ -94,6 +95,12 @@ namespace tokenometer
                 result += UnsignedCharacters(tool.visible);
                 result += UnsignedCharacters(tool.pinned);
             }
+            result += UnsignedCharacters(value.overviewModules.size());
+            for (auto const& module : value.overviewModules)
+            {
+                result += UnsignedCharacters(static_cast<uint8_t>(module.module));
+                result += UnsignedCharacters(module.visible);
+            }
             return result;
         }
 
@@ -120,7 +127,8 @@ namespace tokenometer
         class Reader final
         {
         public:
-            explicit Reader(std::wstring_view value) : m_value(value), m_position(Header.size()) {}
+            Reader(std::wstring_view value, size_t headerSize)
+                : m_value(value), m_position(headerSize) {}
 
             bool ReadUnsigned(uint64_t& result) noexcept
             {
@@ -273,6 +281,18 @@ namespace tokenometer
                 if (tools[index].tool == tools[prior].tool) return false;
             }
         }
+        if (overviewModules.size() != 5) return false;
+        bool anyOverviewModuleVisible = false;
+        for (size_t index = 0; index < overviewModules.size(); ++index)
+        {
+            if (overviewModules[index].module > OverviewModule::RecentSessions) return false;
+            anyOverviewModuleVisible = anyOverviewModuleVisible || overviewModules[index].visible;
+            for (size_t prior = 0; prior < index; ++prior)
+            {
+                if (overviewModules[index].module == overviewModules[prior].module) return false;
+            }
+        }
+        if (!anyOverviewModuleVisible) return false;
         return SerializedCharacters(*this) <= MaxSerializedCharacters;
     }
 
@@ -312,6 +332,12 @@ namespace tokenometer
             AppendUnsigned(output, tool.visible);
             AppendUnsigned(output, tool.pinned);
         }
+        AppendUnsigned(output, overviewModules.size());
+        for (auto const& module : overviewModules)
+        {
+            AppendUnsigned(output, static_cast<uint8_t>(module.module));
+            AppendUnsigned(output, module.visible);
+        }
         return output;
     }
 
@@ -320,12 +346,14 @@ namespace tokenometer
     {
         try
         {
-            if (value.size() > MaxSerializedCharacters || !value.starts_with(Header))
+            if (value.size() > MaxSerializedCharacters ||
+                (!value.starts_with(Header) && !value.starts_with(LegacyHeader)))
             {
                 return std::nullopt;
             }
 
-            Reader reader(value);
+            bool const legacy = value.starts_with(LegacyHeader);
+            Reader reader(value, legacy ? LegacyHeader.size() : Header.size());
             SurfacePreferences result;
             int64_t number{};
             uint64_t count{};
@@ -396,6 +424,25 @@ namespace tokenometer
                 }
                 result.tools.push_back(tool);
             }
+            if (!legacy)
+            {
+                if (!reader.ReadUnsigned(count) || count != 5)
+                {
+                    return std::nullopt;
+                }
+                result.overviewModules.clear();
+                result.overviewModules.reserve(static_cast<size_t>(count));
+                for (uint64_t index = 0; index < count; ++index)
+                {
+                    OverviewModulePreference module;
+                    if (!ReadEnum(reader, module.module, OverviewModule::RecentSessions) ||
+                        !ReadBool(reader, module.visible))
+                    {
+                        return std::nullopt;
+                    }
+                    result.overviewModules.push_back(module);
+                }
+            }
             if (!reader.Done() || !result.IsValid()) return std::nullopt;
             return result;
         }
@@ -450,6 +497,13 @@ namespace tokenometer
                 { SurfaceTool::ChatGpt, true, false },
                 { SurfaceTool::Codex, false, true },
             };
+            fixture.overviewModules = {
+                { OverviewModule::RecentSessions, true },
+                { OverviewModule::TokenSummary, true },
+                { OverviewModule::ActivityHeatmap, false },
+                { OverviewModule::TokenActivity, true },
+                { OverviewModule::CodexLimits, false },
+            };
             fixture.Save(database);
             if (Load(database) != fixture) return false;
 
@@ -462,6 +516,20 @@ namespace tokenometer
             {
                 return false;
             }
+
+            std::wstring overviewSuffix;
+            AppendUnsigned(overviewSuffix, fixture.overviewModules.size());
+            for (auto const& module : fixture.overviewModules)
+            {
+                AppendUnsigned(overviewSuffix, static_cast<uint8_t>(module.module));
+                AppendUnsigned(overviewSuffix, module.visible);
+            }
+            auto legacy = serialized.substr(0, serialized.size() - overviewSuffix.size());
+            legacy.replace(0, Header.size(), LegacyHeader);
+            auto migrated = Deserialize(legacy);
+            auto expectedMigration = fixture;
+            expectedMigration.overviewModules = SurfacePreferences{}.overviewModules;
+            if (!migrated || *migrated != expectedMigration) return false;
 
             SurfacePreferences maximum;
             maximum.customLayout.assign(MaxLayoutItems, SurfaceLayoutItem{});
@@ -483,6 +551,15 @@ namespace tokenometer
             if (invalid.IsValid()) return false;
             invalid = fixture;
             invalid.tools.push_back(invalid.tools.front());
+            if (invalid.IsValid()) return false;
+            invalid = fixture;
+            invalid.overviewModules.pop_back();
+            if (invalid.IsValid()) return false;
+            invalid = fixture;
+            invalid.overviewModules.back() = invalid.overviewModules.front();
+            if (invalid.IsValid()) return false;
+            invalid = fixture;
+            for (auto& module : invalid.overviewModules) module.visible = false;
             if (invalid.IsValid()) return false;
             invalid = fixture;
             invalid.customLayout.front().customText = L"line\nbreak";
