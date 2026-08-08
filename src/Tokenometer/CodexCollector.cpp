@@ -429,7 +429,7 @@ namespace tokenometer
             stream << R"({"timestamp":"2026-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"private body"}})" << '\n';
             stream << R"({"timestamp":"2026-01-01T00:00:03.000Z","type":"response_item","payload":{"type":"function_call","name":"shell_command","call_id":"call-1","arguments":"private input"}})" << '\n';
             stream << R"({"timestamp":"2026-01-01T00:00:03.500Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"private output"}})" << '\n';
-            stream << R"({"timestamp":"2026-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120}},"rate_limits":{"limit_id":"fixture","limit_name":"Fixture","primary":{"used_percent":12.5,"window_minutes":300,"resets_at":1767229200},"secondary":null}}})" << '\n';
+            stream << R"({"timestamp":"2026-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":400,"cache_write_input_tokens":0,"output_tokens":200,"reasoning_output_tokens":50,"total_tokens":1200},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":5,"total_tokens":120}},"rate_limits":{"limit_id":"fixture","limit_name":"Fixture","primary":{"used_percent":12.5,"window_minutes":300,"resets_at":1767229200},"secondary":null}}})" << '\n';
             stream.close();
 
             Database database(L":memory:");
@@ -470,6 +470,22 @@ namespace tokenometer
             valid = valid && withoutNewline.usageEvents == 1 &&
                     database.GetTotals().counts.reportedTotal == 210;
 
+            std::ofstream validatedDeltas(archived, std::ios::binary | std::ios::app);
+            validatedDeltas << '\n';
+            validatedDeltas << R"({"timestamp":"2026-01-01T00:00:07.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":190,"cached_input_tokens":60,"cache_write_input_tokens":0,"output_tokens":45,"reasoning_output_tokens":10,"total_tokens":235},"last_token_usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":0}}}})" << '\n';
+            validatedDeltas << R"({"timestamp":"2026-01-01T00:00:08.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":62,"cache_write_input_tokens":0,"output_tokens":47,"reasoning_output_tokens":10,"total_tokens":247},"last_token_usage":{"input_tokens":999,"cached_input_tokens":99,"cache_write_input_tokens":0,"output_tokens":99,"reasoning_output_tokens":9,"total_tokens":1098}}}})" << '\n';
+            validatedDeltas << R"({"timestamp":"2026-01-01T00:00:09.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":2,"total_tokens":35},"last_token_usage":{"input_tokens":30,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":2,"total_tokens":35}}}})" << '\n';
+            validatedDeltas << R"({"timestamp":"2026-01-01T00:00:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":11}}}})" << '\n';
+            validatedDeltas.close();
+            auto const validated = collector.CollectOnce();
+            auto const validatedTotals = database.GetTotals();
+            valid = valid && validated.usageEvents == 4 &&
+                    validatedTotals.counts.input == 240 &&
+                    validatedTotals.counts.cachedInput == 74 &&
+                    validatedTotals.counts.output == 53 &&
+                    validatedTotals.counts.reasoningOutput == 12 &&
+                    validatedTotals.counts.reportedTotal == 293;
+
             Database externalDatabase(L":memory:");
             externalDatabase.Initialize();
             CodexCollector externalCollector(externalDatabase, root / L"external-unused");
@@ -478,7 +494,7 @@ namespace tokenometer
                 R"({"timestamp":"2026-01-02T00:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-wsl","model":"gpt-wsl","cwd":"/home/test/project"}})" "\n"
                 R"({"timestamp":"2026-01-02T00:00:02.000Z","type":"event_msg","payload":{"type":"user_message","message":"not persisted"}})" "\n";
             std::string const externalTail =
-                R"({"timestamp":"2026-01-02T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":40,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":42},"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":42}},"rate_limits":{"limit_id":"remote","limit_name":"Remote","primary":{"used_percent":90,"window_minutes":300,"resets_at":1767315600}}}})" "\n";
+                R"({"timestamp":"2026-01-02T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":400,"cached_input_tokens":100,"cache_write_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":10,"total_tokens":420},"last_token_usage":{"input_tokens":40,"cached_input_tokens":10,"cache_write_input_tokens":0,"output_tokens":2,"reasoning_output_tokens":1,"total_tokens":42}},"rate_limits":{"limit_id":"remote","limit_name":"Remote","primary":{"used_percent":90,"window_minutes":300,"resets_at":1767315600}}}})" "\n";
             std::string const externalContent = externalHead + externalTail;
             ExternalCodexTranscript external;
             external.sourcePath = L"wsl://Ubuntu/home/test/.codex/sessions/rollout.jsonl";
@@ -782,6 +798,7 @@ namespace tokenometer
         std::vector<ToolOutputEvent> toolOutputBatch;
         std::optional<RateLimitSnapshot> limitBatch;
         int64_t batchBytes{};
+        bool hasCumulative = HasUsage(current.cumulative);
 
         auto flush = [&]
         {
@@ -1007,18 +1024,31 @@ namespace tokenometer
                             TokenCounts const reported = ReadCounts(*total);
                             if (!Equal(reported, current.cumulative))
                             {
-                                TokenCounts delta;
+                                TokenCounts claimed;
                                 if (auto const last = Object(*info, L"last_token_usage"))
                                 {
-                                    delta = ReadCounts(*last);
-                                    if (!HasUsage(delta) && !Decreased(reported, current.cumulative))
-                                    {
-                                        delta = Difference(reported, current.cumulative);
-                                    }
+                                    claimed = ReadCounts(*last);
                                 }
-                                else if (!Decreased(reported, current.cumulative))
+
+                                TokenCounts delta;
+                                if (!hasCumulative)
                                 {
-                                    delta = Difference(reported, current.cumulative);
+                                    delta = HasUsage(claimed)
+                                        ? claimed
+                                        : Difference(reported, {});
+                                }
+                                else if (Decreased(reported, current.cumulative))
+                                {
+                                    delta = HasUsage(claimed)
+                                        ? claimed
+                                        : Difference(reported, {});
+                                }
+                                else
+                                {
+                                    auto const expected = Difference(reported, current.cumulative);
+                                    delta = HasUsage(claimed) && Equal(claimed, expected)
+                                        ? claimed
+                                        : expected;
                                 }
                                 current.cumulative = reported;
                                 if (HasUsage(delta))
@@ -1032,6 +1062,7 @@ namespace tokenometer
                                     });
                                 }
                             }
+                            hasCumulative = true;
                         }
                     }
 
