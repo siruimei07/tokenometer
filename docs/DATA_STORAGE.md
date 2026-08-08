@@ -26,6 +26,8 @@ SQLite runs with foreign keys, WAL mode, a bounded journal, short write transact
 
 Provider-reported Codex counters are exact with respect to the local transcript, not a billing invoice. No v0.1 source provides a reliable subscription cost, so Tokenometer stores and displays no invented currency value.
 
+Each discovered Windows or WSL device stores its last attempt, last successful merge, and one of `never`, `synced`, `partial`, or `failed`. A malformed, oversized, unreadable, or permission-blocked source is reported without discarding previously collected data. WSL outcomes are recorded per running distribution; one failing distribution does not overwrite the status of another.
+
 ## Codex allowlist
 
 The Windows collector reads only these files:
@@ -76,7 +78,7 @@ ceil((UTF-8 bytes of visible text + UTF-8 bytes of role + 4 framing bytes) / 4)
 
 User text is labelled estimated input and subsequent visible assistant text is labelled estimated output. This is a deterministic heuristic, not an OpenAI tokenizer, so it must not be combined with Codex exact counters without an “estimated” marker. Cache hits/misses, quotas, costs, devices, tool calls, and precise model billing data are unavailable from the export.
 
-The database persists only the selected file's basename, SHA-256, size, modified time, the user-supplied account label, stable session/turn identifiers, available model labels, timestamps, message counts, and estimated totals. Absolute export paths and message bodies are discarded. Re-importing an unchanged source is a no-op; a changed source replaces matching stable session IDs rather than accumulating duplicates.
+The database persists only the selected file's basename, SHA-256, size, modified time, the user-supplied account label, stable session/turn identifiers, available export model labels (which may be missing and are not billing-model proof), timestamps, message counts, and estimated totals. Absolute export paths and message bodies are discarded. Re-importing an unchanged source is a no-op; a changed source replaces matching stable session IDs rather than accumulating duplicates.
 
 Hashing and parsing use one read-only file handle that denies concurrent writes and replacement. The importer rejects files larger than 256 MiB, individual conversation objects larger than 32 MiB, more than 25,000 conversations, more than 100,000 visible prompts, or a current branch deeper than 25,000 nodes. These limits bound memory use and treat oversized or malformed exports as unavailable rather than partially importing them.
 

@@ -880,7 +880,7 @@ void DashboardView::UpdateOverview(OverviewViewData const& data)
         }
         else
         {
-            SetStatus(L"Windows 数据已同步", data.warning, true);
+            SetStatus(L"部分同步", data.warning, false);
         }
     }
     else
@@ -1146,6 +1146,13 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
         }
         panel.Children().Append(actions);
     };
+
+    if (!data.warning.empty())
+    {
+        auto warning = Text(L"⚠ " + data.warning, 8.5, Color(255, 253, 142), 600);
+        warning.TextWrapping(mux::TextWrapping::Wrap);
+        m_breakdownList.Children().Append(warning);
+    }
 
     if (!data.error.empty())
     {

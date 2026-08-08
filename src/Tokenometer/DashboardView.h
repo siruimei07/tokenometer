@@ -97,6 +97,7 @@ namespace tokenometer
         bool toolsExpanded{};
         bool loading{};
         std::wstring unavailableReason;
+        std::wstring warning;
         std::wstring error;
     };
 

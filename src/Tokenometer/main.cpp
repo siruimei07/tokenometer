@@ -1561,6 +1561,53 @@ private:
         }
     }
 
+    [[nodiscard]] std::wstring LocalPartialWarning() const
+    {
+        int const io = m_collectionIoErrors.load(std::memory_order_relaxed);
+        int const malformed = m_collectionMalformedRecords.load(std::memory_order_relaxed);
+        int const oversized = m_collectionOversizedRecords.load(std::memory_order_relaxed);
+        if (io == 0 && malformed == 0 && oversized == 0) return {};
+
+        std::wstring detail = L"部分记录跳过（I/O " + std::to_wstring(io) +
+            L"、格式错误 " + std::to_wstring(malformed) +
+            L"、超限 " + std::to_wstring(oversized) +
+            L"）；已保留并显示其余可用数据";
+        return detail;
+    }
+
+    [[nodiscard]] static std::wstring DeviceSyncText(tokenometer::DeviceSummary const& device)
+    {
+        auto ageText = [](int64_t timestamp)
+        {
+            if (timestamp <= 0) return std::wstring{ L"尚无成功同步" };
+            int64_t const age = std::max<int64_t>(UnixNow() - timestamp, 0);
+            if (age < 60) return std::wstring{ L"刚刚同步" };
+            if (age < 3600) return std::to_wstring(age / 60) + L" 分钟前同步";
+            return std::to_wstring(age / 3600) + L" 小时前同步";
+        };
+        auto errorText = [&device]
+        {
+            if (device.lastError.empty()) return std::wstring{};
+            constexpr size_t maximum = 80;
+            return device.lastError.size() <= maximum
+                ? device.lastError
+                : device.lastError.substr(0, maximum) + L"…";
+        }();
+        switch (device.syncStatus)
+        {
+        case tokenometer::DeviceSyncStatus::Synced:
+            return ageText(device.lastSuccess);
+        case tokenometer::DeviceSyncStatus::PartialError:
+            return L"部分记录跳过 · " +
+                (errorText.empty() ? ageText(device.lastSuccess) : errorText);
+        case tokenometer::DeviceSyncStatus::Failed:
+            return L"同步失败 · " +
+                (errorText.empty() ? ageText(device.lastSuccess) : errorText);
+        default:
+            return L"等待首次同步";
+        }
+    }
+
     void RefreshDetails()
     {
         if (!m_dashboard)
@@ -1582,6 +1629,17 @@ private:
         data.loading = m_detailsScope == tokenometer::UsageScope::CodexExact
             ? m_collecting.load(std::memory_order_relaxed)
             : m_chatGptImporting.load(std::memory_order_relaxed);
+        if (m_detailsScope == tokenometer::UsageScope::CodexExact)
+        {
+            data.warning = m_collectionFailed.load(std::memory_order_relaxed)
+                ? L"最近一次本机增量采集失败；已保留并显示上次数据"
+                : LocalPartialWarning();
+            if (m_wslCollectionFailed.load(std::memory_order_relaxed))
+            {
+                if (!data.warning.empty()) data.warning += L" · ";
+                data.warning += L"WSL 暂不可用或部分发行版扫描失败";
+            }
+        }
         m_toolLocators.clear();
 
         auto const lookahead = [](int limit)
@@ -1711,7 +1769,7 @@ private:
                                 ? device->id.substr(device->id.size() - 8)
                                 : device->id;
                             row.displayName = (device->displayName.empty() ? device->id : device->displayName) +
-                                L" · " + kind + L" · " + shortId;
+                                L" · " + kind + L" · " + shortId + L" · " + DeviceSyncText(*device);
                         }
                     }
                 }
@@ -2232,11 +2290,26 @@ private:
                             m_collecting.store(true, std::memory_order_relaxed);
                             auto const result = m_collector->CollectOnce(stopToken);
                             m_lastCollectionAt.store(result.completedAt, std::memory_order_relaxed);
+                            m_collectionIoErrors.store(result.ioErrors, std::memory_order_relaxed);
+                            m_collectionMalformedRecords.store(
+                                result.malformedRecords,
+                                std::memory_order_relaxed);
+                            m_collectionOversizedRecords.store(
+                                result.oversizedRecords,
+                                std::memory_order_relaxed);
                             m_collectionFailed.store(false, std::memory_order_relaxed);
                             UpdateBubbleSnapshotCache();
-                            if (!stopToken.stop_requested() && m_database->PruneDetailsIfDue())
+                            if (!stopToken.stop_requested())
                             {
-                                m_database->Optimize();
+                                try
+                                {
+                                    if (m_database->PruneDetailsIfDue()) m_database->Optimize();
+                                }
+                                catch (...)
+                                {
+                                    OutputDebugStringW(
+                                        L"Tokenometer: database maintenance was deferred.\n");
+                                }
                             }
                         }
                         catch (...)
@@ -2256,6 +2329,8 @@ private:
                 catch (...)
                 {
                     m_initialLocalCollectionComplete.store(true, std::memory_order_release);
+                    m_collecting.store(false, std::memory_order_relaxed);
+                    m_collectionFailed.store(true, std::memory_order_relaxed);
                     OutputDebugStringW(L"Tokenometer: collector thread initialization failed.\n");
                 }
             });
@@ -2319,7 +2394,7 @@ private:
         catch (...)
         {
             m_collectionFailed.store(true, std::memory_order_relaxed);
-            OutputDebugStringW(L"Tokenometer: local database initialization failed.\n");
+            OutputDebugStringW(L"Tokenometer: local collector initialization failed.\n");
         }
     }
 
@@ -2682,13 +2757,33 @@ private:
                         ? std::to_wstring(snapshotAge) + L" 秒前的数据"
                         : std::to_wstring(snapshotAge / 60) + L" 分钟前的数据");
             }
+            else if (!LocalPartialWarning().empty())
+            {
+                m_bubbleLimitTitle.Text(L"同步状态");
+                m_bubbleLimit.Text(L"部分");
+                m_bubbleLimit.Foreground(Brush(warningText));
+                m_bubbleUpdated.Text(
+                    L"跳过 I/O " +
+                    std::to_wstring(m_collectionIoErrors.load(std::memory_order_relaxed)) +
+                    L" · 格式 " +
+                    std::to_wstring(m_collectionMalformedRecords.load(std::memory_order_relaxed)) +
+                    L" · 超限 " +
+                    std::to_wstring(m_collectionOversizedRecords.load(std::memory_order_relaxed)));
+            }
             else if (m_wslCollectionFailed.load(std::memory_order_relaxed))
             {
                 std::wstring status{m_bubbleUpdated.Text()};
                 status += L" · WSL 暂不可用";
                 m_bubbleUpdated.Text(status);
             }
-            if (m_surfacePreferences.layoutPreset == tokenometer::SurfaceLayoutPreset::CostFocus)
+            bool const syncHealthy =
+                !m_collectionFailed.load(std::memory_order_relaxed) &&
+                LocalPartialWarning().empty() &&
+                !m_bubbleSnapshotFailed.load(std::memory_order_relaxed) &&
+                snapshotAge <= 15 &&
+                !m_wslCollectionFailed.load(std::memory_order_relaxed);
+            if (syncHealthy &&
+                m_surfacePreferences.layoutPreset == tokenometer::SurfaceLayoutPreset::CostFocus)
             {
                 m_bubbleLimitTitle.Text(L"订阅费用");
                 m_bubbleLimit.Text(L"不可用");
@@ -2712,10 +2807,16 @@ private:
         snapshot.collecting = m_collecting.load(std::memory_order_relaxed) ||
             m_wslCollecting.load(std::memory_order_relaxed);
         snapshot.lastSync = m_lastCollectionAt.load(std::memory_order_relaxed);
+        auto appendWarning = [&snapshot](std::wstring const& warning)
+        {
+            if (warning.empty()) return;
+            if (!snapshot.warning.empty()) snapshot.warning += L" · ";
+            snapshot.warning += warning;
+        };
+        appendWarning(LocalPartialWarning());
         if (m_wslCollectionFailed.load(std::memory_order_relaxed))
         {
-            snapshot.warning =
-                L"WSL 暂不可用或部分发行版扫描失败；Windows 数据仍在实时更新";
+            appendWarning(L"WSL 暂不可用或部分发行版扫描失败；各设备保留自己的上次状态");
         }
         if (!m_database)
         {
@@ -2740,28 +2841,26 @@ private:
                 auto const syncing = isWsl
                     ? m_wslCollecting.load(std::memory_order_relaxed)
                     : m_collecting.load(std::memory_order_relaxed);
-                auto const failed = isWsl
-                    ? m_wslCollectionFailed.load(std::memory_order_relaxed)
-                    : m_collectionFailed.load(std::memory_order_relaxed);
                 if (syncing)
                 {
                     device.state = tokenometer::DeviceSyncState::Syncing;
                     device.statusText = isWsl ? L"正在合并 WSL 数据" : L"正在扫描本机记录";
                 }
-                else if (failed)
+                else if (!isWsl && m_collectionFailed.load(std::memory_order_relaxed))
                 {
                     device.state = tokenometer::DeviceSyncState::Warning;
-                    device.statusText = isWsl
-                        ? L"本轮 WSL 扫描有错误 · 保留上次数据"
-                        : L"本轮扫描有错误 · 保留上次数据";
+                    device.statusText = L"本轮扫描失败 · 保留上次成功数据";
                 }
-                else if (summary.lastSeen > 0)
+                else if (summary.syncStatus == tokenometer::DeviceSyncStatus::PartialError ||
+                         summary.syncStatus == tokenometer::DeviceSyncStatus::Failed)
+                {
+                    device.state = tokenometer::DeviceSyncState::Warning;
+                    device.statusText = DeviceSyncText(summary);
+                }
+                else if (summary.syncStatus == tokenometer::DeviceSyncStatus::Synced)
                 {
                     device.state = tokenometer::DeviceSyncState::Synced;
-                    auto const age = std::max<int64_t>(UnixNow() - summary.lastSeen, 0);
-                    if (age < 60) device.statusText = L"刚刚同步";
-                    else if (age < 3600) device.statusText = std::to_wstring(age / 60) + L" 分钟前同步";
-                    else device.statusText = std::to_wstring(age / 3600) + L" 小时前同步";
+                    device.statusText = DeviceSyncText(summary);
                 }
                 else
                 {
@@ -2920,6 +3019,9 @@ private:
     std::atomic_bool m_wslCollectionFailed{};
     std::atomic_bool m_initialLocalCollectionComplete{};
     std::atomic_bool m_collectionFailed{};
+    std::atomic<int> m_collectionIoErrors{};
+    std::atomic<int> m_collectionMalformedRecords{};
+    std::atomic<int> m_collectionOversizedRecords{};
     std::atomic_bool m_chatGptImporting{};
     std::atomic_bool m_closing{};
     std::atomic_bool m_bubbleSnapshotFailed{};
