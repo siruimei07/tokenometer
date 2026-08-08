@@ -71,9 +71,14 @@ namespace tokenometer
             std::wstring_view provider = L"codex",
             std::wstring_view accountId = L"current");
         [[nodiscard]] std::vector<ChatGPTSessionEstimate> GetChatGPTEstimatedSessions(
-            std::wstring_view accountId,
+            std::wstring_view accountId = {},
             int limit = 100);
-        [[nodiscard]] UsageTotals GetChatGPTEstimatedTotals(std::wstring_view accountId);
+        [[nodiscard]] UsageTotals GetChatGPTEstimatedTotals(
+            std::wstring_view accountId = {});
+        [[nodiscard]] std::vector<BreakdownRow> GetChatGPTEstimatedBreakdown(
+            std::wstring_view dimension,
+            int64_t since = 0,
+            int limit = 20);
         [[nodiscard]] std::vector<ChatGPTPromptEstimate> GetChatGPTEstimatedPrompts(
             std::wstring_view accountId,
             std::wstring_view sessionId,
@@ -81,6 +86,10 @@ namespace tokenometer
         [[nodiscard]] std::vector<ChatGPTEstimatedDailyUsage> GetChatGPTEstimatedDailyUsage(
             int days,
             std::wstring_view accountId = {});
+        [[nodiscard]] std::vector<ChatGPTEstimatedHourlyUsage> GetChatGPTEstimatedHourlyUsage(
+            int days,
+            std::wstring_view accountId = {});
+        [[nodiscard]] std::vector<DeviceSummary> GetDeviceSummaries(int limit = 8);
 
         void PruneDetails(int usageDays = 180, int toolDays = 180, int hourlyDays = 400);
         [[nodiscard]] bool PruneDetailsIfDue(

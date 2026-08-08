@@ -842,17 +842,62 @@ void DashboardView::UpdateOverview(OverviewViewData const& data)
     }
     m_recentEmptyState.Visibility(sessionCount == 0 ? mux::Visibility::Visible : mux::Visibility::Collapsed);
 
-    if (data.total.estimatedTokens > 0)
+    if (data.chatGptTotals.estimatedTokens > 0)
     {
         m_chatGptOverviewValue.Text(winrt::hstring{
-            L"≈ " + FormatCompact(data.total.estimatedTokens) + L" token" });
+            L"≈ " + FormatCompact(data.chatGptTotals.estimatedTokens) + L" tokens" });
         m_chatGptOverviewDetail.Text(winrt::hstring{
-            FormatInteger(data.total.estimatedSessions) + L" 个会话 · 官方导出可见文本估算" });
+            FormatInteger(data.chatGptTotals.estimatedSessions) +
+            L" 个会话 · 官方导出估算 · 缓存/费用 N/A" });
     }
     else
     {
         m_chatGptOverviewValue.Text(L"等待官方导出导入");
-        m_chatGptOverviewDetail.Text(L"实时 token 不可用");
+        m_chatGptOverviewDetail.Text(L"官方导出仅支持离线估算");
+    }
+
+    if (m_devicePanel)
+    {
+        m_devicePanel.Children().Clear();
+        auto const visibleDevices = std::min<size_t>(data.devices.size(), 2);
+        for (size_t index = 0; index < visibleDevices; ++index)
+        {
+            auto const& device = data.devices[index];
+            controls::Grid row;
+            AddColumn(row, Star());
+            AddColumn(row, mux::GridLengthHelper::Auto());
+            controls::StackPanel copy;
+            copy.Spacing(1);
+            auto name = device.summary.displayName.empty()
+                ? device.summary.id
+                : device.summary.displayName;
+            auto const prefix = device.summary.kind == DeviceKind::Wsl ? L"WSL · " : L"Windows · ";
+            copy.Children().Append(Text(prefix + name, 10.5, Color(247, 247, 245), 600));
+            auto detail = device.statusText;
+            if (detail.empty())
+            {
+                detail = device.summary.lastSeen > 0 ? FormatAge(device.summary.lastSeen) : L"尚未同步";
+            }
+            copy.Children().Append(Text(detail, 8.5, Color(143, 139, 140)));
+            row.Children().Append(copy);
+            auto value = Text(
+                FormatCompact(device.summary.counts.DisplayTotal()),
+                10.5,
+                device.state == DeviceSyncState::Warning ? Color(255, 253, 142) : Color(98, 223, 125),
+                600,
+                true);
+            value.VerticalAlignment(mux::VerticalAlignment::Center);
+            controls::Grid::SetColumn(value, 1);
+            row.Children().Append(value);
+            m_devicePanel.Children().Append(row);
+        }
+        if (visibleDevices == 0)
+        {
+            m_devicePanel.Children().Append(Text(
+                L"尚未发现 Windows / WSL 设备",
+                9,
+                Color(143, 139, 140)));
+        }
     }
     UpdateDailyVisuals(data.daily);
 }
@@ -933,7 +978,9 @@ void DashboardView::SetDetailsCallbacks(DetailsCallbacks callbacks)
 
 void DashboardView::UpdateDetails(DetailsViewData const& data)
 {
+    m_detailsScope = data.scope;
     m_detailsDimension = data.dimension;
+    UpdateDetailsScopeButtons();
     UpdateDetailsDimensionButtons();
     m_breakdownList.Children().Clear();
 
@@ -955,6 +1002,10 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
     else if (data.loading)
     {
         appendState(m_breakdownList, L"正在加载明细", L"读取完成后会自动刷新当前维度。");
+    }
+    else if (!data.unavailableReason.empty())
+    {
+        appendState(m_breakdownList, L"官方导出不提供该维度", data.unavailableReason);
     }
     else if (data.rows.empty())
     {
@@ -978,20 +1029,30 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
             auto const hitRate = input > 0
                 ? static_cast<double>(cached) * 100.0 / static_cast<double>(input)
                 : 0.0;
+            auto const estimated = row.measurement == MeasurementKind::Estimated;
+            auto const rowName = row.displayName.empty() ? row.key : row.displayName;
 
             controls::StackPanel rowContent;
             rowContent.Spacing(6);
             controls::Grid top;
             AddColumn(top, Star());
             AddColumn(top, mux::GridLengthHelper::Auto());
-            top.Children().Append(Text(row.key.empty() ? L"未命名" : row.key, 11.5, Color(247, 247, 245), 600));
-            auto total = Text(FormatCompact(row.counts.DisplayTotal()), 11.5, Color(247, 247, 245), 600, true);
+            top.Children().Append(Text(rowName.empty() ? L"未命名" : rowName, 11.5, Color(247, 247, 245), 600));
+            auto total = Text(
+                (estimated ? L"≈ " : L"") + FormatCompact(row.counts.DisplayTotal()),
+                11.5,
+                Color(247, 247, 245),
+                600,
+                true);
             controls::Grid::SetColumn(total, 1);
             top.Children().Append(total);
             rowContent.Children().Append(top);
 
-            auto summary = FormatPercent(hitRate) + L" hit · "
-                + FormatCompact(row.counts.output) + L" output";
+            auto summary = estimated
+                ? L"≈ " + FormatCompact(input) + L" input · ≈ " +
+                    FormatCompact(row.counts.output) + L" output · cache N/A"
+                : FormatPercent(hitRate) + L" hit · " +
+                    FormatCompact(row.counts.output) + L" output";
             rowContent.Children().Append(Text(summary, 9.5, Color(143, 139, 140)));
             auto const ratio = peak > 0
                 ? static_cast<double>(row.counts.DisplayTotal()) / static_cast<double>(peak)
@@ -1043,13 +1104,20 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
         auto const ratio = input > 0
             ? static_cast<double>(cached) / static_cast<double>(input)
             : 0.0;
-        m_detailsSelectedTitle.Text(winrt::hstring{ selectedRow->key });
-        m_detailsInputText.Text(winrt::hstring{ FormatInteger(input) });
-        m_detailsCacheHitTokensText.Text(winrt::hstring{ FormatInteger(cached) });
-        m_detailsCacheMissTokensText.Text(winrt::hstring{ FormatInteger(miss) });
-        m_detailsOutputText.Text(winrt::hstring{ FormatInteger(output) });
-        m_detailsHitRateText.Text(winrt::hstring{ FormatPercent(ratio * 100.0) });
-        SetProgress(m_detailsCacheProgressFill, m_detailsCacheProgressRest, ratio);
+        auto const estimated = selectedRow->measurement == MeasurementKind::Estimated;
+        m_detailsSelectedTitle.Text(winrt::hstring{
+            selectedRow->displayName.empty() ? selectedRow->key : selectedRow->displayName });
+        m_detailsInputText.Text(winrt::hstring{
+            (estimated ? L"≈ " : L"") + FormatInteger(input) });
+        m_detailsCacheHitTokensText.Text(winrt::hstring{
+            estimated ? L"N/A" : FormatInteger(cached) });
+        m_detailsCacheMissTokensText.Text(winrt::hstring{
+            estimated ? L"N/A" : FormatInteger(miss) });
+        m_detailsOutputText.Text(winrt::hstring{
+            (estimated ? L"≈ " : L"") + FormatInteger(output) });
+        m_detailsHitRateText.Text(winrt::hstring{
+            estimated ? L"N/A" : FormatPercent(ratio * 100.0) });
+        SetProgress(m_detailsCacheProgressFill, m_detailsCacheProgressRest, estimated ? 0.0 : ratio);
     }
     else
     {
@@ -1086,14 +1154,26 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
             copy.Children().Append(Text(title, 10.5, Color(247, 247, 245), 600));
             auto detail = session.model.empty() ? std::wstring{ L"Codex" } : session.model;
             detail += L" · " + FormatInteger(session.messages) + L" msgs";
+            if (session.measurement == MeasurementKind::Estimated)
+            {
+                detail += L" · 官方导出估算";
+            }
             copy.Children().Append(Text(detail, 9, Color(143, 139, 140)));
             content.Children().Append(copy);
-            auto value = Text(FormatCompact(session.counts.DisplayTotal()), 10.5, Color(247, 247, 245), 600, true);
+            auto value = Text(
+                (session.measurement == MeasurementKind::Estimated ? L"≈ " : L"") +
+                    FormatCompact(session.counts.DisplayTotal()),
+                10.5,
+                Color(247, 247, 245),
+                600,
+                true);
             value.VerticalAlignment(mux::VerticalAlignment::Center);
             controls::Grid::SetColumn(value, 1);
             content.Children().Append(value);
 
-            auto const selected = session.id == data.selectedSessionId;
+            auto const selected = session.id == data.selectedSessionId &&
+                session.accountId == data.selectedSessionAccountId &&
+                session.sourceKind == data.selectedSessionSourceKind;
             controls::Button button;
             button.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
             button.HorizontalContentAlignment(mux::HorizontalAlignment::Stretch);
@@ -1104,12 +1184,12 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
             button.CornerRadius(Radius(12));
             button.Content(content);
             automation::AutomationProperties::SetName(button, winrt::hstring{ title });
-            auto sessionId = session.id;
-            button.Click([this, sessionId = std::move(sessionId)](auto const&, auto const&)
+            SessionRef sessionRef{ session.sourceKind, session.accountId, session.id };
+            button.Click([this, sessionRef = std::move(sessionRef)](auto const&, auto const&)
             {
                 if (m_detailsCallbacks.onSessionSelected)
                 {
-                    m_detailsCallbacks.onSessionSelected(sessionId);
+                    m_detailsCallbacks.onSessionSelected(sessionRef);
                 }
             });
             m_detailsSessionsPanel.Children().Append(button);
@@ -1140,12 +1220,31 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
                     title += L" · " + turn.model;
                 }
                 copy.Children().Append(Text(title, 10.5, Color(247, 247, 245), 600));
-                copy.Children().Append(Text(
-                    turn.tools.empty() ? L"未使用工具" : turn.tools,
-                    9,
-                    Color(143, 139, 140)));
+                auto const estimated = turn.measurement == MeasurementKind::Estimated;
+                std::wstring promptDetail;
+                if (estimated)
+                {
+                    promptDetail = L"≈ 输入 " + FormatCompact(turn.counts.input) +
+                        L" · ≈ 输出 " + FormatCompact(turn.counts.output) +
+                        L" · 缓存/工具 N/A";
+                }
+                else
+                {
+                    promptDetail = turn.tools.empty() ? L"未使用工具" : turn.tools;
+                    promptDetail += L" · 输入 " + FormatCompact(turn.counts.input) +
+                        L" · 缓存 " + FormatCompact(turn.counts.cachedInput) +
+                        L" · 输出 " + FormatCompact(turn.counts.output);
+                }
+                auto promptDetailText = Text(promptDetail, 9, Color(143, 139, 140));
+                promptDetailText.TextWrapping(mux::TextWrapping::Wrap);
+                copy.Children().Append(promptDetailText);
                 content.Children().Append(copy);
-                auto value = Text(FormatCompact(turn.counts.DisplayTotal()), 10.5, Color(255, 253, 142), 600, true);
+                auto value = Text(
+                    (estimated ? L"≈ " : L"") + FormatCompact(turn.counts.DisplayTotal()),
+                    10.5,
+                    Color(255, 253, 142),
+                    600,
+                    true);
                 value.VerticalAlignment(mux::VerticalAlignment::Center);
                 controls::Grid::SetColumn(value, 1);
                 content.Children().Append(value);
@@ -1238,6 +1337,19 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
     UpdateScrollState();
 }
 
+void DashboardView::UpdateDetailsScopeButtons()
+{
+    auto const selectedIndex = static_cast<size_t>(m_detailsScope);
+    for (size_t index = 0; index < m_detailsScopeButtons.size(); ++index)
+    {
+        auto const selected = index == selectedIndex;
+        auto const& button = m_detailsScopeButtons[index];
+        button.Background(Brush(selected ? Color(55, 52, 53) : Color(0, 0, 0, 0)));
+        button.Foreground(Brush(selected ? Color(247, 247, 245) : Color(143, 139, 140)));
+        button.BorderBrush(Brush(selected ? Color(240, 63, 22) : Color(255, 255, 255, 12)));
+    }
+}
+
 void DashboardView::UpdateDetailsDimensionButtons()
 {
     auto const selectedIndex = static_cast<size_t>(m_detailsDimension);
@@ -1245,6 +1357,11 @@ void DashboardView::UpdateDetailsDimensionButtons()
     {
         auto const selected = index == selectedIndex;
         auto const& button = m_detailsDimensionButtons[index];
+        auto const available = m_detailsScope == UsageScope::CodexExact ||
+            (index != static_cast<size_t>(DetailsDimension::Device) &&
+             index != static_cast<size_t>(DetailsDimension::Project));
+        button.IsEnabled(available);
+        button.Opacity(available ? 1.0 : 0.38);
         button.Background(Brush(selected ? Color(55, 52, 53) : Color(0, 0, 0, 0)));
         button.Foreground(Brush(selected ? Color(247, 247, 245) : Color(143, 139, 140)));
         button.BorderBrush(Brush(selected ? Color(98, 223, 125) : Color(255, 255, 255, 12)));
@@ -1258,9 +1375,11 @@ void DashboardView::SetTrendCallbacks(TrendCallbacks callbacks)
 
 void DashboardView::UpdateTrends(TrendViewData const& data)
 {
+    m_trendScope = data.scope;
     m_trendGroup = data.group;
     m_trendChart = data.chart;
     m_trendRange = data.range;
+    UpdateTrendScopeButtons();
     UpdateTrendButtons();
 
     m_currentStreakText.Text(winrt::hstring{ FormatInteger(std::max(data.currentStreak, 0)) });
@@ -1282,6 +1401,9 @@ void DashboardView::UpdateTrends(TrendViewData const& data)
     };
 
     auto const groupLabel = data.group == TrendGroup::Tool ? L"按工具" : L"按模型";
+    auto const sourceLabel = data.scope == UsageScope::ChatGptEstimated
+        ? L"ChatGPT 官方导出估算"
+        : L"Codex 精确";
     if (!data.error.empty())
     {
         m_trendChartCaption.Text(L"趋势加载失败");
@@ -1509,6 +1631,16 @@ void DashboardView::UpdateTrends(TrendViewData const& data)
         }
     }
 
+    {
+        std::wstring caption = m_trendChartCaption.Text().c_str();
+        if (!caption.empty())
+        {
+            caption += L" · ";
+        }
+        caption += sourceLabel;
+        m_trendChartCaption.Text(winrt::hstring{ caption });
+    }
+
     auto const heatCount = std::min({ data.heatCells.size(), m_trendHeatCells.size(), size_t{ 365 } });
     int64_t heatPeak{};
     for (size_t index = data.heatCells.size() - heatCount; index < data.heatCells.size(); ++index)
@@ -1540,6 +1672,10 @@ void DashboardView::UpdateTrends(TrendViewData const& data)
         auto const last = data.heatCells.back().day;
         auto caption = first + L" — " + last;
         caption += L" · 最多 365 日 · 小时历史仅保留 400 日";
+        if (data.scope == UsageScope::ChatGptEstimated)
+        {
+            caption += L" · 估算";
+        }
         m_trendHeatCaption.Text(winrt::hstring{ caption });
     }
 
@@ -1575,7 +1711,9 @@ void DashboardView::UpdateTrends(TrendViewData const& data)
             controls::Grid::SetColumn(name, 1);
             row.Children().Append(name);
             auto value = Text(
-                FormatCompact(data.series[index].total) + L" · " + FormatPercent(data.series[index].percent),
+                (data.scope == UsageScope::ChatGptEstimated ? L"≈ " : L"") +
+                    FormatCompact(data.series[index].total) + L" · " +
+                    FormatPercent(data.series[index].percent),
                 9.5,
                 Color(143, 139, 140),
                 600,
@@ -1584,6 +1722,19 @@ void DashboardView::UpdateTrends(TrendViewData const& data)
             row.Children().Append(value);
             m_trendLegend.Children().Append(row);
         }
+    }
+}
+
+void DashboardView::UpdateTrendScopeButtons()
+{
+    auto const selectedIndex = static_cast<size_t>(m_trendScope);
+    for (size_t index = 0; index < m_trendScopeButtons.size(); ++index)
+    {
+        auto const selected = index == selectedIndex;
+        auto const& button = m_trendScopeButtons[index];
+        button.Background(Brush(selected ? Color(55, 52, 53) : Color(0, 0, 0, 0)));
+        button.Foreground(Brush(selected ? Color(247, 247, 245) : Color(143, 139, 140)));
+        button.BorderBrush(Brush(selected ? Color(240, 63, 22) : Color(255, 255, 255, 12)));
     }
 }
 
@@ -2492,7 +2643,7 @@ controls::Grid DashboardView::BuildOverviewPage()
     m_overviewMetricsPanel.Children().Append(DynamicStatLine(
         L"Output", m_outputTokensText, L"0"));
     overview.Children().Append(m_overviewMetricsPanel);
-    auto overviewCard = Card(L"Token 总览", Color(98, 223, 125), overview);
+    auto overviewCard = Card(L"Codex Token（精确）", Color(98, 223, 125), overview);
     page.Children().Append(overviewCard);
 
     controls::StackPanel activity;
@@ -2522,7 +2673,7 @@ controls::Grid DashboardView::BuildOverviewPage()
         L"Messages", m_dayMessagesText, L"0"));
     activity.Children().Append(DynamicStatLine(
         L"Tool calls", m_dayToolCallsText, L"0"));
-    auto activityCard = Card(L"Token 活动", Color(255, 253, 142), activity);
+    auto activityCard = Card(L"Codex Token 活动", Color(255, 253, 142), activity);
     controls::Grid::SetColumn(activityCard, 1);
     page.Children().Append(activityCard);
 
@@ -2574,7 +2725,7 @@ controls::Grid DashboardView::BuildOverviewPage()
     chatgptCopy.Children().Append(m_chatGptOverviewValue);
     chatgptCopy.Children().Append(m_chatGptOverviewDetail);
     accounts.Children().Append(SoftPanel(chatgptCopy));
-    accounts.Children().Append(Text(L"近期会话", 12, Color(143, 139, 140), 600));
+    accounts.Children().Append(Text(L"Codex 近期会话", 12, Color(143, 139, 140), 600));
     for (int index = 0; index < 3; ++index)
     {
         controls::TextBlock title{ nullptr };
@@ -2594,7 +2745,12 @@ controls::Grid DashboardView::BuildOverviewPage()
     noSessions.Children().Append(Text(L"采集完成后最多显示最近 3 条。", 9.5, Color(143, 139, 140)));
     m_recentEmptyState = SoftPanel(noSessions);
     accounts.Children().Append(m_recentEmptyState);
-    auto accountsCard = Card(L"ChatGPT 与近期会话", Color(240, 63, 22), accounts);
+
+    accounts.Children().Append(Text(L"本机 / WSL 设备", 12, Color(143, 139, 140), 600));
+    m_devicePanel = controls::StackPanel{};
+    m_devicePanel.Spacing(7);
+    accounts.Children().Append(m_devicePanel);
+    auto accountsCard = Card(L"ChatGPT 估算与设备", Color(240, 63, 22), accounts);
     controls::Grid::SetColumn(accountsCard, 2);
     controls::Grid::SetRowSpan(accountsCard, 2);
     page.Children().Append(accountsCard);
@@ -2625,6 +2781,38 @@ controls::Grid DashboardView::BuildDetailsPage()
 
     controls::StackPanel breakdown;
     breakdown.Spacing(10);
+    controls::StackPanel scopeButtons;
+    scopeButtons.Orientation(controls::Orientation::Horizontal);
+    scopeButtons.Spacing(4);
+    constexpr std::array<std::wstring_view, 2> scopeLabels{ L"Codex 精确", L"ChatGPT 估算" };
+    constexpr std::array scopeValues{ UsageScope::CodexExact, UsageScope::ChatGptEstimated };
+    for (size_t index = 0; index < scopeLabels.size(); ++index)
+    {
+        controls::Button button;
+        button.Height(30);
+        button.MinWidth(index == 0 ? 82 : 94);
+        button.Padding({ 10, 0, 10, 0 });
+        button.CornerRadius(Radius(10));
+        button.BorderThickness({ 1 });
+        button.FontFamily(media::FontFamily{ L"Segoe UI Variable Display" });
+        button.FontSize(10);
+        button.FontWeight({ 600 });
+        button.Content(winrt::box_value(winrt::hstring{ scopeLabels[index] }));
+        auto const scope = scopeValues[index];
+        button.Click([this, scope](auto const&, auto const&)
+        {
+            m_detailsScope = scope;
+            UpdateDetailsScopeButtons();
+            UpdateDetailsDimensionButtons();
+            if (m_detailsCallbacks.onScopeChanged)
+            {
+                m_detailsCallbacks.onScopeChanged(scope);
+            }
+        });
+        scopeButtons.Children().Append(button);
+        m_detailsScopeButtons.push_back(button);
+    }
+    breakdown.Children().Append(scopeButtons);
     controls::StackPanel dimensions;
     dimensions.Orientation(controls::Orientation::Horizontal);
     dimensions.Spacing(4);
@@ -2666,6 +2854,10 @@ controls::Grid DashboardView::BuildDetailsPage()
         m_detailsDimensionButtons.push_back(button);
     }
     breakdown.Children().Append(dimensions);
+    breakdown.Children().Append(Text(
+        L"ChatGPT 官方导出不含设备、项目、缓存、费用或工具调用。",
+        8.5,
+        Color(143, 139, 140)));
     m_breakdownList = controls::StackPanel{};
     m_breakdownList.Spacing(8);
     breakdown.Children().Append(m_breakdownList);
@@ -2808,6 +3000,37 @@ controls::Grid DashboardView::BuildTrendsPage()
     m_trendChartButtons.push_back(kline);
     controls::Grid::SetColumn(chartButtons, 1);
     controlsRow.Children().Append(chartButtons);
+
+    controls::StackPanel sourceButtons;
+    sourceButtons.Orientation(controls::Orientation::Horizontal);
+    sourceButtons.Spacing(4);
+    sourceButtons.HorizontalAlignment(mux::HorizontalAlignment::Right);
+    auto codexSource = makeChoice(L"Codex 精确");
+    codexSource.Click([this](auto const&, auto const&)
+    {
+        m_trendScope = UsageScope::CodexExact;
+        UpdateTrendScopeButtons();
+        if (m_trendCallbacks.onScopeChanged)
+        {
+            m_trendCallbacks.onScopeChanged(m_trendScope);
+        }
+    });
+    auto chatGptSource = makeChoice(L"ChatGPT 估算");
+    chatGptSource.Click([this](auto const&, auto const&)
+    {
+        m_trendScope = UsageScope::ChatGptEstimated;
+        UpdateTrendScopeButtons();
+        if (m_trendCallbacks.onScopeChanged)
+        {
+            m_trendCallbacks.onScopeChanged(m_trendScope);
+        }
+    });
+    sourceButtons.Children().Append(codexSource);
+    sourceButtons.Children().Append(chatGptSource);
+    m_trendScopeButtons.push_back(codexSource);
+    m_trendScopeButtons.push_back(chatGptSource);
+    controls::Grid::SetColumn(sourceButtons, 2);
+    controlsRow.Children().Append(sourceButtons);
 
     controls::StackPanel rangeButtons;
     rangeButtons.Orientation(controls::Orientation::Horizontal);

@@ -1896,7 +1896,7 @@ namespace tokenometer
         result.sessions = statement.Int64(9);
         Statement estimated(m_database, R"sql(
             SELECT COALESCE(SUM(estimated_input_tokens + estimated_output_tokens),0),
-                   COUNT(DISTINCT length(account_id) || ':' || account_id || session_id)
+                   COUNT(DISTINCT account_id || char(31) || session_id)
             FROM chatgpt_estimated_prompts WHERE (?1=0 OR timestamp>=?1);
         )sql");
         estimated.Bind(1, since);
@@ -2043,7 +2043,7 @@ namespace tokenometer
                    COALESCE(SUM(d.tool_calls),0), COALESCE(SUM(d.input_tokens),0),
                    COALESCE(SUM(d.cached_input_tokens),0), COALESCE(SUM(d.cache_write_input_tokens),0),
                    COALESCE(SUM(d.output_tokens),0), COALESCE(SUM(d.reasoning_output_tokens),0),
-                   COALESCE(SUM(d.reported_total_tokens),0)
+                    COALESCE(SUM(d.reported_total_tokens),0), s.source_kind
             FROM sessions s LEFT JOIN daily_usage d
               ON d.session_id=s.id AND d.account_id=s.account_id
             GROUP BY s.id
@@ -2065,6 +2065,7 @@ namespace tokenometer
             row.messages = statement.Int64(8);
             row.toolCalls = statement.Int64(9);
             row.counts = ReadCounts(statement, 10);
+            row.sourceKind = statement.Text(16);
             result.push_back(std::move(row));
         }
         return result;
@@ -2170,7 +2171,7 @@ namespace tokenometer
             SELECT session_id, source_kind, account_id, model, started_at, updated_at,
                    messages, prompts, estimated_input_tokens, estimated_output_tokens
             FROM chatgpt_estimated_sessions
-            WHERE account_id=?1
+            WHERE (?1='' OR account_id=?1)
             ORDER BY updated_at DESC, session_id
             LIMIT ?2;
         )sql");
@@ -2199,14 +2200,67 @@ namespace tokenometer
     {
         std::scoped_lock lock(m_mutex);
         Statement statement(m_database, R"sql(
-            SELECT COALESCE(SUM(estimated_input_tokens + estimated_output_tokens),0), COUNT(*)
-            FROM chatgpt_estimated_sessions WHERE account_id=?1;
+            SELECT COALESCE(SUM(s.estimated_input_tokens),0),
+                   COALESCE(SUM(s.estimated_output_tokens),0),
+                   COALESCE(SUM(s.messages),0), COUNT(*)
+            FROM chatgpt_estimated_sessions s
+            WHERE (?1='' OR s.account_id=?1);
         )sql");
         statement.Bind(1, accountId);
         statement.Step();
         UsageTotals result;
-        result.estimatedTokens = statement.Int64(0);
-        result.estimatedSessions = statement.Int64(1);
+        result.counts.input = statement.Int64(0);
+        result.counts.output = statement.Int64(1);
+        result.counts.reportedTotal = result.counts.input + result.counts.output;
+        result.messages = statement.Int64(2);
+        result.estimatedTokens = result.counts.reportedTotal;
+        result.estimatedSessions = statement.Int64(3);
+        return result;
+    }
+
+    std::vector<BreakdownRow> Database::GetChatGPTEstimatedBreakdown(
+        std::wstring_view dimension,
+        int64_t since,
+        int limit)
+    {
+        std::scoped_lock lock(m_mutex);
+        char const* key{};
+        if (dimension == L"tool") key = "'ChatGPT'";
+        else if (dimension == L"model") key = "COALESCE(NULLIF(model,''),'unclassified')";
+        else if (dimension == L"session") key = "account_id || ' / ' || session_id";
+        else if (dimension == L"account") key = "account_id";
+        else return {};
+
+        std::string sql = "SELECT ";
+        sql += key;
+        sql += R"sql(,
+                   COALESCE(SUM(estimated_input_tokens),0),
+                   COALESCE(SUM(estimated_output_tokens),0),
+                   COALESCE(SUM(estimated_input_tokens + estimated_output_tokens),0),
+                   COUNT(DISTINCT account_id || char(31) || session_id),
+                   COALESCE(SUM(messages),0)
+            FROM chatgpt_estimated_prompts
+            WHERE (?1=0 OR timestamp>=?1)
+            GROUP BY 1
+            ORDER BY 4 DESC
+            LIMIT ?2;
+        )sql";
+        Statement statement(m_database, sql.c_str());
+        statement.Bind(1, since);
+        statement.Bind(2, std::clamp(limit, 1, 200));
+        std::vector<BreakdownRow> result;
+        while (statement.Step())
+        {
+            BreakdownRow row;
+            row.key = statement.Text(0);
+            row.counts.input = statement.Int64(1);
+            row.counts.output = statement.Int64(2);
+            row.counts.reportedTotal = statement.Int64(3);
+            row.sessions = statement.Int64(4);
+            row.messages = statement.Int64(5);
+            row.measurement = MeasurementKind::Estimated;
+            result.push_back(std::move(row));
+        }
         return result;
     }
 
@@ -2300,6 +2354,98 @@ namespace tokenometer
         return result;
     }
 
+    std::vector<ChatGPTEstimatedHourlyUsage> Database::GetChatGPTEstimatedHourlyUsage(
+        int days,
+        std::wstring_view accountId)
+    {
+        std::scoped_lock lock(m_mutex);
+        std::string sql = R"sql(
+            SELECT (timestamp / 3600) * 3600, day, model, account_id,
+                   SUM(estimated_input_tokens), SUM(estimated_output_tokens),
+                   SUM(messages), COUNT(*)
+            FROM chatgpt_estimated_prompts
+            WHERE timestamp>0 )sql";
+        int bindIndex = 1;
+        int accountIndex{};
+        int firstDayIndex{};
+        int lastDayIndex{};
+        if (!accountId.empty())
+        {
+            accountIndex = bindIndex++;
+            sql += "AND account_id=?" + std::to_string(accountIndex) + " ";
+        }
+        if (days > 0)
+        {
+            firstDayIndex = bindIndex++;
+            lastDayIndex = bindIndex++;
+            sql += "AND day>=?" + std::to_string(firstDayIndex) +
+                   " AND day<=?" + std::to_string(lastDayIndex) + " ";
+        }
+        sql += R"sql(
+            GROUP BY 1, day, model, account_id
+            ORDER BY 1 ASC;
+        )sql";
+
+        Statement statement(m_database, sql.c_str());
+        if (accountIndex) statement.Bind(accountIndex, accountId);
+        if (firstDayIndex)
+        {
+            statement.Bind(firstDayIndex, LocalCalendarDay(days - 1));
+            statement.Bind(lastDayIndex, LocalCalendarDay());
+        }
+        std::vector<ChatGPTEstimatedHourlyUsage> result;
+        while (statement.Step())
+        {
+            ChatGPTEstimatedHourlyUsage row;
+            row.hourStart = statement.Int64(0);
+            row.day = statement.Text(1);
+            row.model = statement.Text(2);
+            row.accountId = statement.Text(3);
+            row.estimatedInputTokens = statement.Int64(4);
+            row.estimatedOutputTokens = statement.Int64(5);
+            row.messages = statement.Int64(6);
+            row.prompts = statement.Int64(7);
+            result.push_back(std::move(row));
+        }
+        return result;
+    }
+
+    std::vector<DeviceSummary> Database::GetDeviceSummaries(int limit)
+    {
+        std::scoped_lock lock(m_mutex);
+        Statement statement(m_database, R"sql(
+            SELECT d.id, d.display_name, d.last_seen,
+                   EXISTS(SELECT 1 FROM app_state a
+                          WHERE a.value=d.id AND a.key LIKE 'wsl_device_id:%'),
+                   COALESCE(SUM(u.input_tokens),0),
+                   COALESCE(SUM(u.cached_input_tokens),0),
+                   COALESCE(SUM(u.cache_write_input_tokens),0),
+                   COALESCE(SUM(u.output_tokens),0),
+                   COALESCE(SUM(u.reasoning_output_tokens),0),
+                   COALESCE(SUM(u.reported_total_tokens),0),
+                   COUNT(DISTINCT u.account_id || char(31) || u.session_id)
+            FROM devices d
+            LEFT JOIN daily_usage u ON u.device_id=d.id
+            GROUP BY d.id, d.display_name, d.last_seen
+            ORDER BY 4 ASC, d.last_seen DESC
+            LIMIT ?1;
+        )sql");
+        statement.Bind(1, std::clamp(limit, 1, 100));
+        std::vector<DeviceSummary> result;
+        while (statement.Step())
+        {
+            DeviceSummary row;
+            row.id = statement.Text(0);
+            row.displayName = statement.Text(1);
+            row.lastSeen = statement.Int64(2);
+            row.kind = statement.Int(3) != 0 ? DeviceKind::Wsl : DeviceKind::Windows;
+            row.counts = ReadCounts(statement, 4);
+            row.sessions = statement.Int64(10);
+            result.push_back(std::move(row));
+        }
+        return result;
+    }
+
     void Database::PruneDetails(int usageDays, int toolDays, int hourlyDays)
     {
         std::scoped_lock lock(m_mutex);
@@ -2378,7 +2524,7 @@ namespace tokenometer
             {
                 return false;
             }
-            SessionRecord session{ L"session-1", L"fixture.jsonl", L"codex", L"Fixture", L"D:\\work", L"gpt-test", L"test-device", 100, 100, 0 };
+            SessionRecord session{ L"session-1", L"fixture.jsonl", L"codex", L"Fixture", L"D:\\work", L"gpt-test", deviceId, 100, 100, 0 };
             session.accountId = L"account-a";
             database.UpsertSession(session);
             if (!database.HasSessionSource(session.id, L"codex") ||
@@ -2468,20 +2614,24 @@ namespace tokenometer
             second.sourcePath = L"fixture-2.jsonl";
             second.title = L"Second account";
             second.accountId = L"account-b";
+            second.deviceId = wslDeviceId;
             PromptEvent secondPrompt = prompt;
             secondPrompt.sourcePath = second.sourcePath;
             secondPrompt.sessionId = second.id;
             secondPrompt.accountId = second.accountId;
+            secondPrompt.deviceId = second.deviceId;
             UsageEvent secondUsage = usage;
             secondUsage.sourcePath = second.sourcePath;
             secondUsage.sessionId = second.id;
             secondUsage.accountId = second.accountId;
+            secondUsage.deviceId = second.deviceId;
             secondUsage.counts = { 200, 50, 0, 50, 0, 250 };
             ToolEvent secondTool = tool;
             secondTool.sourcePath = second.sourcePath;
             secondTool.sessionId = second.id;
             secondTool.name = L"other_tool";
             secondTool.accountId = second.accountId;
+            secondTool.deviceId = second.deviceId;
             database.Transaction([&]
             {
                 database.UpsertSession(second);
@@ -2517,10 +2667,124 @@ namespace tokenometer
                 !database.GetBreakdown(L"project").empty() &&
                 !database.GetBreakdown(L"source").empty() &&
                 recentSessions.size() == 2 &&
+                recentSessions.front().sourceKind == L"codex" &&
                 firstTools.size() == 1 && firstTools.front().name == L"shell_command" &&
                 secondTools.size() == 1 && secondTools.front().name == L"other_tool" &&
                 firstTurns.size() == 1 && firstTurns.front().tools == L"shell_command";
             if (!groupingValid) return false;
+
+            auto const duplicateWslId = database.GetOrCreateDeviceId(
+                L"Renamed WSL device",
+                L"wsl_device_id:test-device:Debian");
+            auto const devicesBeforeChatGpt = database.GetDeviceSummaries(10);
+            auto const findDevice = [&](std::wstring_view id) -> DeviceSummary const*
+            {
+                auto const found = std::find_if(
+                    devicesBeforeChatGpt.begin(), devicesBeforeChatGpt.end(), [&](auto const& item)
+                    {
+                        return item.id == id;
+                    });
+                return found == devicesBeforeChatGpt.end() ? nullptr : &*found;
+            };
+            auto const localDevice = findDevice(deviceId);
+            auto const ubuntuDevice = findDevice(wslDeviceId);
+            auto const debianDevice = findDevice(duplicateWslId);
+            int64_t devicesBeforeChatGptTotal{};
+            for (auto const& device : devicesBeforeChatGpt)
+            {
+                devicesBeforeChatGptTotal += device.counts.DisplayTotal();
+            }
+            if (duplicateWslId.empty() || duplicateWslId == wslDeviceId ||
+                !localDevice || localDevice->kind != DeviceKind::Windows ||
+                localDevice->counts.DisplayTotal() != 1500 ||
+                !ubuntuDevice || ubuntuDevice->kind != DeviceKind::Wsl ||
+                ubuntuDevice->counts.DisplayTotal() != 250 ||
+                !debianDevice || debianDevice->kind != DeviceKind::Wsl ||
+                ubuntuDevice->displayName != debianDevice->displayName ||
+                devicesBeforeChatGptTotal != 1750)
+            {
+                return false;
+            }
+
+            auto importEstimate = [&](std::wstring_view account, std::wstring_view model,
+                                      int64_t input, int64_t output, int64_t timestamp)
+            {
+                ChatGPTExportBatch batch;
+                batch.sourcePath = std::wstring{ L"export-" } + std::wstring{ account } + L".json";
+                batch.sourceHash = std::wstring{ L"hash-" } + std::wstring{ account };
+                batch.sourceModifiedAt = timestamp;
+                batch.sourceSize = 100;
+                batch.accountId = account;
+
+                ChatGPTSessionEstimate estimate;
+                estimate.id = L"shared-chat-session";
+                estimate.accountId = account;
+                estimate.model = model;
+                estimate.startedAt = timestamp;
+                estimate.updatedAt = timestamp + 3600;
+                estimate.messages = 2;
+                estimate.prompts = 2;
+                estimate.estimatedInputTokens = input;
+                estimate.estimatedOutputTokens = output;
+                batch.sessions.push_back(estimate);
+
+                ChatGPTPromptEstimate first;
+                first.sessionId = estimate.id;
+                first.turnId = L"turn-1";
+                first.promptIndex = 0;
+                first.timestamp = timestamp;
+                first.day = L"1970-01-01";
+                first.model = model;
+                first.messages = 1;
+                first.estimatedInputTokens = input / 2;
+                first.estimatedOutputTokens = output / 2;
+                auto secondPrompt = first;
+                secondPrompt.turnId = L"turn-2";
+                secondPrompt.promptIndex = 1;
+                secondPrompt.timestamp += 3600;
+                secondPrompt.estimatedInputTokens = input - first.estimatedInputTokens;
+                secondPrompt.estimatedOutputTokens = output - first.estimatedOutputTokens;
+                batch.prompts = { first, secondPrompt };
+                database.ReplaceChatGPTExport(batch);
+            };
+            importEstimate(L"chat-a", L"gpt-a", 1000, 200, 3600);
+            importEstimate(L"chat-b", L"gpt-b", 600, 100, 7200);
+
+            auto const allChatGpt = database.GetChatGPTEstimatedTotals();
+            auto const chatA = database.GetChatGPTEstimatedTotals(L"chat-a");
+            auto const chatSessions = database.GetChatGPTEstimatedSessions({}, 10);
+            auto const chatSessionBreakdown = database.GetChatGPTEstimatedBreakdown(L"session");
+            auto const chatModels = database.GetChatGPTEstimatedBreakdown(L"model");
+            auto const chatAccounts = database.GetChatGPTEstimatedBreakdown(L"account");
+            auto const chatTools = database.GetChatGPTEstimatedBreakdown(L"tool");
+            auto const chatDaily = database.GetChatGPTEstimatedDailyUsage(0);
+            auto const chatHourly = database.GetChatGPTEstimatedHourlyUsage(0);
+            int64_t devicesAfterChatGpt{};
+            for (auto const& device : database.GetDeviceSummaries(10))
+            {
+                devicesAfterChatGpt += device.counts.DisplayTotal();
+            }
+            if (allChatGpt.estimatedTokens != 1900 || allChatGpt.estimatedSessions != 2 ||
+                allChatGpt.counts.input != 1600 || allChatGpt.counts.output != 300 ||
+                chatA.estimatedTokens != 1200 || chatA.estimatedSessions != 1 ||
+                chatSessions.size() != 2 ||
+                std::ranges::any_of(chatSessions, [](auto const& item)
+                {
+                    return item.sourceKind != L"chatgpt-export";
+                }) ||
+                chatSessionBreakdown.size() != 2 || chatModels.size() != 2 ||
+                chatAccounts.size() != 2 || chatTools.size() != 1 ||
+                chatTools.front().measurement != MeasurementKind::Estimated ||
+                chatTools.front().CacheAvailable() ||
+                chatDaily.size() != 2 || chatHourly.size() != 4 ||
+                database.GetChatGPTEstimatedBreakdown(L"device").size() != 0 ||
+                database.GetChatGPTEstimatedBreakdown(L"project").size() != 0 ||
+                database.GetTotals().counts.reportedTotal != 1750 ||
+                database.GetTotals().estimatedTokens != 1900 ||
+                devicesAfterChatGpt != devicesBeforeChatGptTotal)
+            {
+                return false;
+            }
 
             Database promoted(L":memory:");
             promoted.Initialize();
@@ -2558,6 +2822,12 @@ namespace tokenometer
                 !promoted.InsertUsageEvent(wslUsage) ||
                 !promoted.InsertUsageEvent(archivedWslUsage) ||
                 !promoted.InsertToolEvent(wslTool))
+            {
+                return false;
+            }
+            auto const wslSessionsBeforePromotion = promoted.GetRecentSessions();
+            if (wslSessionsBeforePromotion.size() != 1 ||
+                wslSessionsBeforePromotion.front().sourceKind != L"codex-wsl")
             {
                 return false;
             }
@@ -2651,6 +2921,7 @@ namespace tokenometer
                 promotedTotals.counts.reportedTotal != 1750 ||
                 promotedTotals.messages != 1 || promotedTotals.toolCalls != 1 ||
                 promotedSessions.size() != 1 ||
+                promotedSessions.front().sourceKind != localSession.sourceKind ||
                 promotedSessions.front().accountId != localSession.accountId ||
                 promotedSessions.front().deviceId != localSession.deviceId ||
                 promotedSessions.front().project != localSession.project ||

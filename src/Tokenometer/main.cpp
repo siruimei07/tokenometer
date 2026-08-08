@@ -453,6 +453,25 @@ private:
     void ConfigureDashboardCallbacks()
     {
         tokenometer::DetailsCallbacks callbacks;
+        callbacks.onScopeChanged = [this](tokenometer::UsageScope scope)
+        {
+            m_detailsScope = scope;
+            if (scope == tokenometer::UsageScope::ChatGptEstimated &&
+                (m_detailsDimension == tokenometer::DetailsDimension::Device ||
+                 m_detailsDimension == tokenometer::DetailsDimension::Project))
+            {
+                m_detailsDimension = tokenometer::DetailsDimension::Tool;
+            }
+            m_selectedBreakdownKey.clear();
+            m_selectedSessionId.clear();
+            m_selectedSessionAccountId.clear();
+            m_selectedSessionSourceKind.clear();
+            m_selectedToolLocator.clear();
+            m_selectedToolDetails.clear();
+            m_toolLocators.clear();
+            if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
+            RefreshDetails();
+        };
         callbacks.onDimensionChanged = [this](tokenometer::DetailsDimension dimension)
         {
             m_detailsDimension = dimension;
@@ -464,15 +483,21 @@ private:
             m_selectedBreakdownKey = m_selectedBreakdownKey == key ? std::wstring{} : key;
             RefreshDetails();
         };
-        callbacks.onSessionSelected = [this](std::wstring const& sessionId)
+        callbacks.onSessionSelected = [this](tokenometer::SessionRef const& session)
         {
-            if (m_selectedSessionId == sessionId)
+            if (m_selectedSessionId == session.sessionId &&
+                m_selectedSessionAccountId == session.accountId &&
+                m_selectedSessionSourceKind == session.sourceKind)
             {
                 m_selectedSessionId.clear();
+                m_selectedSessionAccountId.clear();
+                m_selectedSessionSourceKind.clear();
             }
             else
             {
-                m_selectedSessionId = sessionId;
+                m_selectedSessionId = session.sessionId;
+                m_selectedSessionAccountId = session.accountId;
+                m_selectedSessionSourceKind = session.sourceKind;
             }
             m_selectedToolLocator.clear();
             m_selectedToolDetails.clear();
@@ -496,6 +521,11 @@ private:
         m_dashboard->SetDetailsCallbacks(std::move(callbacks));
 
         tokenometer::TrendCallbacks trendCallbacks;
+        trendCallbacks.onScopeChanged = [this](tokenometer::UsageScope scope)
+        {
+            m_trendScope = scope;
+            RefreshTrends(true);
+        };
         trendCallbacks.onGroupChanged = [this](tokenometer::TrendGroup group)
         {
             m_trendGroup = group;
@@ -1318,12 +1348,17 @@ private:
         }
 
         tokenometer::DetailsViewData data;
+        data.scope = m_detailsScope;
         data.dimension = m_detailsDimension;
         data.selectedKey = m_selectedBreakdownKey;
         data.selectedSessionId = m_selectedSessionId;
+        data.selectedSessionAccountId = m_selectedSessionAccountId;
+        data.selectedSessionSourceKind = m_selectedSessionSourceKind;
         data.selectedToolCallLocator = m_selectedToolLocator;
         data.selectedToolDetails = m_selectedToolDetails;
-        data.loading = m_collecting.load(std::memory_order_relaxed);
+        data.loading = m_detailsScope == tokenometer::UsageScope::CodexExact
+            ? m_collecting.load(std::memory_order_relaxed)
+            : m_chatGptImporting.load(std::memory_order_relaxed);
         m_toolLocators.clear();
 
         if (!m_database)
@@ -1335,58 +1370,167 @@ private:
 
         try
         {
-            data.rows = m_database->GetBreakdown(DetailsDimensionKey(m_detailsDimension), 0, 12);
-            data.recentSessions = m_database->GetRecentSessions(3);
-            if (!m_selectedSessionId.empty())
+            if (m_detailsScope == tokenometer::UsageScope::ChatGptEstimated)
             {
-                data.selectedTurns = m_database->GetSessionTurns(m_selectedSessionId, 8);
-                size_t toolIndex{};
-                for (auto const& turn : data.selectedTurns)
+                if (m_detailsDimension == tokenometer::DetailsDimension::Device ||
+                    m_detailsDimension == tokenometer::DetailsDimension::Project)
                 {
-                    for (auto const& tool : m_database->GetToolCalls(m_selectedSessionId, turn.promptIndex))
+                    data.unavailableReason =
+                        L"ChatGPT 官方导出不包含设备或项目归属；这些维度仅适用于 Codex 精确记录。";
+                }
+                else
+                {
+                    data.rows = m_database->GetChatGPTEstimatedBreakdown(
+                        DetailsDimensionKey(m_detailsDimension), 0, 12);
+                }
+
+                for (auto const& session : m_database->GetChatGPTEstimatedSessions({}, 3))
+                {
+                    tokenometer::SessionSummary summary;
+                    summary.id = session.id;
+                    summary.title = session.accountId.empty() ? session.id : session.accountId;
+                    summary.model = session.model;
+                    summary.startedAt = session.startedAt;
+                    summary.updatedAt = session.updatedAt;
+                    summary.messages = session.messages;
+                    summary.counts.input = session.estimatedInputTokens;
+                    summary.counts.output = session.estimatedOutputTokens;
+                    summary.counts.reportedTotal = session.EstimatedTokens();
+                    summary.accountId = session.accountId;
+                    summary.sourceKind = session.sourceKind;
+                    summary.measurement = tokenometer::MeasurementKind::Estimated;
+                    data.recentSessions.push_back(std::move(summary));
+                }
+
+                if (!m_selectedSessionId.empty() && !m_selectedSessionAccountId.empty())
+                {
+                    for (auto const& prompt : m_database->GetChatGPTEstimatedPrompts(
+                             m_selectedSessionAccountId, m_selectedSessionId, 8))
                     {
-                        if (toolIndex >= 20)
-                        {
-                            break;
-                        }
-                        std::wstring locator = L"tool:" + m_selectedSessionId + L":" +
-                            std::to_wstring(tool.inputOffset);
-                        tokenometer::ToolCallViewData view;
-                        view.locator = locator;
-                        view.name = tool.name;
-                        if (tool.inputLength > 0 && tool.outputLength > 0)
-                        {
-                            view.summary = L"输入 / 输出可按需读取";
-                        }
-                        else if (tool.inputLength > 0)
-                        {
-                            view.summary = L"输入可用 · 暂无输出";
-                        }
-                        else
-                        {
-                            view.summary = L"源详情不可用";
-                        }
-                        data.toolCalls.push_back(std::move(view));
-                        m_toolLocators.emplace_back(std::move(locator), tool);
-                        ++toolIndex;
-                    }
-                    if (toolIndex >= 20)
-                    {
-                        break;
+                        tokenometer::TurnSummary turn;
+                        turn.sessionId = prompt.sessionId;
+                        turn.turnId = prompt.turnId;
+                        turn.promptIndex = prompt.promptIndex;
+                        turn.timestamp = prompt.timestamp;
+                        turn.model = prompt.model;
+                        turn.counts.input = prompt.estimatedInputTokens;
+                        turn.counts.output = prompt.estimatedOutputTokens;
+                        turn.counts.reportedTotal = prompt.EstimatedTokens();
+                        turn.measurement = tokenometer::MeasurementKind::Estimated;
+                        data.selectedTurns.push_back(std::move(turn));
                     }
                 }
-                if (!m_selectedToolLocator.empty() && std::ranges::none_of(
-                        m_toolLocators,
-                        [this](auto const& item)
-                        {
-                            return item.first == m_selectedToolLocator;
-                        }))
+            }
+            else
+            {
+                data.rows = m_database->GetBreakdown(DetailsDimensionKey(m_detailsDimension), 0, 12);
+                if (m_detailsDimension == tokenometer::DetailsDimension::Device)
                 {
-                    if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
-                    m_selectedToolLocator.clear();
-                    m_selectedToolDetails.clear();
-                    data.selectedToolCallLocator.clear();
-                    data.selectedToolDetails.clear();
+                    auto const devices = m_database->GetDeviceSummaries(100);
+                    for (auto& row : data.rows)
+                    {
+                        auto const device = std::find_if(devices.begin(), devices.end(), [&](auto const& item)
+                        {
+                            return item.id == row.key;
+                        });
+                        if (device != devices.end())
+                        {
+                            auto const kind = device->kind == tokenometer::DeviceKind::Wsl
+                                ? L"WSL"
+                                : L"Windows";
+                            auto const shortId = device->id.size() > 8
+                                ? device->id.substr(device->id.size() - 8)
+                                : device->id;
+                            row.displayName = (device->displayName.empty() ? device->id : device->displayName) +
+                                L" · " + kind + L" · " + shortId;
+                        }
+                    }
+                }
+                data.recentSessions = m_database->GetRecentSessions(3);
+                if (!m_selectedSessionId.empty())
+                {
+                    data.selectedTurns = m_database->GetSessionTurns(m_selectedSessionId, 8);
+                    size_t toolIndex{};
+                    for (auto const& turn : data.selectedTurns)
+                    {
+                        for (auto const& tool : m_database->GetToolCalls(m_selectedSessionId, turn.promptIndex))
+                        {
+                            if (toolIndex >= 20) break;
+                            std::wstring locator = L"tool:" + m_selectedSessionId + L":" +
+                                std::to_wstring(tool.inputOffset);
+                            tokenometer::ToolCallViewData view;
+                            view.locator = locator;
+                            view.name = tool.name;
+                            if (tool.inputLength > 0 && tool.outputLength > 0)
+                            {
+                                view.summary = L"输入 / 输出可按需读取";
+                            }
+                            else if (tool.inputLength > 0)
+                            {
+                                view.summary = L"输入可用 · 暂无输出";
+                            }
+                            else
+                            {
+                                view.summary = L"源详情不可用";
+                            }
+                            data.toolCalls.push_back(std::move(view));
+                            m_toolLocators.emplace_back(std::move(locator), tool);
+                            ++toolIndex;
+                        }
+                        if (toolIndex >= 20) break;
+                    }
+                    if (!m_selectedToolLocator.empty() && std::ranges::none_of(
+                            m_toolLocators,
+                            [this](auto const& item)
+                            {
+                                return item.first == m_selectedToolLocator;
+                            }))
+                    {
+                        if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
+                        m_selectedToolLocator.clear();
+                        m_selectedToolDetails.clear();
+                        data.selectedToolCallLocator.clear();
+                        data.selectedToolDetails.clear();
+                    }
+                }
+            }
+
+            if (m_detailsScope == tokenometer::UsageScope::ChatGptEstimated &&
+                (!m_selectedToolLocator.empty() || !m_selectedToolDetails.empty()))
+            {
+                if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
+                m_selectedToolLocator.clear();
+                m_selectedToolDetails.clear();
+                data.selectedToolCallLocator.clear();
+                data.selectedToolDetails.clear();
+            }
+            if (!m_selectedSessionId.empty() && std::ranges::none_of(
+                    data.recentSessions,
+                    [this](auto const& session)
+                    {
+                        return session.id == m_selectedSessionId &&
+                            session.accountId == m_selectedSessionAccountId &&
+                            session.sourceKind == m_selectedSessionSourceKind;
+                    }))
+            {
+                if (m_detailsScope == tokenometer::UsageScope::ChatGptEstimated)
+                {
+                    auto const selected = m_database->GetChatGPTEstimatedSessions(
+                        m_selectedSessionAccountId, 100);
+                    auto const exists = std::ranges::any_of(selected, [this](auto const& session)
+                    {
+                        return session.id == m_selectedSessionId;
+                    });
+                    if (!exists)
+                    {
+                        m_selectedSessionId.clear();
+                        m_selectedSessionAccountId.clear();
+                        m_selectedSessionSourceKind.clear();
+                        data.selectedSessionId.clear();
+                        data.selectedSessionAccountId.clear();
+                        data.selectedSessionSourceKind.clear();
+                        data.selectedTurns.clear();
+                    }
                 }
             }
         }
@@ -1413,6 +1557,7 @@ private:
         m_lastTrendRefreshTick = nowTick;
 
         tokenometer::TrendViewData data;
+        data.scope = m_trendScope;
         data.group = m_trendGroup;
         data.chart = m_trendChart;
         data.range = m_trendRange;
@@ -1426,11 +1571,50 @@ private:
         try
         {
             int const rangeDays = TrendRangeDays(m_trendRange);
-            auto const daily = m_database->GetDailyUsage(365);
+            std::vector<tokenometer::DailyUsage> daily;
             std::vector<tokenometer::HourlyUsage> hourly;
-            if (m_trendChart == tokenometer::TrendChart::Kline)
+            if (m_trendScope == tokenometer::UsageScope::ChatGptEstimated)
             {
-                hourly = m_database->GetHourlyUsage(rangeDays);
+                for (auto const& estimate : m_database->GetChatGPTEstimatedDailyUsage(365))
+                {
+                    tokenometer::DailyUsage row;
+                    row.day = estimate.day;
+                    row.sourceKind = estimate.sourceKind;
+                    row.tool = estimate.tool;
+                    row.model = estimate.model.empty() ? L"unclassified" : estimate.model;
+                    row.counts.input = estimate.estimatedInputTokens;
+                    row.counts.output = estimate.estimatedOutputTokens;
+                    row.counts.reportedTotal = estimate.EstimatedTokens();
+                    row.messages = estimate.messages;
+                    row.accountId = estimate.accountId;
+                    daily.push_back(std::move(row));
+                }
+                if (m_trendChart == tokenometer::TrendChart::Kline)
+                {
+                    for (auto const& estimate : m_database->GetChatGPTEstimatedHourlyUsage(rangeDays))
+                    {
+                        tokenometer::HourlyUsage row;
+                        row.hourStart = estimate.hourStart;
+                        row.day = estimate.day;
+                        row.sourceKind = estimate.sourceKind;
+                        row.tool = estimate.tool;
+                        row.model = estimate.model.empty() ? L"unclassified" : estimate.model;
+                        row.counts.input = estimate.estimatedInputTokens;
+                        row.counts.output = estimate.estimatedOutputTokens;
+                        row.counts.reportedTotal = estimate.EstimatedTokens();
+                        row.messages = estimate.messages;
+                        row.accountId = estimate.accountId;
+                        hourly.push_back(std::move(row));
+                    }
+                }
+            }
+            else
+            {
+                daily = m_database->GetDailyUsage(365);
+                if (m_trendChart == tokenometer::TrendChart::Kline)
+                {
+                    hourly = m_database->GetHourlyUsage(rangeDays);
+                }
             }
             auto const dimension = m_trendGroup == tokenometer::TrendGroup::Tool
                 ? tokenometer::TrendDimension::Tool
@@ -1481,7 +1665,9 @@ private:
                     }
                 }
             }
-            data.loading = m_collecting.load(std::memory_order_relaxed) && data.series.empty();
+            data.loading = (m_trendScope == tokenometer::UsageScope::CodexExact
+                ? m_collecting.load(std::memory_order_relaxed)
+                : m_chatGptImporting.load(std::memory_order_relaxed)) && data.series.empty();
         }
         catch (...)
         {
@@ -1886,7 +2072,7 @@ private:
                 next.today.reportedTotal += row.counts.reportedTotal;
             }
             next.codexLimit = m_database->GetLatestRateLimit();
-            auto const chatGpt = m_database->GetChatGPTEstimatedTotals(L"ChatGPT");
+            auto const chatGpt = m_database->GetChatGPTEstimatedTotals();
             next.chatGptEstimatedTokens = chatGpt.estimatedTokens;
             next.chatGptEstimatedSessions = chatGpt.estimatedSessions;
             next.refreshedAt = UnixNow();
@@ -2149,7 +2335,47 @@ private:
             snapshot.total = m_database->GetTotals();
             snapshot.daily = m_database->GetDailyUsage(30);
             snapshot.recent = m_database->GetRecentSessions(3);
+            snapshot.chatGptTotals = m_database->GetChatGPTEstimatedTotals();
             snapshot.codexLimit = m_database->GetLatestRateLimit();
+
+            for (auto const& summary : m_database->GetDeviceSummaries(4))
+            {
+                tokenometer::DeviceViewData device;
+                device.summary = summary;
+                auto const isWsl = summary.kind == tokenometer::DeviceKind::Wsl;
+                auto const syncing = isWsl
+                    ? m_wslCollecting.load(std::memory_order_relaxed)
+                    : m_collecting.load(std::memory_order_relaxed);
+                auto const failed = isWsl
+                    ? m_wslCollectionFailed.load(std::memory_order_relaxed)
+                    : m_collectionFailed.load(std::memory_order_relaxed);
+                if (syncing)
+                {
+                    device.state = tokenometer::DeviceSyncState::Syncing;
+                    device.statusText = isWsl ? L"正在合并 WSL 数据" : L"正在扫描本机记录";
+                }
+                else if (failed)
+                {
+                    device.state = tokenometer::DeviceSyncState::Warning;
+                    device.statusText = isWsl
+                        ? L"本轮 WSL 扫描有错误 · 保留上次数据"
+                        : L"本轮扫描有错误 · 保留上次数据";
+                }
+                else if (summary.lastSeen > 0)
+                {
+                    device.state = tokenometer::DeviceSyncState::Synced;
+                    auto const age = std::max<int64_t>(UnixNow() - summary.lastSeen, 0);
+                    if (age < 60) device.statusText = L"刚刚同步";
+                    else if (age < 3600) device.statusText = std::to_wstring(age / 60) + L" 分钟前同步";
+                    else device.statusText = std::to_wstring(age / 3600) + L" 小时前同步";
+                }
+                else
+                {
+                    device.state = tokenometer::DeviceSyncState::Never;
+                    device.statusText = L"等待首次同步";
+                }
+                snapshot.devices.push_back(std::move(device));
+            }
 
             int64_t const now = std::chrono::duration_cast<std::chrono::seconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
@@ -2285,12 +2511,16 @@ private:
     BubbleUsageSnapshot m_bubbleSnapshot;
     tokenometer::ChatGptImportViewData m_chatGptImportData;
     tokenometer::SurfacePreferences m_surfacePreferences;
+    tokenometer::UsageScope m_detailsScope{ tokenometer::UsageScope::CodexExact };
     tokenometer::DetailsDimension m_detailsDimension{ tokenometer::DetailsDimension::Tool };
     std::wstring m_selectedBreakdownKey;
     std::wstring m_selectedSessionId;
+    std::wstring m_selectedSessionAccountId;
+    std::wstring m_selectedSessionSourceKind;
     std::wstring m_selectedToolLocator;
     std::wstring m_selectedToolDetails;
     std::vector<std::pair<std::wstring, tokenometer::ToolCallDetail>> m_toolLocators;
+    tokenometer::UsageScope m_trendScope{ tokenometer::UsageScope::CodexExact };
     tokenometer::TrendGroup m_trendGroup{ tokenometer::TrendGroup::Tool };
     tokenometer::TrendChart m_trendChart{ tokenometer::TrendChart::Bars };
     tokenometer::TrendRange m_trendRange{ tokenometer::TrendRange::Days30 };

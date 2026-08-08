@@ -22,12 +22,35 @@ namespace tokenometer
         Settings,
     };
 
+    enum class UsageScope
+    {
+        CodexExact,
+        ChatGptEstimated,
+    };
+
+    enum class DeviceSyncState
+    {
+        Never,
+        Syncing,
+        Synced,
+        Warning,
+    };
+
+    struct DeviceViewData
+    {
+        DeviceSummary summary;
+        DeviceSyncState state{ DeviceSyncState::Never };
+        std::wstring statusText;
+    };
+
     struct OverviewViewData
     {
         UsageTotals total;
         UsageTotals day;
         std::vector<DailyUsage> daily;
         std::vector<SessionSummary> recent;
+        UsageTotals chatGptTotals;
+        std::vector<DeviceViewData> devices;
         std::optional<RateLimitSnapshot> codexLimit;
         int64_t lastSync{};
         bool collecting{};
@@ -52,26 +75,38 @@ namespace tokenometer
         std::wstring summary;
     };
 
+    struct SessionRef
+    {
+        std::wstring sourceKind;
+        std::wstring accountId;
+        std::wstring sessionId;
+    };
+
     struct DetailsViewData
     {
+        UsageScope scope{ UsageScope::CodexExact };
         DetailsDimension dimension{ DetailsDimension::Tool };
         std::vector<BreakdownRow> rows;
         std::wstring selectedKey;
         std::vector<SessionSummary> recentSessions;
         std::wstring selectedSessionId;
+        std::wstring selectedSessionAccountId;
+        std::wstring selectedSessionSourceKind;
         std::vector<TurnSummary> selectedTurns;
         std::vector<ToolCallViewData> toolCalls;
         std::wstring selectedToolCallLocator;
         std::wstring selectedToolDetails;
         bool loading{};
+        std::wstring unavailableReason;
         std::wstring error;
     };
 
     struct DetailsCallbacks
     {
+        std::function<void(UsageScope)> onScopeChanged;
         std::function<void(DetailsDimension)> onDimensionChanged;
         std::function<void(std::wstring const&)> onBreakdownSelected;
-        std::function<void(std::wstring const&)> onSessionSelected;
+        std::function<void(SessionRef const&)> onSessionSelected;
         std::function<void(std::wstring const&)> onToolCallRequested;
     };
 
@@ -127,6 +162,7 @@ namespace tokenometer
 
     struct TrendViewData
     {
+        UsageScope scope{ UsageScope::CodexExact };
         TrendGroup group{ TrendGroup::Tool };
         TrendChart chart{ TrendChart::Bars };
         TrendRange range{ TrendRange::Days30 };
@@ -142,6 +178,7 @@ namespace tokenometer
 
     struct TrendCallbacks
     {
+        std::function<void(UsageScope)> onScopeChanged;
         std::function<void(TrendGroup)> onGroupChanged;
         std::function<void(TrendChart)> onChartChanged;
         std::function<void(TrendRange)> onRangeChanged;
@@ -227,7 +264,9 @@ namespace tokenometer
             DashboardPage page);
         void UpdateNavigationState();
         void UpdateDailyVisuals(std::vector<DailyUsage> const& daily);
+        void UpdateDetailsScopeButtons();
         void UpdateDetailsDimensionButtons();
+        void UpdateTrendScopeButtons();
         void UpdateTrendButtons();
         void UpdateChatGptImportLayout();
         void NormalizeSurfacePreferences();
@@ -273,6 +312,7 @@ namespace tokenometer
         winrt::Microsoft::UI::Xaml::Controls::Border m_overviewEmptyState{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::StackPanel m_overviewMetricsPanel{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::Border m_recentEmptyState{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::StackPanel m_devicePanel{ nullptr };
 
         winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition m_cacheProgressFill{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition m_cacheProgressRest{ nullptr };
@@ -299,6 +339,8 @@ namespace tokenometer
         winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition m_detailsCacheProgressFill{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::ColumnDefinition m_detailsCacheProgressRest{ nullptr };
         std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_detailsDimensionButtons;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_detailsScopeButtons;
+        UsageScope m_detailsScope{ UsageScope::CodexExact };
         DetailsDimension m_detailsDimension{ DetailsDimension::Tool };
         DetailsCallbacks m_detailsCallbacks;
         bool m_detailsExpanded{};
@@ -313,6 +355,8 @@ namespace tokenometer
         std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_trendGroupButtons;
         std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_trendChartButtons;
         std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_trendRangeButtons;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_trendScopeButtons;
+        UsageScope m_trendScope{ UsageScope::CodexExact };
         TrendGroup m_trendGroup{ TrendGroup::Tool };
         TrendChart m_trendChart{ TrendChart::Bars };
         TrendRange m_trendRange{ TrendRange::Days30 };

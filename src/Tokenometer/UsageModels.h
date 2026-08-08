@@ -150,6 +150,12 @@ namespace tokenometer
         int64_t estimatedSessions{};
     };
 
+    enum class MeasurementKind
+    {
+        Exact,
+        Estimated,
+    };
+
     struct ChatGPTPromptEstimate
     {
         std::wstring sessionId;
@@ -189,6 +195,25 @@ namespace tokenometer
 
     struct ChatGPTEstimatedDailyUsage
     {
+        std::wstring day;
+        std::wstring sourceKind{ L"chatgpt-export" };
+        std::wstring tool{ L"ChatGPT" };
+        std::wstring model;
+        std::wstring accountId;
+        int64_t estimatedInputTokens{};
+        int64_t estimatedOutputTokens{};
+        int64_t messages{};
+        int64_t prompts{};
+
+        [[nodiscard]] int64_t EstimatedTokens() const noexcept
+        {
+            return estimatedInputTokens + estimatedOutputTokens;
+        }
+    };
+
+    struct ChatGPTEstimatedHourlyUsage
+    {
+        int64_t hourStart{};
         std::wstring day;
         std::wstring sourceKind{ L"chatgpt-export" };
         std::wstring tool{ L"ChatGPT" };
@@ -259,10 +284,17 @@ namespace tokenometer
     struct BreakdownRow
     {
         std::wstring key;
+        std::wstring displayName;
         TokenCounts counts;
         int64_t sessions{};
         int64_t messages{};
         int64_t toolCalls{};
+        MeasurementKind measurement{ MeasurementKind::Exact };
+
+        [[nodiscard]] bool CacheAvailable() const noexcept
+        {
+            return measurement == MeasurementKind::Exact;
+        }
     };
 
     struct SessionSummary
@@ -278,6 +310,8 @@ namespace tokenometer
         int64_t toolCalls{};
         TokenCounts counts;
         std::wstring accountId;
+        std::wstring sourceKind{ L"codex" };
+        MeasurementKind measurement{ MeasurementKind::Exact };
     };
 
     struct TurnSummary
@@ -289,6 +323,23 @@ namespace tokenometer
         std::wstring model;
         std::wstring tools;
         TokenCounts counts;
+        MeasurementKind measurement{ MeasurementKind::Exact };
+    };
+
+    enum class DeviceKind
+    {
+        Windows,
+        Wsl,
+    };
+
+    struct DeviceSummary
+    {
+        std::wstring id;
+        std::wstring displayName;
+        DeviceKind kind{ DeviceKind::Windows };
+        int64_t lastSeen{};
+        TokenCounts counts;
+        int64_t sessions{};
     };
 
     struct ToolCallDetail
