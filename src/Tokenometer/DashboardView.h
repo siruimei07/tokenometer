@@ -1,9 +1,11 @@
 #pragma once
 
+#include "SurfacePreferences.h"
 #include "UsageModels.h"
 
 #include <functional>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -175,6 +177,18 @@ namespace tokenometer
         std::function<void(bool expanded)> onDetailsToggled;
     };
 
+    struct SurfacePreferencesViewData : SurfacePreferences
+    {
+        bool layoutEditorExpanded{};
+        bool toolManagerExpanded{};
+        std::wstring livePreview;
+    };
+
+    struct SurfacePreferencesCallbacks
+    {
+        std::function<void(SurfacePreferencesViewData const&)> onChanged;
+    };
+
     class DashboardView final
     {
     public:
@@ -194,6 +208,9 @@ namespace tokenometer
         void SetTrendCallbacks(TrendCallbacks callbacks);
         void UpdateChatGptImport(ChatGptImportViewData const& data);
         void SetChatGptImportCallbacks(ChatGptImportCallbacks callbacks);
+        void UpdateSurfacePreferences(SurfacePreferencesViewData const& data);
+        void SetSurfacePreferencesCallbacks(SurfacePreferencesCallbacks callbacks);
+        void ApplySurfaceTheme(SurfaceTheme theme);
         void ShowPage(DashboardPage page);
 
     private:
@@ -213,6 +230,12 @@ namespace tokenometer
         void UpdateDetailsDimensionButtons();
         void UpdateTrendButtons();
         void UpdateChatGptImportLayout();
+        void NormalizeSurfacePreferences();
+        void UpdateSurfacePreferencesLayout();
+        void UpdateScrollState();
+        void RebuildSurfaceLayoutEditor();
+        void RebuildSurfaceToolEditor();
+        void NotifySurfacePreferencesChanged();
 
         winrt::Microsoft::UI::Xaml::Controls::Grid m_root{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::Grid m_pageHost{ nullptr };
@@ -278,6 +301,7 @@ namespace tokenometer
         std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_detailsDimensionButtons;
         DetailsDimension m_detailsDimension{ DetailsDimension::Tool };
         DetailsCallbacks m_detailsCallbacks;
+        bool m_detailsExpanded{};
 
         winrt::Microsoft::UI::Xaml::Controls::Grid m_trendChartHost{ nullptr };
         winrt::Microsoft::UI::Xaml::Controls::TextBlock m_trendChartCaption{ nullptr };
@@ -311,6 +335,29 @@ namespace tokenometer
         std::wstring m_chatGptDetails;
         bool m_chatGptDetailsExpanded{};
         ChatGptImportCallbacks m_chatGptImportCallbacks;
+
+        winrt::Microsoft::UI::Xaml::Controls::Button m_launchToTrayToggle{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_closeToTrayToggle{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_blurToggle{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_transparentWindowToggle{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_providerColorsToggle{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_bubbleAlwaysOnTopToggle{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_hoverPreviewToggle{ nullptr };
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_themeButtons;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_opacityButtons;
+        std::vector<winrt::Microsoft::UI::Xaml::Controls::Button> m_layoutPresetButtons;
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_surfacePreviewText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::TextBlock m_surfaceToolSummaryText{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_surfaceLayoutExpandButton{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Border m_surfaceLayoutEditorPanel{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::StackPanel m_surfaceLayoutEditor{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_surfaceLayoutAddButton{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Button m_surfaceToolExpandButton{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::Border m_surfaceToolEditorPanel{ nullptr };
+        winrt::Microsoft::UI::Xaml::Controls::StackPanel m_surfaceToolEditor{ nullptr };
+        SurfacePreferencesViewData m_surfacePreferences;
+        SurfacePreferencesCallbacks m_surfacePreferencesCallbacks;
+        bool m_updatingSurfacePreferences{};
 
         DashboardPage m_currentPage{ DashboardPage::Overview };
     };

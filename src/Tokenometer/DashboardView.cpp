@@ -205,6 +205,221 @@ namespace
         return panel;
     }
 
+    controls::Border SettingsCard(
+        std::wstring_view title,
+        std::wstring_view caption,
+        winrt::Windows::UI::Color const& accent,
+        mux::UIElement const& body)
+    {
+        controls::StackPanel content;
+        content.Spacing(10);
+
+        controls::Grid heading;
+        AddColumn(heading, Pixels(12));
+        AddColumn(heading, Star());
+
+        shapes::Ellipse dot;
+        dot.Width(7);
+        dot.Height(7);
+        dot.Fill(Brush(accent));
+        dot.VerticalAlignment(mux::VerticalAlignment::Top);
+        dot.Margin({ 0, 6, 0, 0 });
+        heading.Children().Append(dot);
+
+        controls::StackPanel copy;
+        copy.Spacing(2);
+        copy.Children().Append(Text(title, 13.5, Color(247, 247, 245), 650));
+        auto captionText = Text(caption, 9.5, Color(143, 139, 140));
+        captionText.TextWrapping(mux::TextWrapping::Wrap);
+        captionText.TextTrimming(mux::TextTrimming::None);
+        copy.Children().Append(captionText);
+        controls::Grid::SetColumn(copy, 1);
+        heading.Children().Append(copy);
+
+        content.Children().Append(heading);
+        content.Children().Append(body);
+
+        controls::Border card;
+        card.Background(Brush(Color(38, 36, 37)));
+        card.BorderBrush(Brush(Color(255, 255, 255, 18)));
+        card.BorderThickness({ 1 });
+        card.CornerRadius(Radius(18));
+        card.Padding({ 16, 13, 16, 15 });
+        card.Child(content);
+        return card;
+    }
+
+    controls::Button CompactButton(std::wstring_view label, double minimumWidth = 0)
+    {
+        controls::Button button;
+        button.Height(30);
+        if (minimumWidth > 0)
+        {
+            button.MinWidth(minimumWidth);
+        }
+        button.Padding({ 10, 0, 10, 0 });
+        button.HorizontalContentAlignment(mux::HorizontalAlignment::Center);
+        button.Background(Brush(Color(29, 27, 28)));
+        button.Foreground(Brush(Color(214, 211, 210)));
+        button.BorderBrush(Brush(Color(255, 255, 255, 20)));
+        button.BorderThickness({ 1 });
+        button.CornerRadius(Radius(10));
+        button.FontFamily(media::FontFamily{ L"Segoe UI Variable Display" });
+        button.FontSize(10);
+        button.FontWeight({ 600 });
+        button.Content(winrt::box_value(winrt::hstring{ label }));
+        automation::AutomationProperties::SetName(button, winrt::hstring{ label });
+        return button;
+    }
+
+    controls::Grid ButtonSetting(
+        std::wstring_view label,
+        std::wstring_view automationName,
+        controls::Button& target)
+    {
+        controls::Grid row;
+        row.MinHeight(31);
+        AddColumn(row, Star());
+        AddColumn(row, mux::GridLengthHelper::Auto());
+
+        auto copy = Text(label, 10.5, Color(214, 211, 210), 550);
+        copy.VerticalAlignment(mux::VerticalAlignment::Center);
+        row.Children().Append(copy);
+
+        target = CompactButton(L"关", 42);
+        target.Height(28);
+        target.VerticalAlignment(mux::VerticalAlignment::Center);
+        controls::Grid::SetColumn(target, 1);
+        automation::AutomationProperties::SetName(target, winrt::hstring{ automationName });
+        row.Children().Append(target);
+        return row;
+    }
+
+    void SetBooleanButton(controls::Button const& button, bool enabled)
+    {
+        button.Content(winrt::box_value(winrt::hstring{ enabled ? L"开" : L"关" }));
+        button.Background(Brush(enabled ? Color(240, 63, 22) : Color(29, 27, 28)));
+        button.Foreground(Brush(enabled ? Color(247, 247, 245) : Color(154, 150, 151)));
+        button.BorderBrush(Brush(enabled ? Color(240, 63, 22) : Color(255, 255, 255, 20)));
+        automation::AutomationProperties::SetHelpText(button, enabled ? L"当前已开启" : L"当前已关闭");
+    }
+
+    std::wstring_view SurfaceToolLabel(tokenometer::SurfaceTool tool)
+    {
+        return tool == tokenometer::SurfaceTool::ChatGpt ? L"ChatGPT" : L"Codex";
+    }
+
+    std::wstring_view SurfaceLayoutItemLabel(tokenometer::SurfaceLayoutItemKind kind)
+    {
+        switch (kind)
+        {
+        case tokenometer::SurfaceLayoutItemKind::ToolIcon:
+            return L"工具图标";
+        case tokenometer::SurfaceLayoutItemKind::QuotaBar:
+            return L"配额条";
+        case tokenometer::SurfaceLayoutItemKind::Percentage:
+            return L"百分比";
+        case tokenometer::SurfaceLayoutItemKind::ResetTime:
+            return L"重置时间";
+        case tokenometer::SurfaceLayoutItemKind::Cost:
+            return L"费用";
+        case tokenometer::SurfaceLayoutItemKind::CustomText:
+            return L"自定义文本";
+        }
+        return L"工具图标";
+    }
+
+    std::wstring_view SurfaceQuotaLabel(tokenometer::SurfaceQuotaWindow window)
+    {
+        switch (window)
+        {
+        case tokenometer::SurfaceQuotaWindow::Nearest:
+            return L"最近到期";
+        case tokenometer::SurfaceQuotaWindow::FiveHour:
+            return L"5 小时";
+        case tokenometer::SurfaceQuotaWindow::Weekly:
+            return L"每周";
+        }
+        return L"最近到期";
+    }
+
+    std::wstring_view SurfaceFontLabel(tokenometer::SurfaceFontStyle font)
+    {
+        switch (font)
+        {
+        case tokenometer::SurfaceFontStyle::System:
+            return L"系统";
+        case tokenometer::SurfaceFontStyle::Mono:
+            return L"等宽";
+        case tokenometer::SurfaceFontStyle::Emphasis:
+            return L"强调";
+        }
+        return L"系统";
+    }
+
+    tokenometer::SurfaceLayoutItemKind NextLayoutItemKind(tokenometer::SurfaceLayoutItemKind kind)
+    {
+        switch (kind)
+        {
+        case tokenometer::SurfaceLayoutItemKind::ToolIcon:
+            return tokenometer::SurfaceLayoutItemKind::QuotaBar;
+        case tokenometer::SurfaceLayoutItemKind::QuotaBar:
+            return tokenometer::SurfaceLayoutItemKind::Percentage;
+        case tokenometer::SurfaceLayoutItemKind::Percentage:
+            return tokenometer::SurfaceLayoutItemKind::ResetTime;
+        case tokenometer::SurfaceLayoutItemKind::ResetTime:
+            return tokenometer::SurfaceLayoutItemKind::Cost;
+        case tokenometer::SurfaceLayoutItemKind::Cost:
+            return tokenometer::SurfaceLayoutItemKind::CustomText;
+        case tokenometer::SurfaceLayoutItemKind::CustomText:
+            return tokenometer::SurfaceLayoutItemKind::ToolIcon;
+        }
+        return tokenometer::SurfaceLayoutItemKind::ToolIcon;
+    }
+
+    tokenometer::SurfaceQuotaWindow NextQuotaWindow(tokenometer::SurfaceQuotaWindow window)
+    {
+        switch (window)
+        {
+        case tokenometer::SurfaceQuotaWindow::Nearest:
+            return tokenometer::SurfaceQuotaWindow::FiveHour;
+        case tokenometer::SurfaceQuotaWindow::FiveHour:
+            return tokenometer::SurfaceQuotaWindow::Weekly;
+        case tokenometer::SurfaceQuotaWindow::Weekly:
+            return tokenometer::SurfaceQuotaWindow::Nearest;
+        }
+        return tokenometer::SurfaceQuotaWindow::Nearest;
+    }
+
+    tokenometer::SurfaceFontStyle NextFontStyle(tokenometer::SurfaceFontStyle font)
+    {
+        switch (font)
+        {
+        case tokenometer::SurfaceFontStyle::System:
+            return tokenometer::SurfaceFontStyle::Mono;
+        case tokenometer::SurfaceFontStyle::Mono:
+            return tokenometer::SurfaceFontStyle::Emphasis;
+        case tokenometer::SurfaceFontStyle::Emphasis:
+            return tokenometer::SurfaceFontStyle::System;
+        }
+        return tokenometer::SurfaceFontStyle::System;
+    }
+
+    template<size_t Size>
+    std::wstring NextTextPreset(
+        std::wstring_view current,
+        std::array<std::wstring_view, Size> const& presets)
+    {
+        for (size_t index = 0; index < presets.size(); ++index)
+        {
+            if (current == presets[index])
+            {
+                return std::wstring{ presets[(index + 1) % presets.size()] };
+            }
+        }
+        return std::wstring{ presets.front() };
+    }
+
     controls::StackPanel ProviderBlock(
         std::wstring_view name,
         std::wstring_view detail,
@@ -472,6 +687,7 @@ DashboardView::DashboardView()
     UpdateOverview({});
     UpdateDetails({});
     UpdateTrends({});
+    UpdateSurfacePreferences({});
     UpdateChatGptImport({});
     ShowPage(DashboardPage::Overview);
 }
@@ -1018,6 +1234,8 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
         }
     }
     m_detailsPage.Height(expandedHeight);
+    m_detailsExpanded = !data.selectedSessionId.empty() || !data.selectedToolCallLocator.empty();
+    UpdateScrollState();
 }
 
 void DashboardView::UpdateDetailsDimensionButtons()
@@ -1489,7 +1707,635 @@ void DashboardView::UpdateChatGptImportLayout()
     m_chatGptDetailsPanel.Visibility(showDetails ? mux::Visibility::Visible : mux::Visibility::Collapsed);
     m_chatGptDetailsButton.Content(winrt::box_value(winrt::hstring{
         showDetails ? L"收起详情" : L"查看详情" }));
+    UpdateScrollState();
+}
 
+void DashboardView::SetSurfacePreferencesCallbacks(SurfacePreferencesCallbacks callbacks)
+{
+    m_surfacePreferencesCallbacks = std::move(callbacks);
+}
+
+void DashboardView::ApplySurfaceTheme(SurfaceTheme theme)
+{
+    m_root.RequestedTheme(
+        theme == SurfaceTheme::Light
+            ? mux::ElementTheme::Light
+            : theme == SurfaceTheme::Dark
+                ? mux::ElementTheme::Dark
+                : mux::ElementTheme::Default);
+}
+
+void DashboardView::UpdateSurfacePreferences(SurfacePreferencesViewData const& data)
+{
+    m_updatingSurfacePreferences = true;
+    m_surfacePreferences = data;
+    NormalizeSurfacePreferences();
+    RebuildSurfaceLayoutEditor();
+    RebuildSurfaceToolEditor();
+    UpdateSurfacePreferencesLayout();
+    m_updatingSurfacePreferences = false;
+}
+
+void DashboardView::NormalizeSurfacePreferences()
+{
+    switch (m_surfacePreferences.theme)
+    {
+    case SurfaceTheme::System:
+    case SurfaceTheme::Dark:
+    case SurfaceTheme::Light:
+        break;
+    default:
+        m_surfacePreferences.theme = SurfaceTheme::System;
+        break;
+    }
+
+    constexpr std::array<int, 4> opacityOptions{ 25, 50, 75, 90 };
+    if (std::find(opacityOptions.begin(), opacityOptions.end(),
+                  m_surfacePreferences.glassOpacityPercent) == opacityOptions.end())
+    {
+        m_surfacePreferences.glassOpacityPercent = 75;
+    }
+
+    switch (m_surfacePreferences.layoutPreset)
+    {
+    case SurfaceLayoutPreset::LiveUsage:
+    case SurfaceLayoutPreset::ProviderLimits:
+    case SurfaceLayoutPreset::CostFocus:
+    case SurfaceLayoutPreset::Custom:
+        break;
+    default:
+        m_surfacePreferences.layoutPreset = SurfaceLayoutPreset::LiveUsage;
+        break;
+    }
+
+    if (m_surfacePreferences.customLayout.empty())
+    {
+        SurfaceLayoutItem icon;
+        icon.kind = SurfaceLayoutItemKind::ToolIcon;
+        icon.tool = SurfaceTool::Codex;
+        m_surfacePreferences.customLayout.push_back(icon);
+
+        SurfaceLayoutItem quota;
+        quota.kind = SurfaceLayoutItemKind::Percentage;
+        quota.tool = SurfaceTool::Codex;
+        m_surfacePreferences.customLayout.push_back(quota);
+
+        SurfaceLayoutItem cost;
+        cost.kind = SurfaceLayoutItemKind::Cost;
+        cost.tool = SurfaceTool::ChatGpt;
+        m_surfacePreferences.customLayout.push_back(cost);
+    }
+    if (m_surfacePreferences.customLayout.size() > 6)
+    {
+        m_surfacePreferences.customLayout.resize(6);
+    }
+    for (auto& item : m_surfacePreferences.customLayout)
+    {
+        if (item.accountLabel.empty())
+        {
+            item.accountLabel = L"当前帐户";
+        }
+        if (item.accountLabel.size() > 40)
+        {
+            item.accountLabel.resize(40);
+        }
+        if (item.customText.size() > 48)
+        {
+            item.customText.resize(48);
+        }
+
+        switch (item.kind)
+        {
+        case SurfaceLayoutItemKind::ToolIcon:
+        case SurfaceLayoutItemKind::QuotaBar:
+        case SurfaceLayoutItemKind::Percentage:
+        case SurfaceLayoutItemKind::ResetTime:
+        case SurfaceLayoutItemKind::Cost:
+        case SurfaceLayoutItemKind::CustomText:
+            break;
+        default:
+            item.kind = SurfaceLayoutItemKind::ToolIcon;
+            break;
+        }
+        if (item.tool != SurfaceTool::Codex && item.tool != SurfaceTool::ChatGpt)
+        {
+            item.tool = SurfaceTool::Codex;
+        }
+        if (item.quotaWindow != SurfaceQuotaWindow::Nearest
+            && item.quotaWindow != SurfaceQuotaWindow::FiveHour
+            && item.quotaWindow != SurfaceQuotaWindow::Weekly)
+        {
+            item.quotaWindow = SurfaceQuotaWindow::Nearest;
+        }
+        if (item.font != SurfaceFontStyle::System
+            && item.font != SurfaceFontStyle::Mono
+            && item.font != SurfaceFontStyle::Emphasis)
+        {
+            item.font = SurfaceFontStyle::System;
+        }
+    }
+
+    std::vector<SurfaceToolPreference> tools;
+    tools.reserve(2);
+    bool hasCodex = false;
+    bool hasChatGpt = false;
+    for (auto const& candidate : m_surfacePreferences.tools)
+    {
+        auto& seen = candidate.tool == SurfaceTool::ChatGpt ? hasChatGpt : hasCodex;
+        if ((candidate.tool == SurfaceTool::Codex || candidate.tool == SurfaceTool::ChatGpt) && !seen)
+        {
+            tools.push_back(candidate);
+            seen = true;
+        }
+    }
+    if (!hasCodex)
+    {
+        tools.push_back({ SurfaceTool::Codex, true, true });
+    }
+    if (!hasChatGpt)
+    {
+        tools.push_back({ SurfaceTool::ChatGpt, true, false });
+    }
+    m_surfacePreferences.tools = std::move(tools);
+}
+
+void DashboardView::UpdateSurfacePreferencesLayout()
+{
+    auto const wasUpdating = m_updatingSurfacePreferences;
+    m_updatingSurfacePreferences = true;
+
+    SetBooleanButton(m_launchToTrayToggle, m_surfacePreferences.launchToTray);
+    SetBooleanButton(m_closeToTrayToggle, m_surfacePreferences.closeToTray);
+    SetBooleanButton(m_blurToggle, m_surfacePreferences.blurEnabled);
+    SetBooleanButton(m_transparentWindowToggle, m_surfacePreferences.transparentWindow);
+    SetBooleanButton(m_providerColorsToggle, m_surfacePreferences.providerColors);
+    SetBooleanButton(m_bubbleAlwaysOnTopToggle, m_surfacePreferences.bubbleAlwaysOnTop);
+    SetBooleanButton(m_hoverPreviewToggle, m_surfacePreferences.hoverPreview);
+
+    auto styleButtons = [](std::vector<controls::Button> const& buttons, size_t selected)
+    {
+        for (size_t index = 0; index < buttons.size(); ++index)
+        {
+            auto const active = index == selected;
+            buttons[index].Background(Brush(active ? Color(240, 63, 22) : Color(29, 27, 28)));
+            buttons[index].Foreground(Brush(active ? Color(247, 247, 245) : Color(154, 150, 151)));
+            buttons[index].BorderBrush(Brush(active ? Color(240, 63, 22) : Color(255, 255, 255, 20)));
+        }
+    };
+    styleButtons(m_themeButtons, static_cast<size_t>(m_surfacePreferences.theme));
+
+    constexpr std::array<int, 4> opacityOptions{ 25, 50, 75, 90 };
+    auto const opacity = std::find(
+        opacityOptions.begin(), opacityOptions.end(), m_surfacePreferences.glassOpacityPercent);
+    styleButtons(m_opacityButtons, static_cast<size_t>(std::distance(opacityOptions.begin(), opacity)));
+    styleButtons(m_layoutPresetButtons, static_cast<size_t>(m_surfacePreferences.layoutPreset));
+
+    m_surfaceLayoutEditorPanel.Visibility(
+        m_surfacePreferences.layoutEditorExpanded ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    m_surfaceToolEditorPanel.Visibility(
+        m_surfacePreferences.toolManagerExpanded ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    m_surfaceLayoutExpandButton.Content(winrt::box_value(winrt::hstring{
+        m_surfacePreferences.layoutEditorExpanded ? L"收起自定义布局" : L"自定义…" }));
+    m_surfaceToolExpandButton.Content(winrt::box_value(winrt::hstring{
+        m_surfacePreferences.toolManagerExpanded ? L"完成管理" : L"管理工具" }));
+    m_surfaceLayoutAddButton.IsEnabled(m_surfacePreferences.customLayout.size() < 6);
+
+    std::wstring preview = m_surfacePreferences.livePreview;
+    if (preview.empty()) switch (m_surfacePreferences.layoutPreset)
+    {
+    case SurfaceLayoutPreset::LiveUsage:
+        preview = L"Codex  12.4K tok  ·  ChatGPT  3.1K tok";
+        break;
+    case SurfaceLayoutPreset::ProviderLimits:
+        preview = L"Codex  68%  ·  4d 8h 后重置";
+        break;
+    case SurfaceLayoutPreset::CostFocus:
+        preview = L"订阅费用不可用：Codex / ChatGPT 本地记录不提供可靠费用。";
+        break;
+    case SurfaceLayoutPreset::Custom:
+        for (auto const& item : m_surfacePreferences.customLayout)
+        {
+            if (!preview.empty())
+            {
+                preview += L"  ·  ";
+            }
+            if (item.kind == SurfaceLayoutItemKind::CustomText && !item.customText.empty())
+            {
+                preview += item.customText;
+            }
+            else
+            {
+                preview += SurfaceToolLabel(item.tool);
+                preview += L" ";
+                preview += SurfaceLayoutItemLabel(item.kind);
+            }
+        }
+        break;
+    }
+    m_surfacePreviewText.Text(winrt::hstring{ preview });
+
+    std::wstring toolSummary;
+    for (auto const& tool : m_surfacePreferences.tools)
+    {
+        if (!toolSummary.empty())
+        {
+            toolSummary += L"  ·  ";
+        }
+        toolSummary += SurfaceToolLabel(tool.tool);
+        if (!tool.visible)
+        {
+            toolSummary += L"（隐藏）";
+        }
+        else if (tool.pinned)
+        {
+            toolSummary += L"（置顶）";
+        }
+    }
+    m_surfaceToolSummaryText.Text(winrt::hstring{ toolSummary });
+    UpdateScrollState();
+    m_updatingSurfacePreferences = wasUpdating;
+}
+
+void DashboardView::UpdateScrollState()
+{
+    if (!m_scroller) return;
+    bool const expanded =
+        (m_currentPage == DashboardPage::Details && m_detailsExpanded) ||
+        (m_currentPage == DashboardPage::Settings &&
+         (m_surfacePreferences.layoutEditorExpanded ||
+          m_surfacePreferences.toolManagerExpanded ||
+          m_chatGptDetailsExpanded));
+    if (!expanded)
+    {
+        m_scroller.ScrollToVerticalOffset(0.0);
+    }
+    m_scroller.VerticalScrollMode(
+        expanded ? controls::ScrollMode::Enabled : controls::ScrollMode::Disabled);
+    m_scroller.VerticalScrollBarVisibility(
+        expanded ? controls::ScrollBarVisibility::Auto : controls::ScrollBarVisibility::Hidden);
+}
+
+void DashboardView::NotifySurfacePreferencesChanged()
+{
+    if (!m_updatingSurfacePreferences && m_surfacePreferencesCallbacks.onChanged)
+    {
+        m_surfacePreferencesCallbacks.onChanged(m_surfacePreferences);
+    }
+}
+
+void DashboardView::RebuildSurfaceLayoutEditor()
+{
+    if (!m_surfaceLayoutEditor)
+    {
+        return;
+    }
+
+    m_surfaceLayoutEditor.Children().Clear();
+    for (size_t index = 0; index < m_surfacePreferences.customLayout.size(); ++index)
+    {
+        auto const& item = m_surfacePreferences.customLayout[index];
+        controls::StackPanel content;
+        content.Spacing(7);
+
+        controls::Grid heading;
+        AddColumn(heading, Star());
+        AddColumn(heading, mux::GridLengthHelper::Auto());
+        heading.Children().Append(Text(
+            L"布局项 " + std::to_wstring(index + 1), 10, Color(247, 247, 245), 650, true));
+        auto position = Text(
+            std::to_wstring(index + 1) + L" / "
+                + std::to_wstring(m_surfacePreferences.customLayout.size()),
+            9,
+            Color(143, 139, 140),
+            500,
+            true);
+        controls::Grid::SetColumn(position, 1);
+        heading.Children().Append(position);
+        content.Children().Append(heading);
+
+        controls::Grid selectors;
+        selectors.ColumnSpacing(6);
+        AddColumn(selectors, Pixels(96));
+        AddColumn(selectors, Pixels(80));
+        AddColumn(selectors, Pixels(90));
+        AddColumn(selectors, Pixels(80));
+        AddColumn(selectors, Star());
+
+        auto kind = CompactButton(SurfaceLayoutItemLabel(item.kind), 96);
+        kind.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+        automation::AutomationProperties::SetName(kind, L"布局项类型");
+        automation::AutomationProperties::SetHelpText(kind, L"点击循环切换布局项类型");
+        kind.Click([this, index](auto const& sender, auto const&)
+        {
+            if (m_updatingSurfacePreferences || index >= m_surfacePreferences.customLayout.size())
+            {
+                return;
+            }
+            auto& value = m_surfacePreferences.customLayout[index].kind;
+            value = NextLayoutItemKind(value);
+            sender.template as<controls::Button>().Content(
+                winrt::box_value(winrt::hstring{ SurfaceLayoutItemLabel(value) }));
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        selectors.Children().Append(kind);
+
+        auto tool = CompactButton(SurfaceToolLabel(item.tool), 80);
+        tool.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+        automation::AutomationProperties::SetName(tool, L"布局项工具");
+        automation::AutomationProperties::SetHelpText(tool, L"点击切换 Codex 或 ChatGPT");
+        tool.Click([this, index](auto const& sender, auto const&)
+        {
+            if (m_updatingSurfacePreferences || index >= m_surfacePreferences.customLayout.size())
+            {
+                return;
+            }
+            auto& value = m_surfacePreferences.customLayout[index].tool;
+            value = value == SurfaceTool::Codex ? SurfaceTool::ChatGpt : SurfaceTool::Codex;
+            sender.template as<controls::Button>().Content(
+                winrt::box_value(winrt::hstring{ SurfaceToolLabel(value) }));
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(tool, 1);
+        selectors.Children().Append(tool);
+
+        auto quota = CompactButton(SurfaceQuotaLabel(item.quotaWindow), 90);
+        quota.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+        automation::AutomationProperties::SetName(quota, L"布局项配额窗口");
+        automation::AutomationProperties::SetHelpText(quota, L"点击循环切换配额窗口");
+        quota.Click([this, index](auto const& sender, auto const&)
+        {
+            if (m_updatingSurfacePreferences || index >= m_surfacePreferences.customLayout.size())
+            {
+                return;
+            }
+            auto& value = m_surfacePreferences.customLayout[index].quotaWindow;
+            value = NextQuotaWindow(value);
+            sender.template as<controls::Button>().Content(
+                winrt::box_value(winrt::hstring{ SurfaceQuotaLabel(value) }));
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(quota, 2);
+        selectors.Children().Append(quota);
+
+        auto font = CompactButton(SurfaceFontLabel(item.font), 80);
+        font.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+        automation::AutomationProperties::SetName(font, L"布局项字体");
+        automation::AutomationProperties::SetHelpText(font, L"点击循环切换字体样式");
+        font.Click([this, index](auto const& sender, auto const&)
+        {
+            if (m_updatingSurfacePreferences || index >= m_surfacePreferences.customLayout.size())
+            {
+                return;
+            }
+            auto& value = m_surfacePreferences.customLayout[index].font;
+            value = NextFontStyle(value);
+            sender.template as<controls::Button>().Content(
+                winrt::box_value(winrt::hstring{ SurfaceFontLabel(value) }));
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(font, 3);
+        selectors.Children().Append(font);
+
+        auto account = CompactButton(item.accountLabel, 86);
+        account.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+        automation::AutomationProperties::SetName(account, L"布局项帐户");
+        automation::AutomationProperties::SetHelpText(
+            account,
+            L"仅设置表面显示标签，不会切换 Codex 或 ChatGPT 的实际登录帐户");
+        account.Click([this, index](auto const& sender, auto const&)
+        {
+            if (m_updatingSurfacePreferences || index >= m_surfacePreferences.customLayout.size())
+            {
+                return;
+            }
+            constexpr std::array<std::wstring_view, 3> presets{ L"当前帐户", L"个人", L"工作" };
+            auto& value = m_surfacePreferences.customLayout[index].accountLabel;
+            value = NextTextPreset(value, presets);
+            sender.template as<controls::Button>().Content(winrt::box_value(winrt::hstring{ value }));
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(account, 4);
+        selectors.Children().Append(account);
+        content.Children().Append(selectors);
+
+        controls::Grid actions;
+        actions.ColumnSpacing(6);
+        AddColumn(actions, Star());
+        AddColumn(actions, mux::GridLengthHelper::Auto());
+        AddColumn(actions, mux::GridLengthHelper::Auto());
+        AddColumn(actions, mux::GridLengthHelper::Auto());
+
+        auto customText = CompactButton(
+            item.customText.empty() ? L"选择安全文案" : std::wstring_view{ item.customText }, 128);
+        customText.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
+        automation::AutomationProperties::SetName(customText, L"布局项自定义文本");
+        automation::AutomationProperties::SetHelpText(
+            customText,
+            L"点击循环选择 Tokenometer、专注模式或实时监看");
+        customText.Click([this, index](auto const& sender, auto const&)
+        {
+            if (m_updatingSurfacePreferences || index >= m_surfacePreferences.customLayout.size())
+            {
+                return;
+            }
+            constexpr std::array<std::wstring_view, 3> presets{
+                L"Tokenometer", L"专注模式", L"实时监看"
+            };
+            auto& value = m_surfacePreferences.customLayout[index].customText;
+            value = NextTextPreset(value, presets);
+            sender.template as<controls::Button>().Content(winrt::box_value(winrt::hstring{ value }));
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        actions.Children().Append(customText);
+
+        auto up = CompactButton(L"↑", 30);
+        up.IsEnabled(index > 0);
+        automation::AutomationProperties::SetName(up, L"上移布局项");
+        up.Click([this, index](auto const&, auto const&)
+        {
+            if (index == 0 || index >= m_surfacePreferences.customLayout.size())
+            {
+                return;
+            }
+            std::swap(m_surfacePreferences.customLayout[index - 1], m_surfacePreferences.customLayout[index]);
+            RebuildSurfaceLayoutEditor();
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(up, 1);
+        actions.Children().Append(up);
+
+        auto down = CompactButton(L"↓", 30);
+        down.IsEnabled(index + 1 < m_surfacePreferences.customLayout.size());
+        automation::AutomationProperties::SetName(down, L"下移布局项");
+        down.Click([this, index](auto const&, auto const&)
+        {
+            if (index + 1 >= m_surfacePreferences.customLayout.size())
+            {
+                return;
+            }
+            std::swap(m_surfacePreferences.customLayout[index], m_surfacePreferences.customLayout[index + 1]);
+            RebuildSurfaceLayoutEditor();
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(down, 2);
+        actions.Children().Append(down);
+
+        auto remove = CompactButton(L"移除", 48);
+        remove.IsEnabled(m_surfacePreferences.customLayout.size() > 1);
+        remove.Foreground(Brush(Color(240, 126, 96)));
+        automation::AutomationProperties::SetName(remove, L"移除布局项");
+        remove.Click([this, index](auto const&, auto const&)
+        {
+            if (m_surfacePreferences.customLayout.size() <= 1
+                || index >= m_surfacePreferences.customLayout.size())
+            {
+                return;
+            }
+            m_surfacePreferences.customLayout.erase(m_surfacePreferences.customLayout.begin() + index);
+            RebuildSurfaceLayoutEditor();
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(remove, 3);
+        actions.Children().Append(remove);
+        content.Children().Append(actions);
+        if (item.kind == SurfaceLayoutItemKind::CustomText)
+        {
+            content.Children().Append(Text(
+                L"安全文案预设：Tokenometer / 专注模式 / 实时监看。",
+                8.5,
+                Color(143, 139, 140)));
+        }
+        m_surfaceLayoutEditor.Children().Append(SoftPanel(content));
+    }
+
+    controls::Grid footer;
+    AddColumn(footer, Star());
+    AddColumn(footer, mux::GridLengthHelper::Auto());
+    auto hint = Text(
+        std::to_wstring(m_surfacePreferences.customLayout.size()) + L" / 6 项",
+        9,
+        Color(143, 139, 140),
+        500,
+        true);
+    hint.VerticalAlignment(mux::VerticalAlignment::Center);
+    footer.Children().Append(hint);
+    controls::Grid::SetColumn(m_surfaceLayoutAddButton, 1);
+    footer.Children().Append(m_surfaceLayoutAddButton);
+    m_surfaceLayoutEditor.Children().Append(footer);
+}
+
+void DashboardView::RebuildSurfaceToolEditor()
+{
+    if (!m_surfaceToolEditor)
+    {
+        return;
+    }
+
+    m_surfaceToolEditor.Children().Clear();
+    for (size_t index = 0; index < m_surfacePreferences.tools.size(); ++index)
+    {
+        auto const& preference = m_surfacePreferences.tools[index];
+        controls::Grid row;
+        row.ColumnSpacing(8);
+        AddColumn(row, Star());
+        AddColumn(row, mux::GridLengthHelper::Auto());
+        AddColumn(row, mux::GridLengthHelper::Auto());
+        AddColumn(row, mux::GridLengthHelper::Auto());
+        AddColumn(row, mux::GridLengthHelper::Auto());
+
+        controls::StackPanel provider;
+        provider.Orientation(controls::Orientation::Horizontal);
+        provider.Spacing(8);
+        shapes::Ellipse dot;
+        dot.Width(8);
+        dot.Height(8);
+        dot.Fill(Brush(preference.tool == SurfaceTool::Codex
+            ? Color(98, 223, 125)
+            : Color(255, 253, 142)));
+        dot.VerticalAlignment(mux::VerticalAlignment::Center);
+        provider.Children().Append(dot);
+        auto name = Text(SurfaceToolLabel(preference.tool), 10.5, Color(247, 247, 245), 650);
+        name.VerticalAlignment(mux::VerticalAlignment::Center);
+        provider.Children().Append(name);
+        row.Children().Append(provider);
+
+        auto visible = CompactButton(preference.visible ? L"显示" : L"隐藏", 52);
+        visible.Background(Brush(preference.visible ? Color(240, 63, 22) : Color(29, 27, 28)));
+        visible.BorderBrush(Brush(preference.visible ? Color(240, 63, 22) : Color(255, 255, 255, 20)));
+        automation::AutomationProperties::SetName(visible, L"显示或隐藏工具");
+        visible.Click([this, index](auto const&, auto const&)
+        {
+            if (m_updatingSurfacePreferences || index >= m_surfacePreferences.tools.size())
+            {
+                return;
+            }
+            m_surfacePreferences.tools[index].visible = !m_surfacePreferences.tools[index].visible;
+            RebuildSurfaceToolEditor();
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(visible, 1);
+        row.Children().Append(visible);
+
+        auto pinned = CompactButton(preference.pinned ? L"置顶" : L"普通", 52);
+        pinned.Background(Brush(preference.pinned ? Color(240, 63, 22) : Color(29, 27, 28)));
+        pinned.BorderBrush(Brush(preference.pinned ? Color(240, 63, 22) : Color(255, 255, 255, 20)));
+        automation::AutomationProperties::SetName(pinned, L"置顶工具");
+        pinned.Click([this, index](auto const&, auto const&)
+        {
+            if (m_updatingSurfacePreferences || index >= m_surfacePreferences.tools.size())
+            {
+                return;
+            }
+            m_surfacePreferences.tools[index].pinned = !m_surfacePreferences.tools[index].pinned;
+            RebuildSurfaceToolEditor();
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(pinned, 2);
+        row.Children().Append(pinned);
+
+        auto up = CompactButton(L"↑", 30);
+        up.IsEnabled(index > 0);
+        automation::AutomationProperties::SetName(up, L"上移工具");
+        up.Click([this, index](auto const&, auto const&)
+        {
+            if (index == 0 || index >= m_surfacePreferences.tools.size())
+            {
+                return;
+            }
+            std::swap(m_surfacePreferences.tools[index - 1], m_surfacePreferences.tools[index]);
+            RebuildSurfaceToolEditor();
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(up, 3);
+        row.Children().Append(up);
+
+        auto down = CompactButton(L"↓", 30);
+        down.IsEnabled(index + 1 < m_surfacePreferences.tools.size());
+        automation::AutomationProperties::SetName(down, L"下移工具");
+        down.Click([this, index](auto const&, auto const&)
+        {
+            if (index + 1 >= m_surfacePreferences.tools.size())
+            {
+                return;
+            }
+            std::swap(m_surfacePreferences.tools[index], m_surfacePreferences.tools[index + 1]);
+            RebuildSurfaceToolEditor();
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        controls::Grid::SetColumn(down, 4);
+        row.Children().Append(down);
+        m_surfaceToolEditor.Children().Append(SoftPanel(row));
+    }
 }
 
 void DashboardView::ShowPage(DashboardPage page)
@@ -1499,6 +2345,7 @@ void DashboardView::ShowPage(DashboardPage page)
     m_detailsPage.Visibility(page == DashboardPage::Details ? mux::Visibility::Visible : mux::Visibility::Collapsed);
     m_trendsPage.Visibility(page == DashboardPage::Trends ? mux::Visibility::Visible : mux::Visibility::Collapsed);
     m_settingsPage.Visibility(page == DashboardPage::Settings ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+    UpdateScrollState();
     UpdateNavigationState();
 }
 
@@ -2058,86 +2905,325 @@ controls::Grid DashboardView::BuildSettingsPage()
 {
     controls::Grid page;
     page.MinHeight(548);
-    page.ColumnSpacing(16);
-    AddColumn(page, Star(1.15));
-    AddColumn(page, Star(0.85));
+    page.RowSpacing(12);
+    AddRow(page, mux::GridLengthHelper::Auto());
+    AddRow(page, mux::GridLengthHelper::Auto());
+    AddRow(page, mux::GridLengthHelper::Auto());
 
-    controls::StackPanel importBody;
-    importBody.Spacing(14);
+    controls::Grid surfaceRow;
+    surfaceRow.ColumnSpacing(12);
+    AddColumn(surfaceRow, Star());
+    AddColumn(surfaceRow, Star());
 
-    auto badgeText = Text(L"OFFICIAL EXPORT", 9.5, Color(18, 16, 17), 700, true);
-    badgeText.HorizontalAlignment(mux::HorizontalAlignment::Center);
-    badgeText.VerticalAlignment(mux::VerticalAlignment::Center);
-    controls::Border badge;
-    badge.Width(128);
-    badge.Height(26);
-    badge.HorizontalAlignment(mux::HorizontalAlignment::Left);
-    badge.Background(Brush(Color(98, 223, 125)));
-    badge.CornerRadius(Radius(13));
-    badge.Child(badgeText);
-    importBody.Children().Append(badge);
+    controls::StackPanel appearance;
+    appearance.Spacing(7);
 
-    auto hero = Text(L"导入 ChatGPT 使用记录", 25, Color(247, 247, 245), 650);
-    importBody.Children().Append(hero);
-    auto description = Text(
-        L"导入 conversations.json；token 为估算，不读取浏览器 / Cookie，不存正文。",
-        11.5,
-        Color(154, 150, 151));
-    description.TextWrapping(mux::TextWrapping::Wrap);
-    description.TextTrimming(mux::TextTrimming::None);
-    importBody.Children().Append(description);
-
-    controls::StackPanel boundaries;
-    boundaries.Spacing(8);
-    auto appendBoundary = [&boundaries](std::wstring_view marker, std::wstring_view copy,
-                                        winrt::Windows::UI::Color const& color)
+    controls::Grid themeRow;
+    AddColumn(themeRow, Pixels(54));
+    AddColumn(themeRow, Star());
+    auto themeLabel = Text(L"主题", 9.5, Color(143, 139, 140), 600);
+    themeLabel.VerticalAlignment(mux::VerticalAlignment::Center);
+    themeRow.Children().Append(themeLabel);
+    controls::StackPanel themeChoices;
+    themeChoices.Orientation(controls::Orientation::Horizontal);
+    themeChoices.Spacing(5);
+    constexpr std::array<std::wstring_view, 3> themeLabels{ L"跟随系统", L"深色", L"浅色*" };
+    for (size_t index = 0; index < themeLabels.size(); ++index)
     {
-        controls::Grid row;
-        AddColumn(row, Pixels(24));
-        AddColumn(row, Star());
-        auto mark = Text(marker, 10.5, color, 700, true);
-        mark.VerticalAlignment(mux::VerticalAlignment::Center);
-        row.Children().Append(mark);
-        auto body = Text(copy, 10.5, Color(247, 247, 245), 500);
-        body.TextWrapping(mux::TextWrapping::Wrap);
-        body.TextTrimming(mux::TextTrimming::None);
-        controls::Grid::SetColumn(body, 1);
-        row.Children().Append(body);
-        boundaries.Children().Append(row);
+        auto button = CompactButton(themeLabels[index], index == 0 ? 76 : 56);
+        auto const theme = static_cast<SurfaceTheme>(index);
+        button.Click([this, theme](auto const&, auto const&)
+        {
+            m_surfacePreferences.theme = theme;
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        themeChoices.Children().Append(button);
+        m_themeButtons.push_back(button);
+    }
+    controls::Grid::SetColumn(themeChoices, 1);
+    themeRow.Children().Append(themeChoices);
+    appearance.Children().Append(themeRow);
+
+    controls::Grid opacityRow;
+    AddColumn(opacityRow, Pixels(54));
+    AddColumn(opacityRow, Star());
+    auto opacityLabel = Text(L"玻璃", 9.5, Color(143, 139, 140), 600);
+    opacityLabel.VerticalAlignment(mux::VerticalAlignment::Center);
+    opacityRow.Children().Append(opacityLabel);
+    controls::StackPanel opacityChoices;
+    opacityChoices.Orientation(controls::Orientation::Horizontal);
+    opacityChoices.Spacing(5);
+    constexpr std::array<int, 4> opacityValues{ 25, 50, 75, 90 };
+    for (auto const opacity : opacityValues)
+    {
+        auto button = CompactButton(std::to_wstring(opacity) + L"%", 48);
+        button.Click([this, opacity](auto const&, auto const&)
+        {
+            m_surfacePreferences.glassOpacityPercent = opacity;
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        opacityChoices.Children().Append(button);
+        m_opacityButtons.push_back(button);
+    }
+    controls::Grid::SetColumn(opacityChoices, 1);
+    opacityRow.Children().Append(opacityChoices);
+    appearance.Children().Append(opacityRow);
+
+    controls::Grid effects;
+    effects.ColumnSpacing(10);
+    AddColumn(effects, Star());
+    AddColumn(effects, Star());
+    AddColumn(effects, Star());
+    effects.Children().Append(ButtonSetting(L"模糊", L"启用玻璃模糊", m_blurToggle));
+    auto transparent = ButtonSetting(L"透明窗口", L"启用透明窗口", m_transparentWindowToggle);
+    controls::Grid::SetColumn(transparent, 1);
+    effects.Children().Append(transparent);
+    auto colors = ButtonSetting(L"供应商颜色", L"启用供应商专属颜色", m_providerColorsToggle);
+    controls::Grid::SetColumn(colors, 2);
+    effects.Children().Append(colors);
+    appearance.Children().Append(effects);
+
+    m_blurToggle.Click([this](auto const&, auto const&)
+    {
+        if (m_updatingSurfacePreferences) return;
+        m_surfacePreferences.blurEnabled = !m_surfacePreferences.blurEnabled;
+        UpdateSurfacePreferencesLayout();
+        NotifySurfacePreferencesChanged();
+    });
+    m_transparentWindowToggle.Click([this](auto const&, auto const&)
+    {
+        if (m_updatingSurfacePreferences) return;
+        m_surfacePreferences.transparentWindow = !m_surfacePreferences.transparentWindow;
+        UpdateSurfacePreferencesLayout();
+        NotifySurfacePreferencesChanged();
+    });
+    m_providerColorsToggle.Click([this](auto const&, auto const&)
+    {
+        if (m_updatingSurfacePreferences) return;
+        m_surfacePreferences.providerColors = !m_surfacePreferences.providerColors;
+        UpdateSurfacePreferencesLayout();
+        NotifySurfacePreferencesChanged();
+    });
+
+    auto appearanceCard = SettingsCard(
+        L"外观与表面",
+        L"玻璃、透明、模糊与供应商色会实时应用于气泡。*浅色已应用于系统控件和气泡，主仪表盘完整换色将在 v0.2 完成。",
+        Color(240, 63, 22),
+        appearance);
+    surfaceRow.Children().Append(appearanceCard);
+
+    controls::Grid behavior;
+    behavior.RowSpacing(5);
+    behavior.ColumnSpacing(14);
+    AddRow(behavior, mux::GridLengthHelper::Auto());
+    AddRow(behavior, mux::GridLengthHelper::Auto());
+    AddColumn(behavior, Star());
+    AddColumn(behavior, Star());
+    behavior.Children().Append(ButtonSetting(
+        L"启动到托盘", L"启动应用时进入系统托盘", m_launchToTrayToggle));
+    auto closeToTray = ButtonSetting(
+        L"关闭到托盘", L"关闭窗口时保留在系统托盘", m_closeToTrayToggle);
+    controls::Grid::SetColumn(closeToTray, 1);
+    behavior.Children().Append(closeToTray);
+    auto alwaysOnTop = ButtonSetting(
+        L"气泡始终置顶", L"浮动气泡始终置顶", m_bubbleAlwaysOnTopToggle);
+    controls::Grid::SetRow(alwaysOnTop, 1);
+    behavior.Children().Append(alwaysOnTop);
+    auto hoverPreview = ButtonSetting(
+        L"悬停预览", L"悬停气泡时显示预览", m_hoverPreviewToggle);
+    controls::Grid::SetRow(hoverPreview, 1);
+    controls::Grid::SetColumn(hoverPreview, 1);
+    behavior.Children().Append(hoverPreview);
+
+    m_launchToTrayToggle.Click([this](auto const&, auto const&)
+    {
+        if (m_updatingSurfacePreferences) return;
+        m_surfacePreferences.launchToTray = !m_surfacePreferences.launchToTray;
+        UpdateSurfacePreferencesLayout();
+        NotifySurfacePreferencesChanged();
+    });
+    m_closeToTrayToggle.Click([this](auto const&, auto const&)
+    {
+        if (m_updatingSurfacePreferences) return;
+        m_surfacePreferences.closeToTray = !m_surfacePreferences.closeToTray;
+        UpdateSurfacePreferencesLayout();
+        NotifySurfacePreferencesChanged();
+    });
+    m_bubbleAlwaysOnTopToggle.Click([this](auto const&, auto const&)
+    {
+        if (m_updatingSurfacePreferences) return;
+        m_surfacePreferences.bubbleAlwaysOnTop = !m_surfacePreferences.bubbleAlwaysOnTop;
+        UpdateSurfacePreferencesLayout();
+        NotifySurfacePreferencesChanged();
+    });
+    m_hoverPreviewToggle.Click([this](auto const&, auto const&)
+    {
+        if (m_updatingSurfacePreferences) return;
+        m_surfacePreferences.hoverPreview = !m_surfacePreferences.hoverPreview;
+        UpdateSurfacePreferencesLayout();
+        NotifySurfacePreferencesChanged();
+    });
+
+    auto behaviorCard = SettingsCard(
+        L"系统与浮动气泡",
+        L"托盘生命周期与迷你窗口的交互方式。",
+        Color(98, 223, 125),
+        behavior);
+    controls::Grid::SetColumn(behaviorCard, 1);
+    surfaceRow.Children().Append(behaviorCard);
+    page.Children().Append(surfaceRow);
+
+    controls::Grid editorRow;
+    editorRow.ColumnSpacing(12);
+    AddColumn(editorRow, Star(1.15));
+    AddColumn(editorRow, Star(0.85));
+    controls::Grid::SetRow(editorRow, 1);
+
+    controls::StackPanel layoutBody;
+    layoutBody.Spacing(8);
+    controls::StackPanel presets;
+    presets.Orientation(controls::Orientation::Horizontal);
+    presets.Spacing(5);
+    constexpr std::array<std::wstring_view, 4> presetLabels{
+        L"实时", L"限额", L"费用", L"自定义"
     };
-    appendBoundary(L"01", L"仅支持官方导出的 conversations.json、conversations-1.json 等文件；不解压 ZIP。", Color(255, 253, 142));
-    appendBoundary(L"02", L"可一次多选编号分片，也可稍后重复选择；导入按稳定 ID 幂等去重。", Color(98, 223, 125));
-    appendBoundary(L"03", L"只保存统计与来源标识；提示、回答和 Cookie 均不会写入应用状态。", Color(240, 63, 22));
-    importBody.Children().Append(SoftPanel(boundaries));
+    for (size_t index = 0; index < presetLabels.size(); ++index)
+    {
+        auto button = CompactButton(presetLabels[index], 62);
+        auto const preset = static_cast<SurfaceLayoutPreset>(index);
+        button.Click([this, preset](auto const&, auto const&)
+        {
+            m_surfacePreferences.layoutPreset = preset;
+            m_surfacePreferences.layoutEditorExpanded = preset == SurfaceLayoutPreset::Custom;
+            if (m_surfacePreferences.layoutEditorExpanded)
+            {
+                RebuildSurfaceLayoutEditor();
+            }
+            UpdateSurfacePreferencesLayout();
+            NotifySurfacePreferencesChanged();
+        });
+        presets.Children().Append(button);
+        m_layoutPresetButtons.push_back(button);
+    }
+    layoutBody.Children().Append(presets);
 
-    controls::StackPanel accountField;
-    accountField.Spacing(6);
-    accountField.Children().Append(Text(L"当前账户标签", 9.5, Color(143, 139, 140), 600));
-    m_chatGptAccountLabel = Text(L"ChatGPT", 11, Color(247, 247, 245), 650, true);
-    accountField.Children().Append(m_chatGptAccountLabel);
-    auto accountHint = Text(
-        L"可在 Windows 文件选择器中修改，用于隔离多个账户的导入统计。",
-        9,
-        Color(143, 139, 140));
-    accountHint.TextWrapping(mux::TextWrapping::Wrap);
-    accountHint.TextTrimming(mux::TextTrimming::None);
-    accountField.Children().Append(accountHint);
-    importBody.Children().Append(SoftPanel(accountField));
+    m_surfacePreviewText = Text(L"", 10.5, Color(247, 247, 245), 600, true);
+    m_surfacePreviewText.TextWrapping(mux::TextWrapping::Wrap);
+    m_surfacePreviewText.TextTrimming(mux::TextTrimming::None);
+    auto preview = SoftPanel(m_surfacePreviewText);
+    preview.MinHeight(42);
+    layoutBody.Children().Append(preview);
 
-    m_chatGptChooseFilesButton = controls::Button{};
-    m_chatGptChooseFilesButton.Height(44);
-    m_chatGptChooseFilesButton.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
-    m_chatGptChooseFilesButton.HorizontalContentAlignment(mux::HorizontalAlignment::Center);
+    m_surfaceLayoutExpandButton = CompactButton(L"自定义…", 126);
+    m_surfaceLayoutExpandButton.HorizontalAlignment(mux::HorizontalAlignment::Left);
+    m_surfaceLayoutExpandButton.Click([this](auto const&, auto const&)
+    {
+        m_surfacePreferences.layoutEditorExpanded = !m_surfacePreferences.layoutEditorExpanded;
+        if (m_surfacePreferences.layoutEditorExpanded)
+        {
+            m_surfacePreferences.layoutPreset = SurfaceLayoutPreset::Custom;
+            RebuildSurfaceLayoutEditor();
+        }
+        UpdateSurfacePreferencesLayout();
+        NotifySurfacePreferencesChanged();
+    });
+    layoutBody.Children().Append(m_surfaceLayoutExpandButton);
+
+    m_surfaceLayoutEditor = controls::StackPanel{};
+    m_surfaceLayoutEditor.Spacing(8);
+    m_surfaceLayoutAddButton = CompactButton(L"+ 添加布局项", 110);
+    m_surfaceLayoutAddButton.Click([this](auto const&, auto const&)
+    {
+        if (m_surfacePreferences.customLayout.size() >= 6)
+        {
+            return;
+        }
+        SurfaceLayoutItem item;
+        item.kind = SurfaceLayoutItemKind::Percentage;
+        item.tool = SurfaceTool::Codex;
+        m_surfacePreferences.customLayout.push_back(std::move(item));
+        m_surfacePreferences.layoutPreset = SurfaceLayoutPreset::Custom;
+        m_surfacePreferences.layoutEditorExpanded = true;
+        RebuildSurfaceLayoutEditor();
+        UpdateSurfacePreferencesLayout();
+        NotifySurfacePreferencesChanged();
+    });
+    m_surfaceLayoutEditorPanel = SoftPanel(m_surfaceLayoutEditor);
+    m_surfaceLayoutEditorPanel.Visibility(mux::Visibility::Collapsed);
+    layoutBody.Children().Append(m_surfaceLayoutEditorPanel);
+
+    auto layoutCard = SettingsCard(
+        L"托盘与气泡布局",
+        L"选择预设，或展开并按顺序组合最多 6 个信息项。",
+        Color(255, 253, 142),
+        layoutBody);
+    editorRow.Children().Append(layoutCard);
+
+    controls::StackPanel toolsBody;
+    toolsBody.Spacing(8);
+    m_surfaceToolSummaryText = Text(L"", 10.5, Color(247, 247, 245), 600);
+    m_surfaceToolSummaryText.TextWrapping(mux::TextWrapping::Wrap);
+    m_surfaceToolSummaryText.TextTrimming(mux::TextTrimming::None);
+    auto toolSummary = SoftPanel(m_surfaceToolSummaryText);
+    toolSummary.MinHeight(42);
+    toolsBody.Children().Append(toolSummary);
+
+    m_surfaceToolExpandButton = CompactButton(L"管理工具", 96);
+    m_surfaceToolExpandButton.HorizontalAlignment(mux::HorizontalAlignment::Left);
+    m_surfaceToolExpandButton.Click([this](auto const&, auto const&)
+    {
+        m_surfacePreferences.toolManagerExpanded = !m_surfacePreferences.toolManagerExpanded;
+        if (m_surfacePreferences.toolManagerExpanded)
+        {
+            RebuildSurfaceToolEditor();
+        }
+        UpdateSurfacePreferencesLayout();
+        NotifySurfacePreferencesChanged();
+    });
+    toolsBody.Children().Append(m_surfaceToolExpandButton);
+
+    m_surfaceToolEditor = controls::StackPanel{};
+    m_surfaceToolEditor.Spacing(8);
+    m_surfaceToolEditorPanel = SoftPanel(m_surfaceToolEditor);
+    m_surfaceToolEditorPanel.Visibility(mux::Visibility::Collapsed);
+    toolsBody.Children().Append(m_surfaceToolEditorPanel);
+
+    auto toolsCard = SettingsCard(
+        L"托盘与气泡工具列表",
+        L"隐藏、置顶或调整表面顺序；不会改变主仪表盘或删除追踪数据。",
+        Color(98, 223, 125),
+        toolsBody);
+    controls::Grid::SetColumn(toolsCard, 1);
+    editorRow.Children().Append(toolsCard);
+    page.Children().Append(editorRow);
+
+    controls::StackPanel importContent;
+    importContent.Spacing(8);
+    controls::Grid importRow;
+    importRow.ColumnSpacing(18);
+    AddColumn(importRow, Star(1.15));
+    AddColumn(importRow, Star(0.85));
+
+    controls::StackPanel importAction;
+    importAction.Spacing(6);
+    controls::Grid importHeader;
+    AddColumn(importHeader, Star());
+    AddColumn(importHeader, mux::GridLengthHelper::Auto());
+    controls::StackPanel accountCopy;
+    accountCopy.Spacing(1);
+    accountCopy.Children().Append(Text(L"导入帐户", 9, Color(143, 139, 140), 600));
+    m_chatGptAccountLabel = Text(L"ChatGPT", 10.5, Color(247, 247, 245), 650, true);
+    accountCopy.Children().Append(m_chatGptAccountLabel);
+    importHeader.Children().Append(accountCopy);
+
+    m_chatGptChooseFilesButton = CompactButton(L"选择一个或多个 JSON", 146);
+    m_chatGptChooseFilesButton.Height(34);
     m_chatGptChooseFilesButton.Background(Brush(Color(240, 63, 22)));
     m_chatGptChooseFilesButton.Foreground(Brush(Color(247, 247, 245)));
-    m_chatGptChooseFilesButton.BorderThickness({ 0 });
-    m_chatGptChooseFilesButton.CornerRadius(Radius(14));
-    m_chatGptChooseFilesButton.FontFamily(media::FontFamily{ L"Segoe UI Variable Display" });
-    m_chatGptChooseFilesButton.FontSize(12);
-    m_chatGptChooseFilesButton.FontWeight({ 650 });
-    automation::AutomationProperties::SetName(
-        m_chatGptChooseFilesButton,
-        winrt::hstring{ L"选择 ChatGPT 导出 JSON 文件" });
+    m_chatGptChooseFilesButton.BorderBrush(Brush(Color(240, 63, 22)));
+    automation::AutomationProperties::SetName(m_chatGptChooseFilesButton, L"选择 ChatGPT 导出 JSON 文件");
     m_chatGptChooseFilesButton.Click([this](auto const&, auto const&)
     {
         if (m_chatGptImportCallbacks.onChooseFilesRequested)
@@ -2146,79 +3232,67 @@ controls::Grid DashboardView::BuildSettingsPage()
                 std::wstring{ m_chatGptAccountLabel.Text().c_str() });
         }
     });
-    importBody.Children().Append(m_chatGptChooseFilesButton);
-
-    auto importCard = Card(L"ChatGPT 数据导入", Color(240, 63, 22), importBody);
-    page.Children().Append(importCard);
-
-    controls::StackPanel statusBody;
-    statusBody.Spacing(12);
+    controls::Grid::SetColumn(m_chatGptChooseFilesButton, 1);
+    importHeader.Children().Append(m_chatGptChooseFilesButton);
+    importAction.Children().Append(importHeader);
 
     controls::Grid stateRow;
-    AddColumn(stateRow, Pixels(18));
+    AddColumn(stateRow, Pixels(16));
     AddColumn(stateRow, Star());
     m_chatGptImportDot = shapes::Ellipse{};
-    m_chatGptImportDot.Width(9);
-    m_chatGptImportDot.Height(9);
-    m_chatGptImportDot.VerticalAlignment(mux::VerticalAlignment::Center);
+    m_chatGptImportDot.Width(8);
+    m_chatGptImportDot.Height(8);
+    m_chatGptImportDot.VerticalAlignment(mux::VerticalAlignment::Top);
+    m_chatGptImportDot.Margin({ 0, 5, 0, 0 });
     stateRow.Children().Append(m_chatGptImportDot);
     controls::StackPanel stateCopy;
-    stateCopy.Spacing(3);
-    m_chatGptImportTitle = Text(L"等待导入", 13, Color(247, 247, 245), 600);
+    stateCopy.Spacing(1);
+    m_chatGptImportTitle = Text(L"等待导入", 10.5, Color(247, 247, 245), 600);
     stateCopy.Children().Append(m_chatGptImportTitle);
-    m_chatGptImportMessage = Text(L"", 9.5, Color(143, 139, 140));
+    m_chatGptImportMessage = Text(L"", 9, Color(143, 139, 140));
     m_chatGptImportMessage.TextWrapping(mux::TextWrapping::Wrap);
     m_chatGptImportMessage.TextTrimming(mux::TextTrimming::None);
     stateCopy.Children().Append(m_chatGptImportMessage);
     controls::Grid::SetColumn(stateCopy, 1);
     stateRow.Children().Append(stateCopy);
-    statusBody.Children().Append(stateRow);
+    importAction.Children().Append(stateRow);
 
-    controls::StackPanel filesCopy;
-    filesCopy.Spacing(3);
-    filesCopy.Children().Append(Text(L"所选文件", 9.5, Color(143, 139, 140), 600));
-    m_chatGptFilesText = Text(L"尚未选择 JSON 文件", 10.5, Color(247, 247, 245), 600, true);
+    m_chatGptFilesText = Text(L"尚未选择 JSON 文件", 9, Color(154, 150, 151), 500, true);
     m_chatGptFilesText.TextWrapping(mux::TextWrapping::Wrap);
     m_chatGptFilesText.TextTrimming(mux::TextTrimming::None);
-    filesCopy.Children().Append(m_chatGptFilesText);
-    statusBody.Children().Append(SoftPanel(filesCopy));
+    importAction.Children().Append(m_chatGptFilesText);
+    importRow.Children().Append(importAction);
 
-    controls::StackPanel results;
-    results.Spacing(8);
-    results.Children().Append(DynamicStatLine(
-        L"账户总会话", m_chatGptConversationCount, L"—", Color(98, 223, 125)));
-    results.Children().Append(DynamicStatLine(
-        L"账户总估算 token", m_chatGptEstimatedTokens, L"—", Color(255, 253, 142)));
-    results.Children().Append(DynamicStatLine(
-        L"本次跳过会话", m_chatGptSkippedCount, L"—", Color(143, 139, 140)));
-    results.Children().Append(DynamicStatLine(
-        L"未变更文件", m_chatGptUnchangedCount, L"—", Color(143, 139, 140)));
-    results.Children().Append(DynamicStatLine(
-        L"本次错误", m_chatGptErrorCount, L"—", Color(240, 63, 22)));
-    statusBody.Children().Append(results);
+    controls::StackPanel importResults;
+    importResults.Spacing(7);
+    controls::Grid resultGrid;
+    resultGrid.ColumnSpacing(6);
+    for (int index = 0; index < 5; ++index)
+    {
+        AddColumn(resultGrid, Star());
+    }
+    auto appendResult = [&resultGrid](int column, std::wstring_view label, controls::TextBlock& target,
+                                      winrt::Windows::UI::Color color)
+    {
+        controls::StackPanel stat;
+        stat.Spacing(2);
+        stat.Children().Append(Text(label, 8.5, Color(143, 139, 140), 550));
+        target = Text(L"—", 10, color, 650, true);
+        stat.Children().Append(target);
+        controls::Grid::SetColumn(stat, column);
+        resultGrid.Children().Append(stat);
+    };
+    appendResult(0, L"会话", m_chatGptConversationCount, Color(98, 223, 125));
+    appendResult(1, L"估算 token", m_chatGptEstimatedTokens, Color(255, 253, 142));
+    appendResult(2, L"跳过", m_chatGptSkippedCount, Color(154, 150, 151));
+    appendResult(3, L"未变更", m_chatGptUnchangedCount, Color(154, 150, 151));
+    appendResult(4, L"错误", m_chatGptErrorCount, Color(240, 126, 96));
+    importResults.Children().Append(resultGrid);
 
-    auto estimateNote = Text(
-        L"估算值仅用于趋势与分组统计，不代表 OpenAI 账单 token。",
-        9,
-        Color(143, 139, 140));
-    estimateNote.TextWrapping(mux::TextWrapping::Wrap);
-    estimateNote.TextTrimming(mux::TextTrimming::None);
-    statusBody.Children().Append(estimateNote);
-
-    m_chatGptDetailsButton = controls::Button{};
-    m_chatGptDetailsButton.Height(34);
-    m_chatGptDetailsButton.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
-    m_chatGptDetailsButton.HorizontalContentAlignment(mux::HorizontalAlignment::Center);
-    m_chatGptDetailsButton.Background(Brush(Color(29, 27, 28)));
+    m_chatGptDetailsButton = CompactButton(L"查看详情", 84);
+    m_chatGptDetailsButton.HorizontalAlignment(mux::HorizontalAlignment::Right);
     m_chatGptDetailsButton.Foreground(Brush(Color(255, 253, 142)));
-    m_chatGptDetailsButton.BorderBrush(Brush(Color(255, 255, 255, 20)));
-    m_chatGptDetailsButton.BorderThickness({ 1 });
-    m_chatGptDetailsButton.CornerRadius(Radius(11));
-    m_chatGptDetailsButton.FontFamily(media::FontFamily{ L"Segoe UI Variable Display" });
-    m_chatGptDetailsButton.FontSize(10.5);
-    automation::AutomationProperties::SetName(
-        m_chatGptDetailsButton,
-        winrt::hstring{ L"查看 ChatGPT 导入详情" });
+    automation::AutomationProperties::SetName(m_chatGptDetailsButton, L"查看 ChatGPT 导入详情");
     m_chatGptDetailsButton.Click([this](auto const&, auto const&)
     {
         m_chatGptDetailsExpanded = !m_chatGptDetailsExpanded;
@@ -2228,18 +3302,25 @@ controls::Grid DashboardView::BuildSettingsPage()
             m_chatGptImportCallbacks.onDetailsToggled(m_chatGptDetailsExpanded);
         }
     });
-    statusBody.Children().Append(m_chatGptDetailsButton);
+    importResults.Children().Append(m_chatGptDetailsButton);
+    controls::Grid::SetColumn(importResults, 1);
+    importRow.Children().Append(importResults);
+    importContent.Children().Append(importRow);
 
     m_chatGptDetailsText = Text(L"", 9.5, Color(247, 247, 245), 400, true);
     m_chatGptDetailsText.TextWrapping(mux::TextWrapping::Wrap);
     m_chatGptDetailsText.TextTrimming(mux::TextTrimming::None);
     m_chatGptDetailsPanel = SoftPanel(m_chatGptDetailsText);
     m_chatGptDetailsPanel.Visibility(mux::Visibility::Collapsed);
-    statusBody.Children().Append(m_chatGptDetailsPanel);
+    importContent.Children().Append(m_chatGptDetailsPanel);
 
-    auto statusCard = Card(L"导入状态", Color(98, 223, 125), statusBody);
-    controls::Grid::SetColumn(statusCard, 1);
-    page.Children().Append(statusCard);
+    auto importCard = SettingsCard(
+        L"ChatGPT 数据导入",
+        L"仅读取官方 JSON 导出；保留聚合统计与来源标识，不保存提示或回答正文。",
+        Color(240, 63, 22),
+        importContent);
+    controls::Grid::SetRow(importCard, 2);
+    page.Children().Append(importCard);
     return page;
 }
 

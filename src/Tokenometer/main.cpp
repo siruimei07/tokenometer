@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <commctrl.h>
 #include <shellapi.h>
 #include <shobjidl_core.h>
 #undef GetCurrentTime
@@ -9,6 +10,8 @@
 #include "DashboardView.h"
 #include "Database.h"
 #include "SourceContentReader.h"
+#include "SurfacePreferences.h"
+#include "TrayIcon.h"
 #include "TrendAnalytics.h"
 #include "WslCodexCollector.h"
 
@@ -68,6 +71,8 @@ namespace
     {
         tokenometer::TokenCounts today;
         std::optional<tokenometer::RateLimitSnapshot> codexLimit;
+        int64_t chatGptEstimatedTokens{};
+        int64_t chatGptEstimatedSessions{};
         int64_t refreshedAt{};
         bool available{};
     };
@@ -346,84 +351,34 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
     void OnLaunched(mux::LaunchActivatedEventArgs const&)
     {
         m_bubbleMode = HasArgument(L"--bubble");
-        bool const backdropDisabled = HasArgument(L"--no-backdrop");
-        if (m_bubbleMode)
+        m_backdropDisabled = HasArgument(L"--no-backdrop");
+        InitializeStorage();
+        BuildBubbleSurface();
+
+        m_dashboard = std::make_unique<tokenometer::DashboardView>();
+        ConfigureDashboardCallbacks();
+        if (HasArgument(L"--page-details"))
         {
-            m_root = controls::Canvas{};
-            m_root.Background(Brush(Color(0, 0, 0, 0)));
-
-            controls::Border fallback;
-            fallback.Width(widgetWidthDip);
-            fallback.Height(widgetHeightDip);
-            fallback.Background(Brush(Color(18, 16, 17)));
-            Place(fallback, 0, 0);
-            m_root.Children().Append(fallback);
-
-            if (!backdropDisabled)
-            {
-                m_swapChainPanel = controls::SwapChainPanel{};
-                m_swapChainPanel.Width(widgetWidthDip);
-                m_swapChainPanel.Height(widgetHeightDip);
-                m_swapChainPanel.Opacity(0.28);
-                Place(m_swapChainPanel, 0, 0);
-                m_root.Children().Append(m_swapChainPanel);
-            }
-
-            controls::Border usageCard;
-            usageCard.Width(400);
-            usageCard.Height(124);
-            usageCard.CornerRadius(Radius(18));
-            usageCard.Background(Brush(Color(38, 36, 37, 240)));
-            usageCard.BorderBrush(Brush(Color(255, 255, 255, 18)));
-            usageCard.BorderThickness({ 0.5 });
-            usageCard.IsHitTestVisible(false);
-            Place(usageCard, 10, 10);
-            m_root.Children().Append(usageCard);
-
-            controls::Border resetCard;
-            resetCard.Width(400);
-            resetCard.Height(58);
-            resetCard.CornerRadius(Radius(16));
-            resetCard.Background(Brush(Color(38, 36, 37, 240)));
-            resetCard.BorderBrush(Brush(Color(255, 255, 255, 18)));
-            resetCard.BorderThickness({ 0.5 });
-            resetCard.IsHitTestVisible(false);
-            Place(resetCard, 10, 144);
-            m_root.Children().Append(resetCard);
-            BuildContent();
+            m_dashboard->ShowPage(tokenometer::DashboardPage::Details);
         }
-        else
+        else if (HasArgument(L"--page-trends"))
         {
-            m_dashboard = std::make_unique<tokenometer::DashboardView>();
-            ConfigureDashboardCallbacks();
-            if (HasArgument(L"--page-details"))
-            {
-                m_dashboard->ShowPage(tokenometer::DashboardPage::Details);
-            }
-            else if (HasArgument(L"--page-trends"))
-            {
-                m_dashboard->ShowPage(tokenometer::DashboardPage::Trends);
-            }
-            else if (HasArgument(L"--page-settings"))
-            {
-                m_dashboard->ShowPage(tokenometer::DashboardPage::Settings);
-            }
+            m_dashboard->ShowPage(tokenometer::DashboardPage::Trends);
+        }
+        else if (HasArgument(L"--page-settings"))
+        {
+            m_dashboard->ShowPage(tokenometer::DashboardPage::Settings);
         }
 
         m_window = mux::Window{};
         m_window.Title(L"Tokenometer");
-        if (m_bubbleMode)
-        {
-            m_window.Content(m_root);
-        }
-        else
-        {
-            m_window.Content(m_dashboard->Root());
-        }
+        m_window.Content(m_bubbleMode ? mux::UIElement{ m_root } : mux::UIElement{ m_dashboard->Root() });
 
         auto nativeWindow = m_window.as<::IWindowNative>();
         winrt::check_hresult(nativeWindow->get_WindowHandle(&m_hwnd));
-        m_window.Activate();
+        m_dashboardStyle = GetWindowLongPtrW(m_hwnd, GWL_STYLE);
+        m_dashboardExtendedStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
+        InstallWindowProcedure();
         if (m_bubbleMode)
         {
             ConfigureWindow();
@@ -432,27 +387,69 @@ struct TokenometerApp : mux::ApplicationT<TokenometerApp>
         {
             ConfigureDashboardWindow();
         }
+        InitializeTrayIcon();
+        ApplySurfacePreferences();
+        bool const startHidden = m_surfacePreferences.launchToTray &&
+            m_trayIcon && m_trayIcon->IsAdded();
+        if (!startHidden) m_window.Activate();
         if (!HasArgument(L"--no-collection"))
         {
             StartCollection();
-            StartDashboardRefresh();
         }
-        else if (!m_bubbleMode)
+        else
         {
             m_dashboard->SetStatus(L"预览模式", L"数据采集已禁用", false);
         }
-        if (m_bubbleMode && !backdropDisabled && m_swapChainPanel.IsLoaded())
-        {
-            StartBackdrop();
-        }
-        else if (m_bubbleMode && !backdropDisabled)
-        {
-            m_swapChainPanel.Loaded([this](auto const&, auto const&) { StartBackdrop(); });
-        }
+        StartDashboardRefresh();
         WireInteractions();
+        if (startHidden) ShowWindow(m_hwnd, SW_HIDE);
     }
 
 private:
+    void BuildBubbleSurface()
+    {
+        m_root = controls::Canvas{};
+        m_root.Background(Brush(Color(0, 0, 0, 0)));
+
+        m_bubbleBackground = controls::Border{};
+        m_bubbleBackground.Width(widgetWidthDip);
+        m_bubbleBackground.Height(widgetHeightDip);
+        Place(m_bubbleBackground, 0, 0);
+        m_root.Children().Append(m_bubbleBackground);
+
+        if (!m_backdropDisabled)
+        {
+            m_swapChainPanel = controls::SwapChainPanel{};
+            m_swapChainPanel.Width(widgetWidthDip);
+            m_swapChainPanel.Height(widgetHeightDip);
+            Place(m_swapChainPanel, 0, 0);
+            m_root.Children().Append(m_swapChainPanel);
+            m_swapChainPanel.Loaded([this](auto const&, auto const&)
+            {
+                if (m_bubbleMode && m_surfacePreferences.blurEnabled) StartBackdrop();
+            });
+        }
+
+        m_usageCard = controls::Border{};
+        m_usageCard.Width(400);
+        m_usageCard.Height(124);
+        m_usageCard.CornerRadius(Radius(18));
+        m_usageCard.BorderThickness({ 0.5 });
+        m_usageCard.IsHitTestVisible(false);
+        Place(m_usageCard, 10, 10);
+        m_root.Children().Append(m_usageCard);
+
+        m_resetCard = controls::Border{};
+        m_resetCard.Width(400);
+        m_resetCard.Height(58);
+        m_resetCard.CornerRadius(Radius(16));
+        m_resetCard.BorderThickness({ 0.5 });
+        m_resetCard.IsHitTestVisible(false);
+        Place(m_resetCard, 10, 144);
+        m_root.Children().Append(m_resetCard);
+        BuildContent();
+    }
+
     void ConfigureDashboardCallbacks()
     {
         tokenometer::DetailsCallbacks callbacks;
@@ -526,6 +523,454 @@ private:
             m_chatGptImportData.detailsExpanded = expanded;
         };
         m_dashboard->SetChatGptImportCallbacks(std::move(importCallbacks));
+
+        tokenometer::SurfacePreferencesCallbacks surfaceCallbacks;
+        surfaceCallbacks.onChanged = [this](tokenometer::SurfacePreferencesViewData const& data)
+        {
+            static_cast<tokenometer::SurfacePreferences&>(m_surfacePreferences) = data;
+            m_layoutEditorExpanded = data.layoutEditorExpanded;
+            m_toolManagerExpanded = data.toolManagerExpanded;
+            SaveSurfacePreferences();
+            ApplySurfacePreferences();
+        };
+        m_dashboard->SetSurfacePreferencesCallbacks(std::move(surfaceCallbacks));
+    }
+
+    void InitializeStorage() noexcept
+    {
+        try
+        {
+            auto const databasePath = tokenometer::Database::DefaultDataDirectory() / L"tokenometer.db";
+            m_database = std::make_shared<tokenometer::Database>(databasePath);
+            m_database->Initialize();
+            m_surfacePreferences = tokenometer::SurfacePreferences::Load(*m_database);
+            UpdateBubbleSnapshotCache();
+        }
+        catch (...)
+        {
+            m_database.reset();
+            m_collectionFailed.store(true, std::memory_order_relaxed);
+            OutputDebugStringW(L"Tokenometer: local database initialization failed.\n");
+        }
+    }
+
+    void SaveSurfacePreferences() noexcept
+    {
+        if (!m_database || !m_surfacePreferences.IsValid()) return;
+        try
+        {
+            m_surfacePreferences.Save(*m_database);
+        }
+        catch (...)
+        {
+            OutputDebugStringW(L"Tokenometer: surface preferences could not be saved.\n");
+        }
+    }
+
+    [[nodiscard]] bool ToolVisible(tokenometer::SurfaceTool tool) const noexcept
+    {
+        auto const match = std::find_if(
+            m_surfacePreferences.tools.begin(),
+            m_surfacePreferences.tools.end(),
+            [tool](auto const& item) { return item.tool == tool; });
+        return match != m_surfacePreferences.tools.end() && match->visible;
+    }
+
+    [[nodiscard]] std::optional<tokenometer::SurfaceTool> PrimarySurfaceTool() const noexcept
+    {
+        for (auto const& item : m_surfacePreferences.tools)
+        {
+            if (item.visible && item.pinned) return item.tool;
+        }
+        for (auto const& item : m_surfacePreferences.tools)
+        {
+            if (item.visible) return item.tool;
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::wstring BuildSurfaceText()
+    {
+        BubbleUsageSnapshot snapshot;
+        {
+            std::scoped_lock lock(m_bubbleSnapshotMutex);
+            snapshot = m_bubbleSnapshot;
+        }
+
+        struct Quota
+        {
+            double remaining{-1.0};
+            int64_t resetsAt{};
+        } quota;
+        if (snapshot.codexLimit)
+        {
+            int64_t const now = UnixNow();
+            auto consider = [&](double used, int64_t resetsAt)
+            {
+                if (used >= 0.0 && used <= 100.0 && resetsAt > now &&
+                    100.0 - used < quota.remaining)
+                {
+                    quota = { 100.0 - used, resetsAt };
+                }
+                else if (used >= 0.0 && used <= 100.0 && resetsAt > now && quota.remaining < 0.0)
+                {
+                    quota = { 100.0 - used, resetsAt };
+                }
+            };
+            consider(snapshot.codexLimit->primaryUsedPercent, snapshot.codexLimit->primaryResetsAt);
+            consider(snapshot.codexLimit->secondaryUsedPercent, snapshot.codexLimit->secondaryResetsAt);
+        }
+
+        auto toolUsage = [&](tokenometer::SurfaceTool tool)
+        {
+            if (tool == tokenometer::SurfaceTool::Codex)
+            {
+                return L"Codex 今日 " + FormatCompactTokens(snapshot.today.DisplayTotal()) + L" token";
+            }
+            return snapshot.chatGptEstimatedTokens > 0
+                ? L"ChatGPT 已导入估算 " + FormatCompactTokens(snapshot.chatGptEstimatedTokens) + L" token"
+                : std::wstring{ L"ChatGPT 等待导入" };
+        };
+        auto quotaPercent = [&]()
+        {
+            return quota.remaining >= 0.0
+                ? L"Codex " + std::to_wstring(static_cast<int>(quota.remaining + 0.5)) + L"% 可用"
+                : std::wstring{ L"Codex 额度尚未上报" };
+        };
+
+        std::wstring result;
+        auto append = [&result](std::wstring value)
+        {
+            if (value.empty()) return;
+            if (!result.empty()) result += L"  ·  ";
+            result += std::move(value);
+        };
+        switch (m_surfacePreferences.layoutPreset)
+        {
+        case tokenometer::SurfaceLayoutPreset::LiveUsage:
+            for (auto const& tool : m_surfacePreferences.tools)
+            {
+                if (tool.visible) append(toolUsage(tool.tool));
+            }
+            break;
+        case tokenometer::SurfaceLayoutPreset::ProviderLimits:
+            if (ToolVisible(tokenometer::SurfaceTool::Codex)) append(quotaPercent());
+            if (ToolVisible(tokenometer::SurfaceTool::ChatGpt)) append(L"ChatGPT 额度不可用");
+            break;
+        case tokenometer::SurfaceLayoutPreset::CostFocus:
+            append(L"订阅费用不可用");
+            break;
+        case tokenometer::SurfaceLayoutPreset::Custom:
+            for (auto const& item : m_surfacePreferences.customLayout)
+            {
+                if (!ToolVisible(item.tool) && item.kind != tokenometer::SurfaceLayoutItemKind::CustomText)
+                {
+                    continue;
+                }
+                switch (item.kind)
+                {
+                case tokenometer::SurfaceLayoutItemKind::ToolIcon:
+                    append(item.tool == tokenometer::SurfaceTool::Codex ? L"Codex" : L"ChatGPT");
+                    break;
+                case tokenometer::SurfaceLayoutItemKind::QuotaBar:
+                case tokenometer::SurfaceLayoutItemKind::Percentage:
+                    append(item.tool == tokenometer::SurfaceTool::Codex
+                        ? quotaPercent() : L"ChatGPT 额度不可用");
+                    break;
+                case tokenometer::SurfaceLayoutItemKind::ResetTime:
+                    append(item.tool == tokenometer::SurfaceTool::Codex && quota.resetsAt > 0
+                        ? FormatResetCountdown(quota.resetsAt) : L"重置时间不可用");
+                    break;
+                case tokenometer::SurfaceLayoutItemKind::Cost:
+                    append(L"费用不可用");
+                    break;
+                case tokenometer::SurfaceLayoutItemKind::CustomText:
+                    append(item.customText);
+                    break;
+                }
+            }
+            break;
+        }
+        return result.empty() ? std::wstring{ L"未选择显示工具" } : result;
+    }
+
+    [[nodiscard]] std::wstring BuildTrayTooltip()
+    {
+        auto text = BuildSurfaceText();
+        if (text.find(L"Codex") == std::wstring::npos)
+        {
+            BubbleUsageSnapshot snapshot;
+            {
+                std::scoped_lock lock(m_bubbleSnapshotMutex);
+                snapshot = m_bubbleSnapshot;
+            }
+            text += L"  ·  Codex 今日 " + FormatCompactTokens(snapshot.today.DisplayTotal()) + L" token";
+        }
+        return L"Tokenometer · " + text;
+    }
+
+    void PushSurfacePreferencesView()
+    {
+        if (!m_dashboard) return;
+        tokenometer::SurfacePreferencesViewData data;
+        static_cast<tokenometer::SurfacePreferences&>(data) = m_surfacePreferences;
+        data.layoutEditorExpanded = m_layoutEditorExpanded;
+        data.toolManagerExpanded = m_toolManagerExpanded;
+        data.livePreview = BuildSurfaceText();
+        m_dashboard->UpdateSurfacePreferences(data);
+    }
+
+    void ApplySurfacePreferences()
+    {
+        auto const theme = m_surfacePreferences.theme;
+        if (m_dashboard) m_dashboard->ApplySurfaceTheme(theme);
+        if (m_root)
+        {
+            m_root.RequestedTheme(
+                theme == tokenometer::SurfaceTheme::Light
+                    ? mux::ElementTheme::Light
+                    : theme == tokenometer::SurfaceTheme::Dark
+                        ? mux::ElementTheme::Dark
+                        : mux::ElementTheme::Default);
+        }
+
+        bool const light = theme == tokenometer::SurfaceTheme::Light;
+        uint8_t const cardAlpha = static_cast<uint8_t>(
+            std::clamp(m_surfacePreferences.glassOpacityPercent, 25, 90) * 255 / 100);
+        auto const cardColor = light ? Color(247, 245, 239, cardAlpha) : Color(38, 36, 37, cardAlpha);
+        auto const borderColor = light ? Color(0, 0, 0, 24) : Color(255, 255, 255, 18);
+        if (m_bubbleBackground)
+        {
+            m_bubbleBackground.Background(Brush(
+                m_surfacePreferences.transparentWindow
+                    ? Color(0, 0, 0, 0)
+                    : light ? Color(239, 236, 228) : Color(18, 16, 17)));
+        }
+        for (auto const& card : { m_usageCard, m_resetCard })
+        {
+            if (!card) continue;
+            card.Background(Brush(cardColor));
+            card.BorderBrush(Brush(borderColor));
+        }
+        auto const primaryText = light ? Color(26, 24, 25) : Color(247, 247, 245);
+        auto const secondaryText = light ? Color(91, 86, 87) : Color(167, 163, 164);
+        for (auto const& text : { m_bubbleTitle, m_bubbleTotal, m_bubbleInput })
+        {
+            if (text) text.Foreground(Brush(primaryText));
+        }
+        for (auto const& text : { m_bubbleOutput, m_bubbleCache, m_bubbleUpdated })
+        {
+            if (text) text.Foreground(Brush(secondaryText));
+        }
+        auto const providerAccent = m_surfacePreferences.providerColors
+            ? Color(98, 223, 125) : Color(154, 150, 151);
+        if (m_bubbleFill) m_bubbleFill.Background(Brush(providerAccent));
+        if (m_bubbleMarker) m_bubbleMarker.Stroke(Brush(providerAccent));
+        if (m_swapChainPanel)
+        {
+            m_swapChainPanel.Opacity(0.12 + 0.0024 * m_surfacePreferences.glassOpacityPercent);
+            m_swapChainPanel.Visibility(
+                m_surfacePreferences.blurEnabled && !m_backdropDisabled
+                    ? mux::Visibility::Visible : mux::Visibility::Collapsed);
+        }
+        if (m_bubbleMode && m_hwnd)
+        {
+            auto presenter = m_window.AppWindow().Presenter().as<windowing::OverlappedPresenter>();
+            presenter.IsAlwaysOnTop(m_surfacePreferences.bubbleAlwaysOnTop);
+            if (m_surfacePreferences.blurEnabled && !m_backdropDisabled) StartBackdrop();
+            else if (m_renderer)
+            {
+                m_renderer->Stop();
+                m_renderer.reset();
+                SetWindowDisplayAffinity(m_hwnd, WDA_NONE);
+            }
+        }
+        PushSurfacePreferencesView();
+        if (m_trayIcon) (void)m_trayIcon->UpdateTooltip(BuildTrayTooltip());
+        if (m_bubbleMode) RefreshBubble();
+    }
+
+    void InitializeTrayIcon()
+    {
+        tokenometer::TrayIcon::Callbacks callbacks;
+        callbacks.leftClick = [this]
+        {
+            m_hoverPreviewActive = false;
+            m_hoverRestoreDashboard = false;
+            if (IsWindowVisible(m_hwnd)) ShowWindow(m_hwnd, SW_HIDE);
+            else if (m_bubbleMode) ShowBubbleSurface();
+            else ShowDashboardSurface();
+        };
+        callbacks.doubleClick = [this]
+        {
+            m_hoverPreviewActive = false;
+            m_hoverRestoreDashboard = false;
+            ShowDashboardSurface();
+        };
+        callbacks.openDashboard = [this]
+        {
+            m_hoverPreviewActive = false;
+            m_hoverRestoreDashboard = false;
+            ShowDashboardSurface();
+        };
+        callbacks.showFloatingBubble = [this]
+        {
+            m_hoverPreviewActive = false;
+            m_hoverRestoreDashboard = false;
+            if (m_bubbleMode && IsWindowVisible(m_hwnd)) ShowWindow(m_hwnd, SW_HIDE);
+            else ShowBubbleSurface();
+        };
+        callbacks.hoverChanged = [this](bool entered)
+        {
+            if (!m_surfacePreferences.hoverPreview) return;
+            if (entered && !IsWindowVisible(m_hwnd))
+            {
+                m_hoverRestoreDashboard = !m_bubbleMode;
+                m_hoverPreviewActive = true;
+                ShowBubbleSurface(false);
+            }
+            else if (!entered && m_hoverPreviewActive)
+            {
+                m_hoverPreviewActive = false;
+                if (m_hoverRestoreDashboard) ShowDashboardSurface(false);
+                ShowWindow(m_hwnd, SW_HIDE);
+            }
+        };
+        callbacks.exit = [this]
+        {
+            m_explicitExit = true;
+            if (m_trayIcon) m_trayIcon->Remove();
+            PostMessageW(m_hwnd, WM_CLOSE, 0, 0);
+        };
+        m_trayIcon = std::make_unique<tokenometer::TrayIcon>(m_hwnd, std::move(callbacks));
+        if (!m_trayIcon->Add(BuildTrayTooltip()))
+        {
+            m_trayIcon.reset();
+            OutputDebugStringW(L"Tokenometer: tray icon is unavailable.\n");
+        }
+    }
+
+    void ShowDashboardSurface(bool activate = true)
+    {
+        if (!m_hwnd) return;
+        if (m_bubbleMode)
+        {
+            SaveBubblePosition();
+            if (m_statusTimer) m_statusTimer.Stop();
+            if (m_renderer)
+            {
+                m_renderer->Stop();
+                m_renderer.reset();
+            }
+            SetWindowDisplayAffinity(m_hwnd, WDA_NONE);
+            m_bubbleMode = false;
+            m_window.Content(m_dashboard->Root());
+            ConfigureDashboardWindow();
+        }
+        ShowWindow(m_hwnd, activate ? SW_SHOWNORMAL : SW_SHOWNOACTIVATE);
+        if (activate)
+        {
+            m_window.Activate();
+            SetForegroundWindow(m_hwnd);
+        }
+        RefreshDashboard();
+    }
+
+    void ShowBubbleSurface(bool activate = true)
+    {
+        if (!m_hwnd) return;
+        if (!m_bubbleMode)
+        {
+            m_bubbleMode = true;
+            m_window.Content(m_root);
+            ConfigureWindow();
+            ApplySurfacePreferences();
+        }
+        ShowWindow(m_hwnd, activate ? SW_SHOWNORMAL : SW_SHOWNOACTIVATE);
+        if (activate)
+        {
+            m_window.Activate();
+            SetForegroundWindow(m_hwnd);
+        }
+        RefreshBubble();
+    }
+
+    void SaveBubblePosition() noexcept
+    {
+        if (!m_database || !m_hwnd || !m_bubbleMode) return;
+        RECT bounds{};
+        if (!GetWindowRect(m_hwnd, &bounds)) return;
+        m_surfacePreferences.hasBubblePosition = true;
+        m_surfacePreferences.bubbleX = bounds.left;
+        m_surfacePreferences.bubbleY = bounds.top;
+        SaveSurfacePreferences();
+    }
+
+    void RequestClose()
+    {
+        if (!m_explicitExit && m_surfacePreferences.closeToTray &&
+            m_trayIcon && m_trayIcon->IsAdded())
+        {
+            ShowWindow(m_hwnd, SW_HIDE);
+            return;
+        }
+        m_explicitExit = true;
+        m_window.Close();
+    }
+
+    static LRESULT CALLBACK WindowProcedure(
+        HWND window,
+        UINT message,
+        WPARAM wParam,
+        LPARAM lParam,
+        UINT_PTR,
+        DWORD_PTR referenceData) noexcept
+    {
+        auto self = reinterpret_cast<TokenometerApp*>(referenceData);
+        if (!self) return DefSubclassProc(window, message, wParam, lParam);
+        return self->HandleWindowMessage(window, message, wParam, lParam);
+    }
+
+    void InstallWindowProcedure()
+    {
+        winrt::check_bool(SetWindowSubclass(
+            m_hwnd,
+            &TokenometerApp::WindowProcedure,
+            1,
+            reinterpret_cast<DWORD_PTR>(this)));
+    }
+
+    LRESULT HandleWindowMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam) noexcept
+    {
+        try
+        {
+            if (message == WM_QUERYENDSESSION)
+            {
+                return DefSubclassProc(window, message, wParam, lParam);
+            }
+            if (message == WM_ENDSESSION && wParam)
+            {
+                m_explicitExit = true;
+                m_trayIcon.reset();
+            }
+            if (m_trayIcon && m_trayIcon->HandleMessage(message, wParam, lParam)) return 0;
+            if (message == WM_CLOSE && !m_explicitExit && m_surfacePreferences.closeToTray &&
+                m_trayIcon && m_trayIcon->IsAdded())
+            {
+                ShowWindow(window, SW_HIDE);
+                return 0;
+            }
+            if (message == WM_EXITSIZEMOVE && m_bubbleMode) SaveBubblePosition();
+        }
+        catch (...)
+        {
+        }
+
+        if (message == WM_NCDESTROY)
+        {
+            RemoveWindowSubclass(window, &TokenometerApp::WindowProcedure, 1);
+        }
+        return DefSubclassProc(window, message, wParam, lParam);
     }
 
     void BeginChatGptImport(std::wstring_view requestedAccountLabel)
@@ -1051,9 +1496,9 @@ private:
         Place(usageIcon, 28, 27);
         m_root.Children().Append(usageIcon);
 
-        auto title = Text(L"Codex 今日 Token", 15, Color(247, 247, 245), 600);
-        Place(title, 64, 25);
-        m_root.Children().Append(title);
+        m_bubbleTitle = Text(L"Codex 今日 Token", 15, Color(247, 247, 245), 600);
+        Place(m_bubbleTitle, 64, 25);
+        m_root.Children().Append(m_bubbleTitle);
 
         m_bubbleTotal = Text(L"—", 32, Color(247, 247, 245), 650);
         m_bubbleTotal.Width(150);
@@ -1152,7 +1597,7 @@ private:
         presenter.IsResizable(false);
         presenter.IsMaximizable(false);
         presenter.IsMinimizable(false);
-        presenter.IsAlwaysOnTop(true);
+        presenter.IsAlwaysOnTop(m_surfacePreferences.bubbleAlwaysOnTop);
         appWindow.IsShownInSwitchers(false);
 
         auto const style = GetWindowLongPtrW(m_hwnd, GWL_STYLE);
@@ -1174,14 +1619,23 @@ private:
         int const height = MulDiv(widgetHeightDip, dpi, 96);
         appWindow.Resize({ width, height });
 
-        HMONITOR monitor = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTOPRIMARY);
+        POINT desired{ m_surfacePreferences.bubbleX, m_surfacePreferences.bubbleY };
+        HMONITOR monitor = m_surfacePreferences.hasBubblePosition
+            ? MonitorFromPoint(desired, MONITOR_DEFAULTTONEAREST)
+            : MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTOPRIMARY);
         MONITORINFO info{ sizeof(info) };
         winrt::check_bool(GetMonitorInfoW(monitor, &info));
-        int const x = info.rcWork.left + ((info.rcWork.right - info.rcWork.left) - width) / 2;
-        int const y = info.rcWork.top + ((info.rcWork.bottom - info.rcWork.top) - height) / 2;
+        int const maxX = std::max(info.rcWork.left, info.rcWork.right - width);
+        int const maxY = std::max(info.rcWork.top, info.rcWork.bottom - height);
+        int const x = m_surfacePreferences.hasBubblePosition
+            ? std::clamp(m_surfacePreferences.bubbleX, static_cast<int>(info.rcWork.left), maxX)
+            : info.rcWork.left + ((info.rcWork.right - info.rcWork.left) - width) / 2;
+        int const y = m_surfacePreferences.hasBubblePosition
+            ? std::clamp(m_surfacePreferences.bubbleY, static_cast<int>(info.rcWork.top), maxY)
+            : info.rcWork.top + ((info.rcWork.bottom - info.rcWork.top) - height) / 2;
         winrt::check_bool(SetWindowPos(
             m_hwnd,
-            HWND_TOPMOST,
+            m_surfacePreferences.bubbleAlwaysOnTop ? HWND_TOPMOST : HWND_NOTOPMOST,
             x,
             y,
             0,
@@ -1202,11 +1656,16 @@ private:
     {
         auto appWindow = m_window.AppWindow();
         auto presenter = appWindow.Presenter().as<windowing::OverlappedPresenter>();
+        presenter.SetBorderAndTitleBar(true, true);
         presenter.IsResizable(true);
         presenter.IsMaximizable(true);
         presenter.IsMinimizable(true);
         presenter.IsAlwaysOnTop(false);
         appWindow.IsShownInSwitchers(true);
+        SetWindowLongPtrW(m_hwnd, GWL_STYLE, m_dashboardStyle);
+        SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, m_dashboardExtendedStyle);
+        SetWindowRgn(m_hwnd, nullptr, TRUE);
+        SetWindowDisplayAffinity(m_hwnd, WDA_NONE);
 
         HMONITOR monitor = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTOPRIMARY);
         MONITORINFO info{ sizeof(info) };
@@ -1227,7 +1686,7 @@ private:
             y,
             0,
             0,
-            SWP_NOSIZE | SWP_NOACTIVATE));
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED));
     }
 
     void StopBackgroundWorkers() noexcept
@@ -1255,32 +1714,32 @@ private:
 
     void WireInteractions()
     {
-        if (m_bubbleMode)
+        if (m_closeButton)
         {
-            if (m_closeButton)
+            m_closeButton.PointerPressed([this](auto const&, input::PointerRoutedEventArgs const& args)
             {
-                m_closeButton.PointerPressed([this](auto const&, input::PointerRoutedEventArgs const& args)
-                {
-                    m_window.Close();
-                    args.Handled(true);
-                });
-                m_root.PointerEntered([this](auto const&, auto const&) { m_closeButton.Opacity(1); });
-                m_root.PointerExited([this](auto const&, auto const&) { m_closeButton.Opacity(0); });
-            }
-            m_root.PointerPressed([this](auto const&, input::PointerRoutedEventArgs const& args)
-            {
-                auto point = args.GetCurrentPoint(m_root);
-                if (point.Properties().IsLeftButtonPressed())
-                {
-                    ReleaseCapture();
-                    SendMessageW(m_hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
-                    args.Handled(true);
-                }
+                RequestClose();
+                args.Handled(true);
             });
+            m_root.PointerEntered([this](auto const&, auto const&) { m_closeButton.Opacity(1); });
+            m_root.PointerExited([this](auto const&, auto const&) { m_closeButton.Opacity(0); });
         }
+        m_root.PointerPressed([this](auto const&, input::PointerRoutedEventArgs const& args)
+        {
+            if (!m_bubbleMode) return;
+            auto point = args.GetCurrentPoint(m_root);
+            if (point.Properties().IsLeftButtonPressed())
+            {
+                ReleaseCapture();
+                SendMessageW(m_hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+                args.Handled(true);
+            }
+        });
 
         m_window.Closed([this](auto const&, auto const&)
         {
+            m_explicitExit = true;
+            m_trayIcon.reset();
             if (m_statusTimer)
             {
                 m_statusTimer.Stop();
@@ -1300,11 +1759,13 @@ private:
 
     void StartCollection()
     {
+        if (!m_database)
+        {
+            m_collectionFailed.store(true, std::memory_order_relaxed);
+            return;
+        }
         try
         {
-            auto const databasePath = tokenometer::Database::DefaultDataDirectory() / L"tokenometer.db";
-            m_database = std::make_shared<tokenometer::Database>(databasePath);
-            m_database->Initialize();
             m_collector = std::make_unique<tokenometer::CodexCollector>(*m_database);
             m_collectionThread = std::jthread([this](std::stop_token stopToken)
             {
@@ -1425,6 +1886,9 @@ private:
                 next.today.reportedTotal += row.counts.reportedTotal;
             }
             next.codexLimit = m_database->GetLatestRateLimit();
+            auto const chatGpt = m_database->GetChatGPTEstimatedTotals(L"ChatGPT");
+            next.chatGptEstimatedTokens = chatGpt.estimatedTokens;
+            next.chatGptEstimatedSessions = chatGpt.estimatedSessions;
             next.refreshedAt = UnixNow();
             next.available = true;
             std::scoped_lock lock(m_bubbleSnapshotMutex);
@@ -1439,6 +1903,7 @@ private:
 
     void StartDashboardRefresh()
     {
+        if (m_usageTimer) return;
         if (!m_bubbleMode && !m_dashboard)
         {
             return;
@@ -1447,8 +1912,14 @@ private:
         m_usageTimer.Interval(std::chrono::seconds(1));
         m_usageTimer.Tick([this](auto const&, auto const&)
         {
+            UpdateBubbleSnapshotCache();
             if (m_bubbleMode) RefreshBubble();
             else RefreshDashboard();
+            PushSurfacePreferencesView();
+            if (m_trayIcon)
+            {
+                (void)m_trayIcon->UpdateTooltip(BuildTrayTooltip());
+            }
         });
         if (m_bubbleMode) RefreshBubble();
         else RefreshDashboard();
@@ -1503,6 +1974,36 @@ private:
                 m_bubbleUpdated.Text(L"等待首次索引完成");
                 return;
             }
+            auto const primaryTool = PrimarySurfaceTool();
+            if (!primaryTool)
+            {
+                m_bubbleTitle.Text(L"未选择显示工具");
+                m_bubbleTotal.Text(L"—");
+                m_bubbleInput.Text(L"请在设置中启用工具");
+                m_bubbleOutput.Text(L"");
+                m_bubbleCache.Text(L"");
+                m_bubbleFill.Width(0);
+                m_bubbleLimitTitle.Text(L"表面布局");
+                m_bubbleLimit.Text(L"已隐藏");
+                m_bubbleUpdated.Text(L"托盘与气泡共用工具顺序");
+                return;
+            }
+            if (*primaryTool == tokenometer::SurfaceTool::ChatGpt)
+            {
+                m_bubbleTitle.Text(L"ChatGPT 官方导出估算");
+                m_bubbleTotal.Text(FormatCompactTokens(snapshot.chatGptEstimatedTokens));
+                m_bubbleInput.Text(L"已导入会话 " + std::to_wstring(snapshot.chatGptEstimatedSessions));
+                m_bubbleOutput.Text(L"非实时");
+                m_bubbleCache.Text(L"缓存不可用");
+                m_bubbleFill.Width(0);
+                controls::Canvas::SetLeft(m_bubbleMarker, 23);
+                m_bubbleLimitTitle.Text(L"ChatGPT 额度");
+                m_bubbleLimit.Text(L"不可用");
+                m_bubbleLimit.Foreground(Brush(Color(143, 139, 140)));
+                m_bubbleUpdated.Text(L"官方 JSON 导出不包含实时 token、缓存或订阅费用");
+                return;
+            }
+            m_bubbleTitle.Text(L"Codex 今日 Token");
             auto const& today = snapshot.today;
 
             double const cachePercent = today.input > 0
@@ -1607,6 +2108,13 @@ private:
                 status += L" · WSL 暂不可用";
                 m_bubbleUpdated.Text(status);
             }
+            if (m_surfacePreferences.layoutPreset == tokenometer::SurfaceLayoutPreset::CostFocus)
+            {
+                m_bubbleLimitTitle.Text(L"订阅费用");
+                m_bubbleLimit.Text(L"不可用");
+                m_bubbleLimit.Foreground(Brush(Color(143, 139, 140)));
+                m_bubbleUpdated.Text(L"本地记录不提供可靠费用，不显示估算金额");
+            }
         }
         catch (...)
         {
@@ -1694,6 +2202,11 @@ private:
 
     void StartBackdrop()
     {
+        if (m_renderer || m_backdropDisabled || !m_bubbleMode ||
+            !m_surfacePreferences.blurEnabled || !m_swapChainPanel)
+        {
+            return;
+        }
         if (!SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE))
         {
             OutputDebugStringW(L"Tokenometer: capture exclusion unavailable; using static background.\n");
@@ -1716,6 +2229,7 @@ private:
             return;
         }
 
+        if (m_statusTimer) m_statusTimer.Stop();
         m_statusTimer = mux::DispatcherTimer{};
         m_statusTimer.Interval(std::chrono::milliseconds(250));
         m_statusTimer.Tick([this](auto const&, auto const&)
@@ -1732,7 +2246,11 @@ private:
     mux::Window m_window{ nullptr };
     controls::Canvas m_root{ nullptr };
     controls::SwapChainPanel m_swapChainPanel{ nullptr };
+    controls::Border m_bubbleBackground{ nullptr };
+    controls::Border m_usageCard{ nullptr };
+    controls::Border m_resetCard{ nullptr };
     controls::Border m_closeButton{ nullptr };
+    controls::TextBlock m_bubbleTitle{ nullptr };
     controls::TextBlock m_bubbleTotal{ nullptr };
     controls::TextBlock m_bubbleInput{ nullptr };
     controls::TextBlock m_bubbleOutput{ nullptr };
@@ -1747,6 +2265,7 @@ private:
     mux::DispatcherTimer m_usageTimer{ nullptr };
     std::shared_ptr<CaptureRenderer> m_renderer;
     std::shared_ptr<tokenometer::Database> m_database;
+    std::unique_ptr<tokenometer::TrayIcon> m_trayIcon;
     std::unique_ptr<tokenometer::CodexCollector> m_collector;
     std::unique_ptr<tokenometer::WslCodexCollector> m_wslCollector;
     std::jthread m_collectionThread;
@@ -1765,6 +2284,7 @@ private:
     std::mutex m_bubbleSnapshotMutex;
     BubbleUsageSnapshot m_bubbleSnapshot;
     tokenometer::ChatGptImportViewData m_chatGptImportData;
+    tokenometer::SurfacePreferences m_surfacePreferences;
     tokenometer::DetailsDimension m_detailsDimension{ tokenometer::DetailsDimension::Tool };
     std::wstring m_selectedBreakdownKey;
     std::wstring m_selectedSessionId;
@@ -1776,7 +2296,15 @@ private:
     tokenometer::TrendRange m_trendRange{ tokenometer::TrendRange::Days30 };
     int64_t m_lastTrendRefreshTick{};
     HWND m_hwnd{};
+    LONG_PTR m_dashboardStyle{};
+    LONG_PTR m_dashboardExtendedStyle{};
     bool m_bubbleMode{};
+    bool m_backdropDisabled{};
+    bool m_explicitExit{};
+    bool m_layoutEditorExpanded{};
+    bool m_toolManagerExpanded{};
+    bool m_hoverPreviewActive{};
+    bool m_hoverRestoreDashboard{};
 };
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
@@ -1792,8 +2320,18 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         if (!tokenometer::ChatGPTExportImporter::SelfTest()) return 15;
         if (!tokenometer::WslProcessRunner::SelfTest()) return 16;
         if (!tokenometer::WslCodexCollector::SelfTest()) return 17;
+        if (!tokenometer::SurfacePreferences::SelfTest()) return 18;
         return 0;
     }
+
+    HANDLE const rawInstanceMutex = CreateMutexW(
+        nullptr,
+        FALSE,
+        L"Local\\Tokenometer.CollectionOwner.v1");
+    DWORD const mutexError = GetLastError();
+    if (!rawInstanceMutex) return static_cast<int>(mutexError);
+    winrt::handle instanceMutex{ rawInstanceMutex };
+    if (mutexError == ERROR_ALREADY_EXISTS) return 0;
 
     try
     {
