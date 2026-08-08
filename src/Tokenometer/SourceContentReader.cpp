@@ -24,6 +24,8 @@ namespace tokenometer
         namespace json = winrt::Windows::Data::Json;
 
         constexpr int64_t maximumSegmentBytes = 1024 * 1024;
+        constexpr size_t maximumSanitizedCharacters =
+            static_cast<size_t>(maximumSegmentBytes) * 2;
         constexpr std::wstring_view redacted = L"[REDACTED]";
 
         class FileHandle final
@@ -275,7 +277,7 @@ namespace tokenometer
             return value.GetObject();
         }
 
-        bool IsSensitiveKey(std::wstring_view key)
+        std::wstring NormalizeKey(std::wstring_view key)
         {
             std::wstring normalized;
             normalized.reserve(key.size());
@@ -286,13 +288,25 @@ namespace tokenometer
                     normalized.push_back(static_cast<wchar_t>(std::towlower(character)));
                 }
             }
+            return normalized;
+        }
+
+        bool IsSensitiveKey(std::wstring_view key)
+        {
+            auto const normalized = NormalizeKey(key);
             constexpr std::array sensitiveSuffixes{
                 std::wstring_view{ L"apikey" },
                 std::wstring_view{ L"token" },
                 std::wstring_view{ L"password" },
                 std::wstring_view{ L"authorization" },
                 std::wstring_view{ L"secret" },
-                std::wstring_view{ L"privatekey" }
+                std::wstring_view{ L"privatekey" },
+                std::wstring_view{ L"secretaccesskey" },
+                std::wstring_view{ L"cookie" },
+                std::wstring_view{ L"passwd" },
+                std::wstring_view{ L"pwd" },
+                std::wstring_view{ L"credential" },
+                std::wstring_view{ L"credentials" }
             };
             if (normalized == L"key") return true;
             return std::ranges::any_of(sensitiveSuffixes, [&](std::wstring_view suffix)
@@ -300,6 +314,355 @@ namespace tokenometer
                 return normalized.ends_with(suffix);
             });
         }
+
+        struct RedactionRange
+        {
+            size_t begin{};
+            size_t end{};
+        };
+
+        bool IsKeyCharacter(wchar_t character)
+        {
+            return std::iswalnum(character) || character == L'_' ||
+                   character == L'-' || character == L'.';
+        }
+
+        bool IsTokenCharacter(wchar_t character)
+        {
+            return std::iswalnum(character) || character == L'_' || character == L'-';
+        }
+
+        bool EqualAsciiInsensitive(wchar_t left, wchar_t right)
+        {
+            return std::towlower(left) == std::towlower(right);
+        }
+
+        bool StartsWithInsensitive(
+            std::wstring_view text,
+            size_t offset,
+            std::wstring_view prefix)
+        {
+            if (offset > text.size() || prefix.size() > text.size() - offset) return false;
+            for (size_t index = 0; index < prefix.size(); ++index)
+            {
+                if (!EqualAsciiInsensitive(text[offset + index], prefix[index])) return false;
+            }
+            return true;
+        }
+
+        void AddRange(std::vector<RedactionRange>& ranges, size_t begin, size_t end)
+        {
+            if (begin < end) ranges.push_back({ begin, end });
+        }
+
+        size_t SkipHorizontalSpace(std::wstring_view text, size_t offset)
+        {
+            while (offset < text.size() &&
+                   (text[offset] == L' ' || text[offset] == L'\t'))
+            {
+                ++offset;
+            }
+            return offset;
+        }
+
+        size_t QuotedValueEnd(std::wstring_view text, size_t offset, wchar_t quote)
+        {
+            bool escaped{};
+            while (offset < text.size())
+            {
+                wchar_t const character = text[offset];
+                if (character == quote && !escaped)
+                {
+                    if (offset + 1 < text.size() && text[offset + 1] == quote)
+                    {
+                        offset += 2;
+                        continue;
+                    }
+                    break;
+                }
+                if (character == L'\\')
+                {
+                    escaped = !escaped;
+                }
+                else
+                {
+                    escaped = false;
+                }
+                ++offset;
+            }
+            return offset;
+        }
+
+        void FindAssignedSecrets(
+            std::wstring_view text,
+            std::vector<RedactionRange>& ranges)
+        {
+            size_t offset{};
+            while (offset < text.size())
+            {
+                if (!IsKeyCharacter(text[offset]) ||
+                    (offset > 0 && IsKeyCharacter(text[offset - 1])))
+                {
+                    ++offset;
+                    continue;
+                }
+
+                size_t const keyBegin = offset;
+                while (offset < text.size() && IsKeyCharacter(text[offset])) ++offset;
+                size_t const keyEnd = offset;
+                auto const key = text.substr(keyBegin, keyEnd - keyBegin);
+                if (!IsSensitiveKey(key)) continue;
+                auto const normalized = NormalizeKey(key);
+
+                bool const commandOption = key.size() > 2 && key.starts_with(L"--");
+                size_t cursor = keyEnd;
+                if (cursor < text.size() &&
+                    (text[cursor] == L'\'' || text[cursor] == L'\"'))
+                {
+                    ++cursor;
+                }
+                size_t const beforeSpace = cursor;
+                cursor = SkipHorizontalSpace(text, cursor);
+                if (cursor < text.size() &&
+                    (text[cursor] == L':' || text[cursor] == L'='))
+                {
+                    ++cursor;
+                }
+                else if (!(commandOption && cursor > beforeSpace))
+                {
+                    continue;
+                }
+                cursor = SkipHorizontalSpace(text, cursor);
+                if (cursor >= text.size() || text[cursor] == L'\r' || text[cursor] == L'\n')
+                {
+                    continue;
+                }
+
+                if (text[cursor] == L'\'' || text[cursor] == L'\"')
+                {
+                    wchar_t const quote = text[cursor++];
+                    AddRange(ranges, cursor, QuotedValueEnd(text, cursor, quote));
+                    continue;
+                }
+
+                size_t end = cursor;
+                bool const headerValue = normalized.ends_with(L"authorization") ||
+                                         normalized.ends_with(L"cookie");
+                while (end < text.size() && text[end] != L'\r' && text[end] != L'\n' &&
+                       text[end] != L'\'' && text[end] != L'\"' &&
+                       (headerValue || (!std::iswspace(text[end]) &&
+                           text[end] != L',' && text[end] != L';' && text[end] != L'&' &&
+                           text[end] != L'}' && text[end] != L']' && text[end] != L')')))
+                {
+                    ++end;
+                }
+                while (end > cursor && std::iswspace(text[end - 1])) --end;
+                AddRange(ranges, cursor, end);
+            }
+        }
+
+        void FindAuthorizationSchemes(
+            std::wstring_view text,
+            std::vector<RedactionRange>& ranges)
+        {
+            for (size_t offset = 0; offset < text.size(); ++offset)
+            {
+                std::wstring_view scheme;
+                if (StartsWithInsensitive(text, offset, L"bearer")) scheme = L"bearer";
+                else if (StartsWithInsensitive(text, offset, L"basic")) scheme = L"basic";
+                else continue;
+
+                if ((offset > 0 && std::iswalnum(text[offset - 1])) ||
+                    (offset + scheme.size() < text.size() &&
+                     std::iswalnum(text[offset + scheme.size()])))
+                {
+                    continue;
+                }
+                size_t cursor = offset + scheme.size();
+                size_t const beforeSpace = cursor;
+                cursor = SkipHorizontalSpace(text, cursor);
+                if (cursor == beforeSpace || cursor >= text.size()) continue;
+
+                size_t begin = cursor;
+                size_t end{};
+                if (text[begin] == L'\'' || text[begin] == L'\"')
+                {
+                    wchar_t const quote = text[begin++];
+                    end = QuotedValueEnd(text, begin, quote);
+                }
+                else
+                {
+                    end = begin;
+                    while (end < text.size() && !std::iswspace(text[end]) &&
+                           text[end] != L'\'' && text[end] != L'\"' &&
+                           text[end] != L',' && text[end] != L';')
+                    {
+                        ++end;
+                    }
+                }
+                auto const credential = text.substr(begin, end - begin);
+                bool highConfidence{};
+                if (scheme == L"basic")
+                {
+                    bool upper{};
+                    bool lower{};
+                    bool marker{};
+                    bool valid = credential.size() >= 12;
+                    for (wchar_t const character : credential)
+                    {
+                        upper = upper || std::iswupper(character);
+                        lower = lower || std::iswlower(character);
+                        marker = marker || std::iswdigit(character) ||
+                                 character == L'+' || character == L'/' || character == L'=';
+                        valid = valid && (std::iswalnum(character) ||
+                            character == L'+' || character == L'/' || character == L'=');
+                    }
+                    highConfidence = valid && upper && lower && marker;
+                }
+                else
+                {
+                    bool const hasDigit = std::ranges::any_of(
+                        credential,
+                        [](wchar_t character) { return std::iswdigit(character); });
+                    bool const hasSeparator = std::ranges::any_of(
+                        credential,
+                        [](wchar_t character)
+                        {
+                            return character == L'_' || character == L'-' ||
+                                   character == L'.' || character == L'+' || character == L'/';
+                        });
+                    highConfidence = credential.size() >= 20 ||
+                        (credential.size() >= 12 && hasDigit && hasSeparator);
+                }
+                if (highConfidence)
+                {
+                    AddRange(ranges, begin, end);
+                    offset = end - 1;
+                }
+            }
+        }
+
+        void FindPrefixedTokens(
+            std::wstring_view text,
+            std::vector<RedactionRange>& ranges)
+        {
+            for (size_t offset = 0; offset < text.size(); ++offset)
+            {
+                if (offset > 0 && IsTokenCharacter(text[offset - 1])) continue;
+
+                size_t minimumLength{};
+                if (StartsWithInsensitive(text, offset, L"github_pat_")) minimumLength = 20;
+                else if (offset + 4 <= text.size() &&
+                         StartsWithInsensitive(text, offset, L"gh") &&
+                         std::wstring_view(L"pousr").find(static_cast<wchar_t>(
+                             std::towlower(text[offset + 2]))) != std::wstring_view::npos &&
+                         text[offset + 3] == L'_')
+                {
+                    minimumLength = 20;
+                }
+                else if (StartsWithInsensitive(text, offset, L"sk-")) minimumLength = 12;
+                else if (StartsWithInsensitive(text, offset, L"xox"))
+                {
+                    size_t dash = offset + 3;
+                    while (dash < text.size() && std::iswalnum(text[dash]) &&
+                           dash - offset <= 8)
+                    {
+                        ++dash;
+                    }
+                    if (dash >= text.size() || dash == offset + 3 || text[dash] != L'-')
+                    {
+                        continue;
+                    }
+                    minimumLength = 16;
+                }
+                else
+                {
+                    continue;
+                }
+
+                size_t end = offset;
+                while (end < text.size() && IsTokenCharacter(text[end])) ++end;
+                if (end - offset >= minimumLength)
+                {
+                    AddRange(ranges, offset, end);
+                    offset = end - 1;
+                }
+            }
+        }
+
+        bool IsBase64UrlCharacter(wchar_t character)
+        {
+            return std::iswalnum(character) || character == L'_' || character == L'-';
+        }
+
+        void FindJsonWebTokens(
+            std::wstring_view text,
+            std::vector<RedactionRange>& ranges)
+        {
+            for (size_t offset = 0; offset + 3 < text.size(); ++offset)
+            {
+                if (text.substr(offset, 3) != L"eyJ" ||
+                    (offset > 0 && (IsBase64UrlCharacter(text[offset - 1]) ||
+                                    text[offset - 1] == L'.')))
+                {
+                    continue;
+                }
+
+                size_t first = offset;
+                while (first < text.size() && IsBase64UrlCharacter(text[first])) ++first;
+                if (first == text.size() || text[first] != L'.' || first - offset < 4) continue;
+                size_t second = first + 1;
+                while (second < text.size() && IsBase64UrlCharacter(text[second])) ++second;
+                if (second == text.size() || text[second] != L'.' || second - first <= 4) continue;
+                size_t end = second + 1;
+                while (end < text.size() && IsBase64UrlCharacter(text[end])) ++end;
+                if (end - second <= 4 || end - offset < 24) continue;
+                AddRange(ranges, offset, end);
+                offset = end - 1;
+            }
+        }
+
+        std::wstring RedactPlainText(std::wstring_view text)
+        {
+            if (text.size() > maximumSanitizedCharacters)
+            {
+                throw std::runtime_error("The tool content is too large to redact safely");
+            }
+
+            std::vector<RedactionRange> ranges;
+            FindAssignedSecrets(text, ranges);
+            FindAuthorizationSchemes(text, ranges);
+            FindPrefixedTokens(text, ranges);
+            FindJsonWebTokens(text, ranges);
+            if (ranges.empty()) return std::wstring(text);
+
+            std::ranges::sort(ranges, [](auto const& left, auto const& right)
+            {
+                return left.begin < right.begin;
+            });
+            std::wstring result;
+            result.reserve(text.size());
+            size_t cursor{};
+            for (auto const& range : ranges)
+            {
+                if (range.end <= cursor) continue;
+                if (range.begin < cursor)
+                {
+                    cursor = range.end;
+                    continue;
+                }
+                if (range.begin > cursor)
+                {
+                    result.append(text.substr(cursor, range.begin - cursor));
+                }
+                result.append(redacted);
+                cursor = range.end;
+            }
+            if (cursor < text.size()) result.append(text.substr(cursor));
+            return result;
+        }
+
+        std::wstring RedactStructuredText(std::wstring_view text, unsigned depth = 0);
 
         void Redact(json::IJsonValue const& value, unsigned depth = 0)
         {
@@ -325,9 +688,17 @@ namespace tokenometer
                             key,
                             json::JsonValue::CreateStringValue(winrt::hstring(redacted)));
                     }
+                    else if (auto const child = object.Lookup(key);
+                             child && child.ValueType() == json::JsonValueType::String)
+                    {
+                        object.SetNamedValue(
+                            key,
+                            json::JsonValue::CreateStringValue(winrt::hstring(
+                                RedactStructuredText(child.GetString(), depth + 1))));
+                    }
                     else
                     {
-                        Redact(object.Lookup(key), depth + 1);
+                        Redact(child, depth + 1);
                     }
                 }
             }
@@ -336,13 +707,28 @@ namespace tokenometer
                 auto const array = value.GetArray();
                 for (uint32_t index = 0; index < array.Size(); ++index)
                 {
-                    Redact(array.GetAt(index), depth + 1);
+                    auto const child = array.GetAt(index);
+                    if (child && child.ValueType() == json::JsonValueType::String)
+                    {
+                        array.SetAt(
+                            index,
+                            json::JsonValue::CreateStringValue(winrt::hstring(
+                                RedactStructuredText(child.GetString(), depth + 1))));
+                    }
+                    else
+                    {
+                        Redact(child, depth + 1);
+                    }
                 }
             }
         }
 
-        std::wstring RedactStructuredText(std::wstring_view text)
+        std::wstring RedactStructuredText(std::wstring_view text, unsigned depth)
         {
+            if (depth > 64)
+            {
+                throw std::runtime_error("The tool content is nested too deeply to display safely");
+            }
             json::IJsonValue value{ nullptr };
             try
             {
@@ -350,10 +736,10 @@ namespace tokenometer
             }
             catch (...)
             {
-                return std::wstring(text);
+                return RedactPlainText(text);
             }
-            Redact(value);
-            return value.Stringify().c_str();
+            Redact(value, depth);
+            return RedactPlainText(value.Stringify().c_str());
         }
 
         std::wstring DisplayValue(json::IJsonValue const& value)
@@ -367,7 +753,7 @@ namespace tokenometer
                 return RedactStructuredText(value.GetString());
             }
             Redact(value);
-            return value.Stringify().c_str();
+            return RedactPlainText(value.Stringify().c_str());
         }
 
         std::wstring ExtractInput(std::string_view record, ToolCallDetail const& locator)
@@ -531,12 +917,36 @@ namespace tokenometer
             std::filesystem::create_directories(sessionDirectory);
             std::filesystem::create_directories(archiveDirectory);
 
-            std::string const input = R"json({"type":"response_item","payload":{"type":"function_call","name":"shell_command","call_id":"call-1","arguments":"{\"command\":\"echo safe\",\"OPENAI_API_KEY\":\"secret-key\",\"nested\":{\"GITHUB_TOKEN\":\"secret-token\"}}"}})json";
-            std::string const output = R"json({"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"{\"status\":\"ok\",\"proxy_authorization\":\"Bearer secret\",\"database_password\":\"secret-password\"}"}})json";
+            std::string const input = R"json({"type":"response_item","payload":{"type":"function_call","name":"shell_command","call_id":"call-1","arguments":"{\"command\":\"echo safe && curl -H 'Cookie: nested-cookie-value' && printf 'Bearer nested-bearer-value-123'\",\"OPENAI_API_KEY\":\"secret-key\",\"nested\":{\"GITHUB_TOKEN\":\"secret-token\"},\"encoded\":\"{\\\"password\\\":\\\"encoded-secret-value\\\"}\"}"}})json";
+            std::string const output = R"json({"type":"response_item","payload":{"type":"function_call_output","call_id":"call-1","output":"{\"status\":\"ok\",\"proxy_authorization\":\"Bearer secret\",\"database_password\":\"secret-password\",\"cookie\":\"structured-cookie-value\"}"}})json";
+            std::string const plainInput = R"json({"type":"response_item","payload":{"type":"function_call","name":"shell_command","call_id":"call-2","arguments":"curl -H 'Authorization: Bearer tiny' -H 'Authorization: ApiKey odd' --password hunter2-secret --token=option-secret-123 PASSWORD='abc''def' TOKEN=\"ghi\"\"jkl\" echo visible-marker"}})json";
+            auto const openAiToken = std::string{ "s" } + "k-abcdefghijklmnop";
+            auto const openAiProjectToken = std::string{ "s" } + "k-proj-abcdefghijklmnopqrstuv";
+            auto const githubClassicToken = std::string{ "gh" } + "p_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+            auto const githubOAuthToken = std::string{ "gh" } + "o_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+            auto const githubFineGrainedToken =
+                std::string{ "github" } + "_pat_ABCDEFGHIJKLMNOPQRSTUVWXYZ123456";
+            auto const slackToken = std::string{ "xox" } + "b-123456789012-abcdefghijklmnop";
+            auto const jsonWebToken = std::string{ "ey" } +
+                "JhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlX3ZhbHVl";
+            std::string plainOutput = R"json({"type":"response_item","payload":{"type":"function_call_output","call_id":"call-2","output":"status ok\nOPENAI_API_KEY=assigned-secret-value\nAWS_SECRET_ACCESS_KEY=aws-secret-access-value\nAuthorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==\nSet-Cookie: session=cookie-secret-value; HttpOnly\nstandalone )json";
+            for (auto const& token : {
+                     openAiToken,
+                     openAiProjectToken,
+                     githubClassicToken,
+                     githubOAuthToken,
+                     githubFineGrainedToken,
+                     slackToken,
+                     jsonWebToken })
+            {
+                plainOutput += token + " ";
+            }
+            plainOutput += R"json(\ntoken usage, basic configuration, basic command-line, and bearer instrument remain visible"}})json";
             auto const fixture = sessionDirectory / L"rollout-reader-fixture.jsonl";
             {
                 std::ofstream stream(fixture, std::ios::binary);
-                stream << input << '\n' << output << '\n';
+                stream << input << '\n' << output << '\n'
+                       << plainInput << '\n' << plainOutput << '\n';
             }
 
             ToolCallDetail locator;
@@ -555,8 +965,52 @@ namespace tokenometer
                 content.output.find(redacted) == std::wstring::npos ||
                 content.input.find(L"secret-key") != std::wstring::npos ||
                 content.input.find(L"secret-token") != std::wstring::npos ||
+                content.input.find(L"nested-cookie-value") != std::wstring::npos ||
+                content.input.find(L"nested-bearer-value") != std::wstring::npos ||
+                content.input.find(L"encoded-secret-value") != std::wstring::npos ||
                 content.output.find(L"Bearer secret") != std::wstring::npos ||
-                content.output.find(L"secret-password") != std::wstring::npos)
+                content.output.find(L"secret-password") != std::wstring::npos ||
+                content.output.find(L"structured-cookie-value") != std::wstring::npos)
+            {
+                std::filesystem::remove_all(root);
+                return false;
+            }
+
+            ToolCallDetail plainLocator = locator;
+            plainLocator.callId = L"call-2";
+            plainLocator.inputOffset = locator.outputOffset + locator.outputLength;
+            plainLocator.inputLength = static_cast<int64_t>(plainInput.size() + 1);
+            plainLocator.outputOffset = plainLocator.inputOffset + plainLocator.inputLength;
+            plainLocator.outputLength = static_cast<int64_t>(plainOutput.size() + 1);
+            auto const plainContent = reader.Read(plainLocator);
+            auto const wide = [](std::string const& value)
+            {
+                return std::wstring(value.begin(), value.end());
+            };
+            if (plainContent.input.find(L"visible-marker") == std::wstring::npos ||
+                plainContent.output.find(
+                    L"token usage, basic configuration, basic command-line, and bearer instrument remain visible") ==
+                    std::wstring::npos ||
+                plainContent.input.find(redacted) == std::wstring::npos ||
+                plainContent.output.find(redacted) == std::wstring::npos ||
+                plainContent.input.find(L"Bearer tiny") != std::wstring::npos ||
+                plainContent.input.find(L"ApiKey odd") != std::wstring::npos ||
+                plainContent.input.find(L"hunter2-secret") != std::wstring::npos ||
+                plainContent.input.find(L"option-secret-123") != std::wstring::npos ||
+                plainContent.input.find(L"abc''def") != std::wstring::npos ||
+                plainContent.input.find(L"ghi\"\"jkl") != std::wstring::npos ||
+                plainContent.output.find(L"assigned-secret-value") != std::wstring::npos ||
+                plainContent.output.find(L"aws-secret-access-value") != std::wstring::npos ||
+                plainContent.output.find(L"QWxhZGRpbjpvcGVuIHNlc2FtZQ") != std::wstring::npos ||
+                plainContent.output.find(L"cookie-secret-value") != std::wstring::npos ||
+                plainContent.output.find(L"HttpOnly") != std::wstring::npos ||
+                plainContent.output.find(wide(openAiToken)) != std::wstring::npos ||
+                plainContent.output.find(wide(openAiProjectToken)) != std::wstring::npos ||
+                plainContent.output.find(wide(githubClassicToken)) != std::wstring::npos ||
+                plainContent.output.find(wide(githubOAuthToken)) != std::wstring::npos ||
+                plainContent.output.find(wide(githubFineGrainedToken)) != std::wstring::npos ||
+                plainContent.output.find(wide(slackToken)) != std::wstring::npos ||
+                plainContent.output.find(wide(jsonWebToken)) != std::wstring::npos)
             {
                 std::filesystem::remove_all(root);
                 return false;
