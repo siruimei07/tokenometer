@@ -156,6 +156,18 @@ namespace tokenometer
         Estimated,
     };
 
+    struct SessionRef
+    {
+        std::wstring sourceKind;
+        std::wstring accountId;
+        std::wstring sessionId;
+
+        [[nodiscard]] bool Valid() const noexcept
+        {
+            return !sourceKind.empty() && !accountId.empty() && !sessionId.empty();
+        }
+    };
+
     struct ChatGPTPromptEstimate
     {
         std::wstring sessionId;
@@ -285,6 +297,7 @@ namespace tokenometer
     {
         std::wstring key;
         std::wstring displayName;
+        SessionRef session;
         TokenCounts counts;
         int64_t sessions{};
         int64_t messages{};
@@ -347,6 +360,7 @@ namespace tokenometer
         std::wstring sourcePath;
         std::wstring name;
         std::wstring callId;
+        int promptIndex{};
         int64_t inputOffset{};
         int64_t inputLength{};
         int64_t outputOffset{};

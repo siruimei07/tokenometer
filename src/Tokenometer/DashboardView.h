@@ -75,13 +75,6 @@ namespace tokenometer
         std::wstring summary;
     };
 
-    struct SessionRef
-    {
-        std::wstring sourceKind;
-        std::wstring accountId;
-        std::wstring sessionId;
-    };
-
     struct DetailsViewData
     {
         UsageScope scope{ UsageScope::CodexExact };
@@ -89,25 +82,40 @@ namespace tokenometer
         std::vector<BreakdownRow> rows;
         std::wstring selectedKey;
         std::vector<SessionSummary> recentSessions;
-        std::wstring selectedSessionId;
-        std::wstring selectedSessionAccountId;
-        std::wstring selectedSessionSourceKind;
+        SessionRef selectedSession;
         std::vector<TurnSummary> selectedTurns;
         std::vector<ToolCallViewData> toolCalls;
         std::wstring selectedToolCallLocator;
         std::wstring selectedToolDetails;
+        bool breakdownHasMore{};
+        bool breakdownExpanded{};
+        bool sessionsHasMore{};
+        bool sessionsExpanded{};
+        bool turnsHasMore{};
+        bool turnsExpanded{};
+        bool toolsHasMore{};
+        bool toolsExpanded{};
         bool loading{};
         std::wstring unavailableReason;
         std::wstring error;
+    };
+
+    enum class DetailsList
+    {
+        Breakdown,
+        Sessions,
+        Turns,
+        Tools,
     };
 
     struct DetailsCallbacks
     {
         std::function<void(UsageScope)> onScopeChanged;
         std::function<void(DetailsDimension)> onDimensionChanged;
-        std::function<void(std::wstring const&)> onBreakdownSelected;
+        std::function<void(std::wstring const&, SessionRef const&)> onBreakdownSelected;
         std::function<void(SessionRef const&)> onSessionSelected;
         std::function<void(std::wstring const&)> onToolCallRequested;
+        std::function<void(DetailsList, bool)> onListExpansionChanged;
     };
 
     enum class TrendGroup

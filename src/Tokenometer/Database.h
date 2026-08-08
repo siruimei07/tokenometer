@@ -61,8 +61,15 @@ namespace tokenometer
             int64_t since = 0,
             int limit = 20);
         [[nodiscard]] std::vector<SessionSummary> GetRecentSessions(int limit = 8);
+        [[nodiscard]] std::optional<SessionSummary> GetSession(SessionRef const& session);
+        [[nodiscard]] std::vector<TurnSummary> GetSessionTurns(
+            SessionRef const& session,
+            int limit = 100);
         [[nodiscard]] std::vector<TurnSummary> GetSessionTurns(
             std::wstring_view sessionId,
+            int limit = 100);
+        [[nodiscard]] std::vector<ToolCallDetail> GetSessionToolCalls(
+            SessionRef const& session,
             int limit = 100);
         [[nodiscard]] std::vector<ToolCallDetail> GetToolCalls(
             std::wstring_view sessionId,
@@ -73,12 +80,17 @@ namespace tokenometer
         [[nodiscard]] std::vector<ChatGPTSessionEstimate> GetChatGPTEstimatedSessions(
             std::wstring_view accountId = {},
             int limit = 100);
+        [[nodiscard]] std::optional<ChatGPTSessionEstimate> GetChatGPTEstimatedSession(
+            SessionRef const& session);
         [[nodiscard]] UsageTotals GetChatGPTEstimatedTotals(
             std::wstring_view accountId = {});
         [[nodiscard]] std::vector<BreakdownRow> GetChatGPTEstimatedBreakdown(
             std::wstring_view dimension,
             int64_t since = 0,
             int limit = 20);
+        [[nodiscard]] std::vector<ChatGPTPromptEstimate> GetChatGPTEstimatedPrompts(
+            SessionRef const& session,
+            int limit = 500);
         [[nodiscard]] std::vector<ChatGPTPromptEstimate> GetChatGPTEstimatedPrompts(
             std::wstring_view accountId,
             std::wstring_view sessionId,

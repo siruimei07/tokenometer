@@ -774,6 +774,24 @@ namespace tokenometer
                 statement.Int64(first + 5)
             };
         }
+
+        SessionSummary ReadSessionSummary(Statement const& statement)
+        {
+            SessionSummary row;
+            row.id = statement.Text(0);
+            row.title = statement.Text(1);
+            row.project = statement.Text(2);
+            row.model = statement.Text(3);
+            row.deviceId = statement.Text(4);
+            row.accountId = statement.Text(5);
+            row.startedAt = statement.Int64(6);
+            row.updatedAt = statement.Int64(7);
+            row.messages = statement.Int64(8);
+            row.toolCalls = statement.Int64(9);
+            row.counts = ReadCounts(statement, 10);
+            row.sourceKind = statement.Text(16);
+            return row;
+        }
     }
 
     Database::Database(std::filesystem::path path) : m_path(std::move(path))
@@ -2535,11 +2553,45 @@ namespace tokenometer
         int limit)
     {
         std::scoped_lock lock(m_mutex);
+        if (dimension == L"session")
+        {
+            Statement statement(m_database, R"sql(
+                SELECT d.session_id, d.source_kind, d.account_id,
+                       MAX(COALESCE(NULLIF(s.title,''), d.session_id)),
+                       SUM(d.input_tokens), SUM(d.cached_input_tokens),
+                       SUM(d.cache_write_input_tokens), SUM(d.output_tokens),
+                       SUM(d.reasoning_output_tokens), SUM(d.reported_total_tokens),
+                       SUM(d.messages), SUM(d.tool_calls)
+                FROM daily_usage d LEFT JOIN sessions s
+                  ON s.id=d.session_id AND s.source_kind=d.source_kind
+                 AND s.account_id=d.account_id
+                WHERE (?1=0 OR d.last_timestamp>=?1)
+                GROUP BY d.session_id, d.source_kind, d.account_id
+                ORDER BY SUM(d.reported_total_tokens) DESC LIMIT ?2;
+            )sql");
+            statement.Bind(1, since);
+            statement.Bind(2, std::max(limit, 1));
+            std::vector<BreakdownRow> result;
+            while (statement.Step())
+            {
+                BreakdownRow row;
+                row.session = { statement.Text(1), statement.Text(2), statement.Text(0) };
+                row.key = row.session.sourceKind + wchar_t{ 31 } + row.session.accountId +
+                    wchar_t{ 31 } + row.session.sessionId;
+                row.displayName = statement.Text(3);
+                row.counts = ReadCounts(statement, 4);
+                row.sessions = 1;
+                row.messages = statement.Int64(10);
+                row.toolCalls = statement.Int64(11);
+                result.push_back(std::move(row));
+            }
+            return result;
+        }
+
         char const* key = "tool";
         if (dimension == L"model") key = "model";
         else if (dimension == L"project") key = "project";
         else if (dimension == L"device") key = "device_id";
-        else if (dimension == L"session") key = "session_id";
         else if (dimension == L"source") key = "source_kind";
         else if (dimension == L"account") key = "account_id";
 
@@ -2556,7 +2608,7 @@ namespace tokenometer
 
         Statement statement(m_database, sql.c_str());
         statement.Bind(1, since);
-        statement.Bind(2, std::clamp(limit, 1, 200));
+        statement.Bind(2, std::max(limit, 1));
         std::vector<BreakdownRow> result;
         while (statement.Step())
         {
@@ -2583,34 +2635,47 @@ namespace tokenometer
                    COALESCE(SUM(d.output_tokens),0), COALESCE(SUM(d.reasoning_output_tokens),0),
                     COALESCE(SUM(d.reported_total_tokens),0), s.source_kind
             FROM sessions s LEFT JOIN daily_usage d
-              ON d.session_id=s.id AND d.account_id=s.account_id
+              ON d.session_id=s.id AND d.account_id=s.account_id AND d.source_kind=s.source_kind
             GROUP BY s.id
             ORDER BY s.updated_at DESC LIMIT ?1;
         )sql");
-        statement.Bind(1, std::clamp(limit, 1, 200));
+        statement.Bind(1, std::max(limit, 1));
         std::vector<SessionSummary> result;
         while (statement.Step())
         {
-            SessionSummary row;
-            row.id = statement.Text(0);
-            row.title = statement.Text(1);
-            row.project = statement.Text(2);
-            row.model = statement.Text(3);
-            row.deviceId = statement.Text(4);
-            row.accountId = statement.Text(5);
-            row.startedAt = statement.Int64(6);
-            row.updatedAt = statement.Int64(7);
-            row.messages = statement.Int64(8);
-            row.toolCalls = statement.Int64(9);
-            row.counts = ReadCounts(statement, 10);
-            row.sourceKind = statement.Text(16);
-            result.push_back(std::move(row));
+            result.push_back(ReadSessionSummary(statement));
         }
         return result;
     }
 
-    std::vector<TurnSummary> Database::GetSessionTurns(std::wstring_view sessionId, int limit)
+    std::optional<SessionSummary> Database::GetSession(SessionRef const& session)
     {
+        if (!session.Valid()) return std::nullopt;
+        std::scoped_lock lock(m_mutex);
+        Statement statement(m_database, R"sql(
+            SELECT s.id, COALESCE(NULLIF(s.title,''), s.id), s.project, s.model, s.device_id,
+                   s.account_id, s.started_at, s.updated_at,
+                   MAX(COALESCE(SUM(d.messages),0), s.message_count),
+                   COALESCE(SUM(d.tool_calls),0), COALESCE(SUM(d.input_tokens),0),
+                   COALESCE(SUM(d.cached_input_tokens),0), COALESCE(SUM(d.cache_write_input_tokens),0),
+                   COALESCE(SUM(d.output_tokens),0), COALESCE(SUM(d.reasoning_output_tokens),0),
+                   COALESCE(SUM(d.reported_total_tokens),0), s.source_kind
+            FROM sessions s LEFT JOIN daily_usage d
+              ON d.session_id=s.id AND d.account_id=s.account_id AND d.source_kind=s.source_kind
+            WHERE s.id=?1 AND s.source_kind=?2 AND s.account_id=?3
+            GROUP BY s.id;
+        )sql");
+        statement.Bind(1, session.sessionId);
+        statement.Bind(2, session.sourceKind);
+        statement.Bind(3, session.accountId);
+        return statement.Step()
+            ? std::optional<SessionSummary>{ ReadSessionSummary(statement) }
+            : std::nullopt;
+    }
+
+    std::vector<TurnSummary> Database::GetSessionTurns(SessionRef const& session, int limit)
+    {
+        if (!session.Valid()) return {};
         std::scoped_lock lock(m_mutex);
         Statement statement(m_database, R"sql(
             SELECT u.session_id, u.turn_id, u.prompt_index, u.first_timestamp, u.model,
@@ -2620,11 +2685,14 @@ namespace tokenometer
                                AND t.prompt_index=u.prompt_index),''),
                    u.input_tokens, u.cached_input_tokens, u.cache_write_input_tokens,
                    u.output_tokens, u.reasoning_output_tokens, u.reported_total_tokens
-            FROM turn_usage u WHERE u.session_id=?1
-            ORDER BY u.first_timestamp DESC LIMIT ?2;
+            FROM turn_usage u JOIN sessions s ON s.id=u.session_id
+            WHERE u.session_id=?1 AND s.source_kind=?2 AND s.account_id=?3
+            ORDER BY u.first_timestamp DESC LIMIT ?4;
         )sql");
-        statement.Bind(1, sessionId);
-        statement.Bind(2, std::clamp(limit, 1, 500));
+        statement.Bind(1, session.sessionId);
+        statement.Bind(2, session.sourceKind);
+        statement.Bind(3, session.accountId);
+        statement.Bind(4, std::max(limit, 1));
         std::vector<TurnSummary> result;
         while (statement.Step())
         {
@@ -2641,6 +2709,47 @@ namespace tokenometer
         return result;
     }
 
+    std::vector<TurnSummary> Database::GetSessionTurns(std::wstring_view sessionId, int limit)
+    {
+        std::scoped_lock lock(m_mutex);
+        Statement session(m_database, R"sql(
+            SELECT source_kind, account_id FROM sessions WHERE id=?1;
+        )sql");
+        session.Bind(1, sessionId);
+        return session.Step()
+            ? GetSessionTurns({ session.Text(0), session.Text(1), std::wstring{ sessionId } }, limit)
+            : std::vector<TurnSummary>{};
+    }
+
+    std::vector<ToolCallDetail> Database::GetSessionToolCalls(
+        SessionRef const& session,
+        int limit)
+    {
+        if (!session.Valid()) return {};
+        std::scoped_lock lock(m_mutex);
+        Statement statement(m_database, R"sql(
+            SELECT COALESCE(NULLIF(s.source_path,''), t.source_path),
+                   t.name, t.call_id, t.prompt_index, t.source_offset, t.input_length,
+                   t.output_offset, t.output_length
+            FROM tool_events t JOIN sessions s ON s.id=t.session_id
+            WHERE t.session_id=?1 AND s.source_kind=?2 AND s.account_id=?3
+            ORDER BY t.timestamp DESC, t.source_offset DESC LIMIT ?4;
+        )sql");
+        statement.Bind(1, session.sessionId);
+        statement.Bind(2, session.sourceKind);
+        statement.Bind(3, session.accountId);
+        statement.Bind(4, std::max(limit, 1));
+        std::vector<ToolCallDetail> result;
+        while (statement.Step())
+        {
+            result.push_back({
+                statement.Text(0), statement.Text(1), statement.Text(2), statement.Int(3),
+                statement.Int64(4), statement.Int64(5), statement.Int64(6), statement.Int64(7)
+            });
+        }
+        return result;
+    }
+
     std::vector<ToolCallDetail> Database::GetToolCalls(
         std::wstring_view sessionId,
         int promptIndex)
@@ -2648,7 +2757,7 @@ namespace tokenometer
         std::scoped_lock lock(m_mutex);
         Statement statement(m_database, R"sql(
             SELECT COALESCE(NULLIF(s.source_path,''), t.source_path),
-                   t.name, t.call_id, t.source_offset, t.input_length,
+                   t.name, t.call_id, t.prompt_index, t.source_offset, t.input_length,
                    t.output_offset, t.output_length
             FROM tool_events t LEFT JOIN sessions s ON s.id=t.session_id
             WHERE t.session_id=?1 AND t.prompt_index=?2
@@ -2660,8 +2769,8 @@ namespace tokenometer
         while (statement.Step())
         {
             result.push_back({
-                statement.Text(0), statement.Text(1), statement.Text(2), statement.Int64(3),
-                statement.Int64(4), statement.Int64(5), statement.Int64(6)
+                statement.Text(0), statement.Text(1), statement.Text(2), statement.Int(3),
+                statement.Int64(4), statement.Int64(5), statement.Int64(6), statement.Int64(7)
             });
         }
         return result;
@@ -2714,7 +2823,7 @@ namespace tokenometer
             LIMIT ?2;
         )sql");
         statement.Bind(1, accountId);
-        statement.Bind(2, std::clamp(limit, 1, 500));
+        statement.Bind(2, std::max(limit, 1));
         std::vector<ChatGPTSessionEstimate> result;
         while (statement.Step())
         {
@@ -2732,6 +2841,35 @@ namespace tokenometer
             result.push_back(std::move(row));
         }
         return result;
+    }
+
+    std::optional<ChatGPTSessionEstimate> Database::GetChatGPTEstimatedSession(
+        SessionRef const& session)
+    {
+        if (!session.Valid()) return std::nullopt;
+        std::scoped_lock lock(m_mutex);
+        Statement statement(m_database, R"sql(
+            SELECT session_id, source_kind, account_id, model, started_at, updated_at,
+                   messages, prompts, estimated_input_tokens, estimated_output_tokens
+            FROM chatgpt_estimated_sessions
+            WHERE session_id=?1 AND source_kind=?2 AND account_id=?3;
+        )sql");
+        statement.Bind(1, session.sessionId);
+        statement.Bind(2, session.sourceKind);
+        statement.Bind(3, session.accountId);
+        if (!statement.Step()) return std::nullopt;
+        ChatGPTSessionEstimate row;
+        row.id = statement.Text(0);
+        row.sourceKind = statement.Text(1);
+        row.accountId = statement.Text(2);
+        row.model = statement.Text(3);
+        row.startedAt = statement.Int64(4);
+        row.updatedAt = statement.Int64(5);
+        row.messages = statement.Int64(6);
+        row.prompts = statement.Int64(7);
+        row.estimatedInputTokens = statement.Int64(8);
+        row.estimatedOutputTokens = statement.Int64(9);
+        return row;
     }
 
     UsageTotals Database::GetChatGPTEstimatedTotals(std::wstring_view accountId)
@@ -2762,10 +2900,42 @@ namespace tokenometer
         int limit)
     {
         std::scoped_lock lock(m_mutex);
+        if (dimension == L"session")
+        {
+            Statement statement(m_database, R"sql(
+                SELECT session_id, source_kind, account_id, model,
+                       estimated_input_tokens, estimated_output_tokens,
+                       estimated_input_tokens + estimated_output_tokens,
+                       messages
+                FROM chatgpt_estimated_sessions
+                WHERE (?1=0 OR updated_at>=?1)
+                ORDER BY estimated_input_tokens + estimated_output_tokens DESC
+                LIMIT ?2;
+            )sql");
+            statement.Bind(1, since);
+            statement.Bind(2, std::max(limit, 1));
+            std::vector<BreakdownRow> result;
+            while (statement.Step())
+            {
+                BreakdownRow row;
+                row.session = { statement.Text(1), statement.Text(2), statement.Text(0) };
+                row.key = row.session.sourceKind + wchar_t{ 31 } + row.session.accountId +
+                    wchar_t{ 31 } + row.session.sessionId;
+                row.displayName = row.session.accountId + L" · " + row.session.sessionId;
+                row.counts.input = statement.Int64(4);
+                row.counts.output = statement.Int64(5);
+                row.counts.reportedTotal = statement.Int64(6);
+                row.sessions = 1;
+                row.messages = statement.Int64(7);
+                row.measurement = MeasurementKind::Estimated;
+                result.push_back(std::move(row));
+            }
+            return result;
+        }
+
         char const* key{};
         if (dimension == L"tool") key = "'ChatGPT'";
         else if (dimension == L"model") key = "COALESCE(NULLIF(model,''),'unclassified')";
-        else if (dimension == L"session") key = "account_id || ' / ' || session_id";
         else if (dimension == L"account") key = "account_id";
         else return {};
 
@@ -2785,7 +2955,7 @@ namespace tokenometer
         )sql";
         Statement statement(m_database, sql.c_str());
         statement.Bind(1, since);
-        statement.Bind(2, std::clamp(limit, 1, 200));
+        statement.Bind(2, std::max(limit, 1));
         std::vector<BreakdownRow> result;
         while (statement.Step())
         {
@@ -2803,22 +2973,25 @@ namespace tokenometer
     }
 
     std::vector<ChatGPTPromptEstimate> Database::GetChatGPTEstimatedPrompts(
-        std::wstring_view accountId,
-        std::wstring_view sessionId,
+        SessionRef const& session,
         int limit)
     {
+        if (!session.Valid()) return {};
         std::scoped_lock lock(m_mutex);
         Statement statement(m_database, R"sql(
-            SELECT session_id, turn_id, prompt_index, timestamp, day, model, messages,
-                   estimated_input_tokens, estimated_output_tokens
-            FROM chatgpt_estimated_prompts
-            WHERE account_id=?1 AND session_id=?2
+            SELECT p.session_id, p.turn_id, p.prompt_index, p.timestamp, p.day, p.model, p.messages,
+                   p.estimated_input_tokens, p.estimated_output_tokens
+            FROM chatgpt_estimated_prompts p
+            JOIN chatgpt_estimated_sessions s
+              ON s.account_id=p.account_id AND s.session_id=p.session_id
+            WHERE p.account_id=?1 AND p.session_id=?2 AND s.source_kind=?3
             ORDER BY prompt_index DESC
-            LIMIT ?3;
+            LIMIT ?4;
         )sql");
-        statement.Bind(1, accountId);
-        statement.Bind(2, sessionId);
-        statement.Bind(3, std::clamp(limit, 1, 2000));
+        statement.Bind(1, session.accountId);
+        statement.Bind(2, session.sessionId);
+        statement.Bind(3, session.sourceKind);
+        statement.Bind(4, std::max(limit, 1));
         std::vector<ChatGPTPromptEstimate> result;
         while (statement.Step())
         {
@@ -2835,6 +3008,16 @@ namespace tokenometer
             result.push_back(std::move(row));
         }
         return result;
+    }
+
+    std::vector<ChatGPTPromptEstimate> Database::GetChatGPTEstimatedPrompts(
+        std::wstring_view accountId,
+        std::wstring_view sessionId,
+        int limit)
+    {
+        return GetChatGPTEstimatedPrompts(
+            { L"chatgpt-export", std::wstring{ accountId }, std::wstring{ sessionId } },
+            limit);
     }
 
     std::vector<ChatGPTEstimatedDailyUsage> Database::GetChatGPTEstimatedDailyUsage(
@@ -3066,6 +3249,7 @@ namespace tokenometer
             }
             SessionRecord session{ L"session-1", L"fixture.jsonl", L"codex", L"Fixture", L"D:\\work", L"gpt-test", deviceId, 100, 100, 0 };
             session.accountId = L"account-a";
+            SessionRef const sessionRef{ session.sourceKind, session.accountId, session.id };
             database.UpsertSession(session);
             if (!database.HasSessionSource(session.id, L"codex") ||
                 database.HasSessionSource(session.id, L"codex-wsl")) return false;
@@ -3101,8 +3285,8 @@ namespace tokenometer
             auto const loaded = database.GetSourceProgress(progress.path);
             auto const totals = database.GetTotals();
             auto const sessions = database.GetRecentSessions();
-            auto const turns = database.GetSessionTurns(session.id);
-            auto const tools = database.GetToolCalls(session.id, 1);
+            auto const turns = database.GetSessionTurns(sessionRef);
+            auto const tools = database.GetSessionToolCalls(sessionRef);
             auto const hours = database.GetHourlyUsage(0);
             int64_t hourlyMessages{};
             int64_t hourlyToolCalls{};
@@ -3118,6 +3302,8 @@ namespace tokenometer
                 totals.counts.reportedTotal == 1500 && totals.messages == 1 && totals.toolCalls == 1 &&
                 sessions.size() == 1 && sessions.front().accountId == session.accountId &&
                 sessions.front().counts.cachedInput == 900 &&
+                database.GetSession(sessionRef).has_value() &&
+                !database.GetSession({ L"codex", L"wrong-account", session.id }).has_value() &&
                 turns.size() == 1 && turns.front().model == session.model &&
                 turns.front().counts.reportedTotal == 1500 &&
                 tools.size() == 1 && tools.front().sourcePath == L"fixture.jsonl" &&
@@ -3127,9 +3313,9 @@ namespace tokenometer
             if (!initialValid) return false;
 
             database.PruneDetails(1, 1, 1);
-            if (!database.GetToolCalls(session.id, 1).empty() ||
+            if (!database.GetSessionToolCalls(sessionRef).empty() ||
                 !database.GetHourlyUsage(0).empty() ||
-                database.GetSessionTurns(session.id).size() != 1 ||
+                database.GetSessionTurns(sessionRef).size() != 1 ||
                 database.GetTotals().counts.reportedTotal != 1500)
             {
                 return false;
@@ -3137,7 +3323,7 @@ namespace tokenometer
 
             database.Transaction([&] { database.ResetSourceFile(progress.path); });
             if (database.GetTotals().counts.reportedTotal != 0 ||
-                !database.GetSessionTurns(session.id).empty())
+                !database.GetSessionTurns(sessionRef).empty())
             {
                 return false;
             }
@@ -3155,6 +3341,7 @@ namespace tokenometer
             second.title = L"Second account";
             second.accountId = L"account-b";
             second.deviceId = wslDeviceId;
+            SessionRef const secondRef{ second.sourceKind, second.accountId, second.id };
             PromptEvent secondPrompt = prompt;
             secondPrompt.sourcePath = second.sourcePath;
             secondPrompt.sessionId = second.id;
@@ -3181,9 +3368,9 @@ namespace tokenometer
             });
 
             auto const accounts = database.GetBreakdown(L"account");
-            auto const firstTools = database.GetToolCalls(session.id, 1);
-            auto const secondTools = database.GetToolCalls(second.id, 1);
-            auto const firstTurns = database.GetSessionTurns(session.id);
+            auto const firstTools = database.GetSessionToolCalls(sessionRef);
+            auto const secondTools = database.GetSessionToolCalls(secondRef);
+            auto const firstTurns = database.GetSessionTurns(sessionRef);
             auto findAccount = [&](std::wstring_view id) -> BreakdownRow const*
             {
                 auto const found = std::find_if(accounts.begin(), accounts.end(), [&](auto const& row)
@@ -3203,6 +3390,8 @@ namespace tokenometer
                 !database.GetBreakdown(L"tool").empty() &&
                 !database.GetBreakdown(L"model").empty() &&
                 database.GetBreakdown(L"session").size() == 2 &&
+                database.GetBreakdown(L"session", 0, 1).size() == 1 &&
+                database.GetBreakdown(L"session").front().session.Valid() &&
                 !database.GetBreakdown(L"device").empty() &&
                 !database.GetBreakdown(L"project").empty() &&
                 !database.GetBreakdown(L"source").empty() &&
@@ -3210,8 +3399,22 @@ namespace tokenometer
                 recentSessions.front().sourceKind == L"codex" &&
                 firstTools.size() == 1 && firstTools.front().name == L"shell_command" &&
                 secondTools.size() == 1 && secondTools.front().name == L"other_tool" &&
-                firstTurns.size() == 1 && firstTurns.front().tools == L"shell_command";
+                firstTurns.size() == 1 && firstTurns.front().tools == L"shell_command" &&
+                database.GetSessionTurns({ L"codex-wsl", session.accountId, session.id }).empty() &&
+                database.GetSessionToolCalls({ session.sourceKind, L"wrong-account", session.id }).empty();
             if (!groupingValid) return false;
+
+            ToolEvent additionalTool = tool;
+            additionalTool.sourceOffset = 31;
+            additionalTool.timestamp = 103;
+            additionalTool.name = L"read_file";
+            additionalTool.callId = L"call-2";
+            if (!database.InsertToolEvent(additionalTool) ||
+                database.GetSessionToolCalls(sessionRef, 1).size() != 1 ||
+                database.GetSessionToolCalls(sessionRef, 10).size() != 2)
+            {
+                return false;
+            }
 
             auto const duplicateWslId = database.GetOrCreateDeviceId(
                 L"Renamed WSL device",
@@ -3299,6 +3502,8 @@ namespace tokenometer
             auto const chatTools = database.GetChatGPTEstimatedBreakdown(L"tool");
             auto const chatDaily = database.GetChatGPTEstimatedDailyUsage(0);
             auto const chatHourly = database.GetChatGPTEstimatedHourlyUsage(0);
+            SessionRef const chatARef{ L"chatgpt-export", L"chat-a", L"shared-chat-session" };
+            auto const chatAPrompts = database.GetChatGPTEstimatedPrompts(chatARef, 10);
             int64_t devicesAfterChatGpt{};
             for (auto const& device : database.GetDeviceSummaries(10))
             {
@@ -3313,10 +3518,19 @@ namespace tokenometer
                     return item.sourceKind != L"chatgpt-export";
                 }) ||
                 chatSessionBreakdown.size() != 2 || chatModels.size() != 2 ||
+                !chatSessionBreakdown.front().session.Valid() ||
+                database.GetChatGPTEstimatedBreakdown(L"session", 0, 1).size() != 1 ||
                 chatAccounts.size() != 2 || chatTools.size() != 1 ||
                 chatTools.front().measurement != MeasurementKind::Estimated ||
                 chatTools.front().CacheAvailable() ||
                 chatDaily.size() != 2 || chatHourly.size() != 4 ||
+                !database.GetChatGPTEstimatedSession(chatARef).has_value() ||
+                database.GetChatGPTEstimatedSession(
+                    { L"chatgpt-export", L"chat-b", L"missing" }).has_value() ||
+                chatAPrompts.size() != 2 ||
+                database.GetChatGPTEstimatedPrompts(chatARef, 1).size() != 1 ||
+                !database.GetChatGPTEstimatedPrompts(
+                    { L"codex", L"chat-b", L"shared-chat-session" }, 10).empty() ||
                 database.GetChatGPTEstimatedBreakdown(L"device").size() != 0 ||
                 database.GetChatGPTEstimatedBreakdown(L"project").size() != 0 ||
                 database.GetTotals().counts.reportedTotal != 1750 ||
@@ -3380,6 +3594,8 @@ namespace tokenometer
             localSession.project = L"C:\\work\\project";
             localSession.model = L"gpt-local";
             localSession.updatedAt = 300;
+            SessionRef const localSessionRef{
+                localSession.sourceKind, localSession.accountId, localSession.id };
             promoted.Transaction([&] { promoted.UpsertSession(localSession); });
             promoted.UpsertSession(localSession);
 
@@ -3423,8 +3639,8 @@ namespace tokenometer
             auto const promotedHours = promoted.GetHourlyUsage(0);
             auto const promotedTotals = promoted.GetTotals();
             auto const promotedSessions = promoted.GetRecentSessions();
-            auto const promotedTurns = promoted.GetSessionTurns(localSession.id);
-            auto const promotedTools = promoted.GetToolCalls(localSession.id, 1);
+            auto const promotedTurns = promoted.GetSessionTurns(localSessionRef);
+            auto const promotedTools = promoted.GetSessionToolCalls(localSessionRef);
             Statement promotedDetails(promoted.m_database, R"sql(
                 SELECT COUNT(*), COALESCE(SUM(source_path=?2),0),
                        (SELECT COUNT(*) FROM usage_events

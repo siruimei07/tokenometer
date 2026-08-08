@@ -1109,12 +1109,48 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
         copy.Children().Append(detailText);
         panel.Children().Append(SoftPanel(copy));
     };
+    auto appendListControls = [this](
+        controls::StackPanel const& panel,
+        DetailsList list,
+        bool hasMore,
+        bool expanded)
+    {
+        if (!hasMore && !expanded) return;
+        controls::StackPanel actions;
+        actions.Orientation(controls::Orientation::Horizontal);
+        actions.Spacing(6);
+        if (hasMore)
+        {
+            auto more = CompactButton(L"显示更多", 72);
+            more.Click([this, list](auto const&, auto const&)
+            {
+                if (m_detailsCallbacks.onListExpansionChanged)
+                {
+                    m_detailsCallbacks.onListExpansionChanged(list, true);
+                }
+            });
+            actions.Children().Append(more);
+        }
+        if (expanded)
+        {
+            auto collapse = CompactButton(L"收起", 52);
+            collapse.Click([this, list](auto const&, auto const&)
+            {
+                if (m_detailsCallbacks.onListExpansionChanged)
+                {
+                    m_detailsCallbacks.onListExpansionChanged(list, false);
+                }
+            });
+            actions.Children().Append(collapse);
+        }
+        panel.Children().Append(actions);
+    };
 
     if (!data.error.empty())
     {
         appendState(m_breakdownList, L"明细加载失败", data.error);
     }
-    else if (data.loading)
+    else if (data.loading && data.rows.empty() && data.unavailableReason.empty())
     {
         appendState(m_breakdownList, L"正在加载明细", L"读取完成后会自动刷新当前维度。");
     }
@@ -1134,7 +1170,7 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
             peak = std::max(peak, row.counts.DisplayTotal());
         }
 
-        auto const visibleRows = std::min<size_t>(data.rows.size(), 3);
+        auto const visibleRows = data.rows.size();
         for (size_t index = 0; index < visibleRows; ++index)
         {
             auto const& row = data.rows[index];
@@ -1183,24 +1219,23 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
             button.BorderThickness({ 1 });
             button.CornerRadius(Radius(13));
             button.Content(rowContent);
-            automation::AutomationProperties::SetName(button, winrt::hstring{ row.key });
+            automation::AutomationProperties::SetName(button, winrt::hstring{ rowName });
             auto key = row.key;
-            button.Click([this, key = std::move(key)](auto const&, auto const&)
+            auto session = row.session;
+            button.Click([this, key = std::move(key), session = std::move(session)](auto const&, auto const&)
             {
                 if (m_detailsCallbacks.onBreakdownSelected)
                 {
-                    m_detailsCallbacks.onBreakdownSelected(key);
+                    m_detailsCallbacks.onBreakdownSelected(key, session);
                 }
             });
             m_breakdownList.Children().Append(button);
         }
-
-        if (data.rows.size() > visibleRows)
-        {
-            auto caption = L"显示前 " + std::to_wstring(visibleRows)
-                + L" 项 · 共 " + std::to_wstring(data.rows.size()) + L" 项";
-            m_breakdownList.Children().Append(Text(caption, 9.5, Color(143, 139, 140)));
-        }
+        appendListControls(
+            m_breakdownList,
+            DetailsList::Breakdown,
+            data.breakdownHasMore,
+            data.breakdownExpanded);
     }
 
     auto const selectedRow = std::find_if(
@@ -1247,7 +1282,7 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
     else
     {
         m_detailsSessionsPanel.Children().Append(Text(L"最近会话", 10.5, Color(143, 139, 140), 600));
-        auto const visibleSessions = std::min<size_t>(data.recentSessions.size(), 3);
+        auto const visibleSessions = data.recentSessions.size();
         for (size_t index = 0; index < visibleSessions; ++index)
         {
             auto const& session = data.recentSessions[index];
@@ -1286,9 +1321,9 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
             controls::Grid::SetColumn(value, 1);
             content.Children().Append(value);
 
-            auto const selected = session.id == data.selectedSessionId &&
-                session.accountId == data.selectedSessionAccountId &&
-                session.sourceKind == data.selectedSessionSourceKind;
+            auto const selected = session.id == data.selectedSession.sessionId &&
+                session.accountId == data.selectedSession.accountId &&
+                session.sourceKind == data.selectedSession.sourceKind;
             controls::Button button;
             button.HorizontalAlignment(mux::HorizontalAlignment::Stretch);
             button.HorizontalContentAlignment(mux::HorizontalAlignment::Stretch);
@@ -1312,10 +1347,15 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
 
         if (visibleSessions == 0)
         {
-            appendState(m_detailsSessionsPanel, L"暂无会话", L"采集完成后最多显示最近 3 条。");
+            appendState(m_detailsSessionsPanel, L"暂无会话", L"采集或导入完成后会在这里显示。");
         }
+        appendListControls(
+            m_detailsSessionsPanel,
+            DetailsList::Sessions,
+            data.sessionsHasMore,
+            data.sessionsExpanded);
 
-        if (!data.selectedSessionId.empty())
+        if (data.selectedSession.Valid())
         {
             m_detailsSessionsPanel.Children().Append(Text(L"提示拆分", 10.5, Color(143, 139, 140), 600));
             if (data.selectedTurns.empty())
@@ -1365,6 +1405,11 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
                 content.Children().Append(value);
                 m_detailsSessionsPanel.Children().Append(SoftPanel(content));
             }
+            appendListControls(
+                m_detailsSessionsPanel,
+                DetailsList::Turns,
+                data.turnsHasMore,
+                data.turnsExpanded);
 
             if (!data.toolCalls.empty())
             {
@@ -1413,6 +1458,11 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
                 });
                 m_detailsSessionsPanel.Children().Append(button);
             }
+            appendListControls(
+                m_detailsSessionsPanel,
+                DetailsList::Tools,
+                data.toolsHasMore,
+                data.toolsExpanded);
 
             if (!data.selectedToolCallLocator.empty())
             {
@@ -1436,19 +1486,29 @@ void DashboardView::UpdateDetails(DetailsViewData const& data)
     }
 
     double expandedHeight = 548.0;
-    if (!data.selectedSessionId.empty())
+    double leftExtra = static_cast<double>(data.rows.size() > 3 ? data.rows.size() - 3 : 0) * 82.0;
+    double rightExtra = static_cast<double>(
+        data.recentSessions.size() > 3 ? data.recentSessions.size() - 3 : 0) * 54.0;
+    if (data.breakdownExpanded) leftExtra += 38.0;
+    if (data.sessionsExpanded) rightExtra += 38.0;
+    if (data.selectedSession.Valid())
     {
-        expandedHeight += 54.0;
-        expandedHeight += static_cast<double>(data.selectedTurns.size()) * 58.0;
-        expandedHeight += static_cast<double>(data.toolCalls.size()) * 52.0;
+        rightExtra += 54.0;
+        rightExtra += static_cast<double>(data.selectedTurns.size()) * 58.0;
+        rightExtra += static_cast<double>(data.toolCalls.size()) * 52.0;
+        if (data.turnsExpanded) rightExtra += 38.0;
+        if (data.toolsExpanded) rightExtra += 38.0;
         if (!data.selectedToolCallLocator.empty())
         {
             auto const approximateLines = (data.selectedToolDetails.size() + 45) / 46;
-            expandedHeight += 82.0 + static_cast<double>(approximateLines) * 17.0;
+            rightExtra += 82.0 + static_cast<double>(approximateLines) * 17.0;
         }
     }
+    expandedHeight += std::max(leftExtra, rightExtra);
     m_detailsPage.Height(expandedHeight);
-    m_detailsExpanded = !data.selectedSessionId.empty() || !data.selectedToolCallLocator.empty();
+    m_detailsExpanded = data.selectedSession.Valid() || data.breakdownExpanded ||
+        data.sessionsExpanded || data.turnsExpanded || data.toolsExpanded ||
+        !data.selectedToolCallLocator.empty();
     UpdateScrollState();
 }
 

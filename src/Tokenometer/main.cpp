@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cwctype>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -60,6 +61,10 @@ namespace
     constexpr int dashboardWidthDip = 1280;
     constexpr int dashboardHeightDip = 800;
     constexpr DWORD chatGptAccountLabelControl = 1001;
+    constexpr int initialBreakdownRows = 3;
+    constexpr int initialSessionRows = 3;
+    constexpr int initialTurnRows = 8;
+    constexpr int initialToolRows = 20;
 
     struct ChatGptFileSelection
     {
@@ -470,12 +475,14 @@ private:
                 m_detailsDimension = tokenometer::DetailsDimension::Tool;
             }
             m_selectedBreakdownKey.clear();
-            m_selectedSessionId.clear();
-            m_selectedSessionAccountId.clear();
-            m_selectedSessionSourceKind.clear();
+            m_selectedSession = {};
             m_selectedToolLocator.clear();
             m_selectedToolDetails.clear();
             m_toolLocators.clear();
+            m_breakdownLimit = initialBreakdownRows;
+            m_sessionLimit = initialSessionRows;
+            m_turnLimit = initialTurnRows;
+            m_toolLimit = initialToolRows;
             if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
             RefreshDetails();
         };
@@ -483,29 +490,34 @@ private:
         {
             m_detailsDimension = dimension;
             m_selectedBreakdownKey.clear();
+            m_breakdownLimit = initialBreakdownRows;
             RefreshDetails();
         };
-        callbacks.onBreakdownSelected = [this](std::wstring const& key)
+        callbacks.onBreakdownSelected = [this](
+            std::wstring const& key,
+            tokenometer::SessionRef const& session)
         {
-            m_selectedBreakdownKey = m_selectedBreakdownKey == key ? std::wstring{} : key;
+            bool const deselect = m_selectedBreakdownKey == key;
+            m_selectedBreakdownKey = deselect ? std::wstring{} : key;
+            if (session.Valid())
+            {
+                m_selectedSession = deselect ? tokenometer::SessionRef{} : session;
+                m_turnLimit = initialTurnRows;
+                m_toolLimit = initialToolRows;
+                m_selectedToolLocator.clear();
+                m_selectedToolDetails.clear();
+                if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
+            }
             RefreshDetails();
         };
         callbacks.onSessionSelected = [this](tokenometer::SessionRef const& session)
         {
-            if (m_selectedSessionId == session.sessionId &&
-                m_selectedSessionAccountId == session.accountId &&
-                m_selectedSessionSourceKind == session.sourceKind)
-            {
-                m_selectedSessionId.clear();
-                m_selectedSessionAccountId.clear();
-                m_selectedSessionSourceKind.clear();
-            }
-            else
-            {
-                m_selectedSessionId = session.sessionId;
-                m_selectedSessionAccountId = session.accountId;
-                m_selectedSessionSourceKind = session.sourceKind;
-            }
+            bool const selected = m_selectedSession.sessionId == session.sessionId &&
+                m_selectedSession.accountId == session.accountId &&
+                m_selectedSession.sourceKind == session.sourceKind;
+            m_selectedSession = selected ? tokenometer::SessionRef{} : session;
+            m_turnLimit = initialTurnRows;
+            m_toolLimit = initialToolRows;
             m_selectedToolLocator.clear();
             m_selectedToolDetails.clear();
             RefreshDetails();
@@ -522,6 +534,36 @@ private:
             {
                 m_selectedToolLocator = locator;
                 LoadToolContent(locator);
+            }
+            RefreshDetails();
+        };
+        callbacks.onListExpansionChanged = [this](tokenometer::DetailsList list, bool showMore)
+        {
+            auto update = [showMore](int& value, int initial, int step)
+            {
+                if (!showMore)
+                {
+                    value = initial;
+                    return;
+                }
+                value = value > std::numeric_limits<int>::max() - step
+                    ? std::numeric_limits<int>::max()
+                    : value + step;
+            };
+            switch (list)
+            {
+            case tokenometer::DetailsList::Breakdown:
+                update(m_breakdownLimit, initialBreakdownRows, 20);
+                break;
+            case tokenometer::DetailsList::Sessions:
+                update(m_sessionLimit, initialSessionRows, 20);
+                break;
+            case tokenometer::DetailsList::Turns:
+                update(m_turnLimit, initialTurnRows, 50);
+                break;
+            case tokenometer::DetailsList::Tools:
+                update(m_toolLimit, initialToolRows, 50);
+                break;
             }
             RefreshDetails();
         };
@@ -1402,15 +1444,27 @@ private:
         data.scope = m_detailsScope;
         data.dimension = m_detailsDimension;
         data.selectedKey = m_selectedBreakdownKey;
-        data.selectedSessionId = m_selectedSessionId;
-        data.selectedSessionAccountId = m_selectedSessionAccountId;
-        data.selectedSessionSourceKind = m_selectedSessionSourceKind;
+        data.selectedSession = m_selectedSession;
         data.selectedToolCallLocator = m_selectedToolLocator;
         data.selectedToolDetails = m_selectedToolDetails;
+        data.breakdownExpanded = m_breakdownLimit > initialBreakdownRows;
+        data.sessionsExpanded = m_sessionLimit > initialSessionRows;
+        data.turnsExpanded = m_turnLimit > initialTurnRows;
+        data.toolsExpanded = m_toolLimit > initialToolRows;
         data.loading = m_detailsScope == tokenometer::UsageScope::CodexExact
             ? m_collecting.load(std::memory_order_relaxed)
             : m_chatGptImporting.load(std::memory_order_relaxed);
         m_toolLocators.clear();
+
+        auto const lookahead = [](int limit)
+        {
+            return limit == std::numeric_limits<int>::max() ? limit : limit + 1;
+        };
+        auto const trimLookahead = [](auto& rows, int limit, bool& hasMore)
+        {
+            hasMore = rows.size() > static_cast<size_t>(limit);
+            if (hasMore) rows.resize(static_cast<size_t>(limit));
+        };
 
         if (!m_database)
         {
@@ -1432,10 +1486,13 @@ private:
                 else
                 {
                     data.rows = m_database->GetChatGPTEstimatedBreakdown(
-                        DetailsDimensionKey(m_detailsDimension), 0, 12);
+                        DetailsDimensionKey(m_detailsDimension), 0, lookahead(m_breakdownLimit));
+                    trimLookahead(data.rows, m_breakdownLimit, data.breakdownHasMore);
                 }
 
-                for (auto const& session : m_database->GetChatGPTEstimatedSessions({}, 3))
+                auto sessions = m_database->GetChatGPTEstimatedSessions({}, lookahead(m_sessionLimit));
+                trimLookahead(sessions, m_sessionLimit, data.sessionsHasMore);
+                for (auto const& session : sessions)
                 {
                     tokenometer::SessionSummary summary;
                     summary.id = session.id;
@@ -1453,28 +1510,45 @@ private:
                     data.recentSessions.push_back(std::move(summary));
                 }
 
-                if (!m_selectedSessionId.empty() && !m_selectedSessionAccountId.empty())
+                if (m_selectedSession.Valid())
                 {
-                    for (auto const& prompt : m_database->GetChatGPTEstimatedPrompts(
-                             m_selectedSessionAccountId, m_selectedSessionId, 8))
+                    auto const selected = m_database->GetChatGPTEstimatedSession(m_selectedSession);
+                    if (!selected)
                     {
-                        tokenometer::TurnSummary turn;
-                        turn.sessionId = prompt.sessionId;
-                        turn.turnId = prompt.turnId;
-                        turn.promptIndex = prompt.promptIndex;
-                        turn.timestamp = prompt.timestamp;
-                        turn.model = prompt.model;
-                        turn.counts.input = prompt.estimatedInputTokens;
-                        turn.counts.output = prompt.estimatedOutputTokens;
-                        turn.counts.reportedTotal = prompt.EstimatedTokens();
-                        turn.measurement = tokenometer::MeasurementKind::Estimated;
-                        data.selectedTurns.push_back(std::move(turn));
+                        m_selectedSession = {};
+                        m_turnLimit = initialTurnRows;
+                        m_toolLimit = initialToolRows;
+                        data.selectedSession = {};
+                        data.turnsExpanded = false;
+                        data.toolsExpanded = false;
+                    }
+                    else
+                    {
+                        auto prompts = m_database->GetChatGPTEstimatedPrompts(
+                            m_selectedSession, lookahead(m_turnLimit));
+                        trimLookahead(prompts, m_turnLimit, data.turnsHasMore);
+                        for (auto const& prompt : prompts)
+                        {
+                            tokenometer::TurnSummary turn;
+                            turn.sessionId = prompt.sessionId;
+                            turn.turnId = prompt.turnId;
+                            turn.promptIndex = prompt.promptIndex;
+                            turn.timestamp = prompt.timestamp;
+                            turn.model = prompt.model;
+                            turn.counts.input = prompt.estimatedInputTokens;
+                            turn.counts.output = prompt.estimatedOutputTokens;
+                            turn.counts.reportedTotal = prompt.EstimatedTokens();
+                            turn.measurement = tokenometer::MeasurementKind::Estimated;
+                            data.selectedTurns.push_back(std::move(turn));
+                        }
                     }
                 }
             }
             else
             {
-                data.rows = m_database->GetBreakdown(DetailsDimensionKey(m_detailsDimension), 0, 12);
+                data.rows = m_database->GetBreakdown(
+                    DetailsDimensionKey(m_detailsDimension), 0, lookahead(m_breakdownLimit));
+                trimLookahead(data.rows, m_breakdownLimit, data.breakdownHasMore);
                 if (m_detailsDimension == tokenometer::DetailsDimension::Device)
                 {
                     auto const devices = m_database->GetDeviceSummaries(100);
@@ -1497,51 +1571,72 @@ private:
                         }
                     }
                 }
-                data.recentSessions = m_database->GetRecentSessions(3);
-                if (!m_selectedSessionId.empty())
+                data.recentSessions = m_database->GetRecentSessions(lookahead(m_sessionLimit));
+                trimLookahead(data.recentSessions, m_sessionLimit, data.sessionsHasMore);
+                if (m_selectedSession.Valid())
                 {
-                    data.selectedTurns = m_database->GetSessionTurns(m_selectedSessionId, 8);
-                    size_t toolIndex{};
-                    for (auto const& turn : data.selectedTurns)
+                    auto const selected = m_database->GetSession(m_selectedSession);
+                    if (!selected)
                     {
-                        for (auto const& tool : m_database->GetToolCalls(m_selectedSessionId, turn.promptIndex))
+                        m_selectedSession = {};
+                        m_turnLimit = initialTurnRows;
+                        m_toolLimit = initialToolRows;
+                        if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
+                        m_selectedToolLocator.clear();
+                        m_selectedToolDetails.clear();
+                        data.selectedSession = {};
+                        data.selectedToolCallLocator.clear();
+                        data.selectedToolDetails.clear();
+                        data.turnsExpanded = false;
+                        data.toolsExpanded = false;
+                    }
+                    else
+                    {
+                        data.selectedTurns = m_database->GetSessionTurns(
+                            m_selectedSession, lookahead(m_turnLimit));
+                        trimLookahead(data.selectedTurns, m_turnLimit, data.turnsHasMore);
+
+                        auto tools = m_database->GetSessionToolCalls(
+                            m_selectedSession, lookahead(m_toolLimit));
+                        trimLookahead(tools, m_toolLimit, data.toolsHasMore);
+                        for (auto const& tool : tools)
                         {
-                            if (toolIndex >= 20) break;
-                            std::wstring locator = L"tool:" + m_selectedSessionId + L":" +
+                            std::wstring locator = L"tool:" + m_selectedSession.sessionId + L":" +
                                 std::to_wstring(tool.inputOffset);
                             tokenometer::ToolCallViewData view;
                             view.locator = locator;
                             view.name = tool.name;
                             if (tool.inputLength > 0 && tool.outputLength > 0)
                             {
-                                view.summary = L"输入 / 输出可按需读取";
+                                view.summary = L"Prompt " + std::to_wstring(tool.promptIndex + 1) +
+                                    L" · 输入 / 输出可按需读取";
                             }
                             else if (tool.inputLength > 0)
                             {
-                                view.summary = L"输入可用 · 暂无输出";
+                                view.summary = L"Prompt " + std::to_wstring(tool.promptIndex + 1) +
+                                    L" · 输入可用 · 暂无输出";
                             }
                             else
                             {
-                                view.summary = L"源详情不可用";
+                                view.summary = L"Prompt " + std::to_wstring(tool.promptIndex + 1) +
+                                    L" · 源详情不可用";
                             }
                             data.toolCalls.push_back(std::move(view));
                             m_toolLocators.emplace_back(std::move(locator), tool);
-                            ++toolIndex;
                         }
-                        if (toolIndex >= 20) break;
-                    }
-                    if (!m_selectedToolLocator.empty() && std::ranges::none_of(
-                            m_toolLocators,
-                            [this](auto const& item)
-                            {
-                                return item.first == m_selectedToolLocator;
-                            }))
-                    {
-                        if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
-                        m_selectedToolLocator.clear();
-                        m_selectedToolDetails.clear();
-                        data.selectedToolCallLocator.clear();
-                        data.selectedToolDetails.clear();
+                        if (!m_selectedToolLocator.empty() && std::ranges::none_of(
+                                m_toolLocators,
+                                [this](auto const& item)
+                                {
+                                    return item.first == m_selectedToolLocator;
+                                }))
+                        {
+                            if (m_toolContentThread.joinable()) m_toolContentThread.request_stop();
+                            m_selectedToolLocator.clear();
+                            m_selectedToolDetails.clear();
+                            data.selectedToolCallLocator.clear();
+                            data.selectedToolDetails.clear();
+                        }
                     }
                 }
             }
@@ -1554,35 +1649,6 @@ private:
                 m_selectedToolDetails.clear();
                 data.selectedToolCallLocator.clear();
                 data.selectedToolDetails.clear();
-            }
-            if (!m_selectedSessionId.empty() && std::ranges::none_of(
-                    data.recentSessions,
-                    [this](auto const& session)
-                    {
-                        return session.id == m_selectedSessionId &&
-                            session.accountId == m_selectedSessionAccountId &&
-                            session.sourceKind == m_selectedSessionSourceKind;
-                    }))
-            {
-                if (m_detailsScope == tokenometer::UsageScope::ChatGptEstimated)
-                {
-                    auto const selected = m_database->GetChatGPTEstimatedSessions(
-                        m_selectedSessionAccountId, 100);
-                    auto const exists = std::ranges::any_of(selected, [this](auto const& session)
-                    {
-                        return session.id == m_selectedSessionId;
-                    });
-                    if (!exists)
-                    {
-                        m_selectedSessionId.clear();
-                        m_selectedSessionAccountId.clear();
-                        m_selectedSessionSourceKind.clear();
-                        data.selectedSessionId.clear();
-                        data.selectedSessionAccountId.clear();
-                        data.selectedSessionSourceKind.clear();
-                        data.selectedTurns.clear();
-                    }
-                }
             }
         }
         catch (...)
@@ -2583,12 +2649,14 @@ private:
     tokenometer::UsageScope m_detailsScope{ tokenometer::UsageScope::CodexExact };
     tokenometer::DetailsDimension m_detailsDimension{ tokenometer::DetailsDimension::Tool };
     std::wstring m_selectedBreakdownKey;
-    std::wstring m_selectedSessionId;
-    std::wstring m_selectedSessionAccountId;
-    std::wstring m_selectedSessionSourceKind;
+    tokenometer::SessionRef m_selectedSession;
     std::wstring m_selectedToolLocator;
     std::wstring m_selectedToolDetails;
     std::vector<std::pair<std::wstring, tokenometer::ToolCallDetail>> m_toolLocators;
+    int m_breakdownLimit{ initialBreakdownRows };
+    int m_sessionLimit{ initialSessionRows };
+    int m_turnLimit{ initialTurnRows };
+    int m_toolLimit{ initialToolRows };
     tokenometer::UsageScope m_trendScope{ tokenometer::UsageScope::CodexExact };
     tokenometer::TrendGroup m_trendGroup{ tokenometer::TrendGroup::Tool };
     tokenometer::TrendChart m_trendChart{ tokenometer::TrendChart::Bars };
