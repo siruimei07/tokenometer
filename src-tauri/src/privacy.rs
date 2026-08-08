@@ -54,7 +54,7 @@ fn redact_line(line: &str) -> String {
 
     let mut output = Vec::new();
     let mut redact_next = false;
-    for token in line.split_whitespace() {
+    for token in command_tokens(line) {
         if redact_next {
             output.push(REDACTED.to_string());
             redact_next = false;
@@ -70,18 +70,59 @@ fn redact_line(line: &str) -> String {
             "--api-key" | "--apikey" | "--token" | "--access-token" | "--secret" | "--password"
         );
         if sensitive_flag && normalized.contains('=') {
-            let flag = token.split_once('=').map_or(token, |pair| pair.0);
+            let flag = token.split_once('=').map_or(token.as_str(), |pair| pair.0);
             output.push(format!("{flag}={REDACTED}"));
         } else if sensitive_flag {
-            output.push(token.to_string());
+            output.push(token);
             redact_next = true;
         } else if looks_like_token(&normalized) {
             output.push(REDACTED.to_string());
         } else {
-            output.push(token.to_string());
+            output.push(token);
         }
     }
     output.join(" ")
+}
+
+fn command_tokens(line: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+
+    for character in line.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            continue;
+        }
+        if quote.is_some() && character == '\\' {
+            current.push(character);
+            escaped = true;
+            continue;
+        }
+        match quote {
+            Some(delimiter) if character == delimiter => {
+                current.push(character);
+                quote = None;
+            }
+            Some(_) => current.push(character),
+            None if matches!(character, '"' | '\'') => {
+                current.push(character);
+                quote = Some(character);
+            }
+            None if character.is_whitespace() => {
+                if !current.is_empty() {
+                    tokens.push(std::mem::take(&mut current));
+                }
+            }
+            None => current.push(character),
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 fn sensitive_assignment_index(lower: &str) -> Option<usize> {
@@ -157,5 +198,17 @@ mod tests {
         assert!(!preview.contains("cookie-value"));
         assert!(!preview.contains("sk-12345678901234567890"));
         assert!(preview.matches(REDACTED).count() >= 4);
+    }
+
+    #[test]
+    fn redacts_quoted_cli_secret_values_as_one_value() {
+        let preview = redact_preview(
+            br#"cmd --token="secret with spaces" --secret='another secret' done"#,
+            4096,
+        );
+
+        assert_eq!(preview, "cmd --token=[REDACTED] --secret=[REDACTED] done");
+        assert!(!preview.contains("secret with spaces"));
+        assert!(!preview.contains("another secret"));
     }
 }

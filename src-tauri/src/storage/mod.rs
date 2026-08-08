@@ -8,7 +8,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -32,11 +32,18 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );
 "#;
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "0001_initial.sql",
-    sql: include_str!("../../migrations/0001_initial.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "0001_initial.sql",
+        sql: include_str!("../../migrations/0001_initial.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "0002_tool_finish_payload_hash.sql",
+        sql: include_str!("../../migrations/0002_tool_finish_payload_hash.sql"),
+    },
+];
 
 #[derive(Debug, Error)]
 pub enum StorageError {
@@ -135,6 +142,7 @@ pub struct SourceFileCursor {
     pub parser_state_version: u32,
     pub parser_state: Value,
     pub parser_state_hash: String,
+    pub parser_state_hash_valid: bool,
     pub health: SourceHealthStatus,
     pub last_attempt_at_ms: Option<i64>,
     pub last_success_at_ms: Option<i64>,
@@ -353,6 +361,26 @@ impl Storage {
         validate_cursor_key(source_root_id, logical_file_id)?;
         let connection = self.lock_connection()?;
         load_cursor(&connection, source_root_id, logical_file_id)
+    }
+
+    pub fn list_source_file_cursors(
+        &self,
+        source_root_id: i64,
+    ) -> Result<Vec<SourceFileCursor>, StorageError> {
+        if source_root_id <= 0 {
+            return Err(StorageError::InvalidInput(
+                "source root id must be positive",
+            ));
+        }
+        let connection = self.lock_connection()?;
+        let sql = format!(
+            "SELECT {CURSOR_COLUMNS} FROM source_files WHERE source_root_id = ?1 ORDER BY id"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        statement
+            .query_map([source_root_id], raw_cursor_from_row)?
+            .map(|row| row?.try_into())
+            .collect()
     }
 
     pub fn upsert_source_file_cursor(
@@ -790,34 +818,40 @@ fn load_cursor(
         "SELECT {CURSOR_COLUMNS} FROM source_files WHERE source_root_id = ?1 AND logical_file_id = ?2"
     );
     let raw = connection
-        .query_row(&sql, params![source_root_id, logical_file_id], |row| {
-            Ok(RawCursor {
-                id: row.get(0)?,
-                source_root_id: row.get(1)?,
-                logical_file_id: row.get(2)?,
-                logical_session_id: row.get(3)?,
-                location_kind: row.get(4)?,
-                stable_file_identity: row.get(5)?,
-                identity_degraded: row.get(6)?,
-                cursor_generation: row.get(7)?,
-                committed_offset: row.get(8)?,
-                last_known_size: row.get(9)?,
-                last_modified_at_ms: row.get(10)?,
-                parser_state_version: row.get(11)?,
-                parser_state_json: row.get(12)?,
-                parser_state_hash: row.get(13)?,
-                health: row.get(14)?,
-                last_attempt_at_ms: row.get(15)?,
-                last_success_at_ms: row.get(16)?,
-                last_checked_at_ms: row.get(17)?,
-                last_error_code: row.get(18)?,
-                malformed_records: row.get(19)?,
-                oversized_records: row.get(20)?,
-                data_quality_errors: row.get(21)?,
-            })
-        })
+        .query_row(
+            &sql,
+            params![source_root_id, logical_file_id],
+            raw_cursor_from_row,
+        )
         .optional()?;
     raw.map(TryInto::try_into).transpose()
+}
+
+fn raw_cursor_from_row(row: &Row<'_>) -> rusqlite::Result<RawCursor> {
+    Ok(RawCursor {
+        id: row.get(0)?,
+        source_root_id: row.get(1)?,
+        logical_file_id: row.get(2)?,
+        logical_session_id: row.get(3)?,
+        location_kind: row.get(4)?,
+        stable_file_identity: row.get(5)?,
+        identity_degraded: row.get(6)?,
+        cursor_generation: row.get(7)?,
+        committed_offset: row.get(8)?,
+        last_known_size: row.get(9)?,
+        last_modified_at_ms: row.get(10)?,
+        parser_state_version: row.get(11)?,
+        parser_state_json: row.get(12)?,
+        parser_state_hash: row.get(13)?,
+        health: row.get(14)?,
+        last_attempt_at_ms: row.get(15)?,
+        last_success_at_ms: row.get(16)?,
+        last_checked_at_ms: row.get(17)?,
+        last_error_code: row.get(18)?,
+        malformed_records: row.get(19)?,
+        oversized_records: row.get(20)?,
+        data_quality_errors: row.get(21)?,
+    })
 }
 
 struct RawCursor {
@@ -849,6 +883,8 @@ impl TryFrom<RawCursor> for SourceFileCursor {
     type Error = StorageError;
 
     fn try_from(raw: RawCursor) -> Result<Self, Self::Error> {
+        let parser_state_hash_valid = sha256_hex(raw.parser_state_json.as_bytes())
+            .eq_ignore_ascii_case(&raw.parser_state_hash);
         Ok(Self {
             id: raw.id,
             source_root_id: raw.source_root_id,
@@ -868,6 +904,7 @@ impl TryFrom<RawCursor> for SourceFileCursor {
             })?,
             parser_state: serde_json::from_str(&raw.parser_state_json)?,
             parser_state_hash: raw.parser_state_hash,
+            parser_state_hash_valid,
             health: source_health_from_db(&raw.health)?,
             last_attempt_at_ms: raw.last_attempt_at_ms,
             last_success_at_ms: raw.last_success_at_ms,
@@ -1798,19 +1835,11 @@ fn insert_tool_start(
 fn finish_tool_call(connection: &Connection, fact: &ToolFinishFact) -> Result<bool, StorageError> {
     validate_sha256(&fact.start_source_record_key, "tool start record key")?;
     validate_sha256(&fact.closed_by_record_key, "tool finish record key")?;
-    validate_timestamp(fact.ended_at_ms)?;
-    if fact.output_file_identity.is_empty() {
-        return Err(StorageError::InvalidInput(
-            "tool output file identity is invalid",
-        ));
-    }
-    let output_offset = to_i64(fact.output_offset, "tool output offset")?;
-    let output_length = to_i64(fact.output_length, "tool output length")?;
+    validate_sha256(&fact.closed_by_payload_hash, "tool finish payload hash")?;
     let stored = connection
         .query_row(
             r#"
-            SELECT id, status, closed_by_record_key, ended_at_ms,
-                   output_file_identity, output_offset, output_length
+            SELECT id, status, closed_by_record_key, closed_by_payload_hash
             FROM tool_calls WHERE source_record_key = ?1
             "#,
             [&fact.start_source_record_key],
@@ -1819,10 +1848,7 @@ fn finish_tool_call(connection: &Connection, fact: &ToolFinishFact) -> Result<bo
                     row.get::<_, i64>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, Option<String>>(2)?,
-                    row.get::<_, Option<i64>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             },
         )
@@ -1831,19 +1857,36 @@ fn finish_tool_call(connection: &Connection, fact: &ToolFinishFact) -> Result<bo
             entity: "tool_finish.start",
         })?;
     if stored.1 == "closed" {
-        if stored.2.as_deref() == Some(fact.closed_by_record_key.as_str())
-            && stored.3 == fact.ended_at_ms
-            && stored.4.as_deref() == Some(fact.output_file_identity.as_str())
-            && stored.5 == Some(output_offset)
-            && stored.6 == Some(output_length)
-        {
-            return Ok(false);
+        if stored.2.as_deref() == Some(fact.closed_by_record_key.as_str()) {
+            match stored.3.as_deref() {
+                Some(payload_hash) if payload_hash == fact.closed_by_payload_hash => {
+                    return Ok(false);
+                }
+                None => {
+                    let backfilled = connection.execute(
+                        "UPDATE tool_calls SET closed_by_payload_hash = ?2 WHERE id = ?1 AND closed_by_payload_hash IS NULL",
+                        params![stored.0, fact.closed_by_payload_hash],
+                    )?;
+                    if backfilled == 1 {
+                        return Ok(false);
+                    }
+                }
+                Some(_) => {}
+            }
         }
         return Err(StorageError::RecordIdentityConflict {
             entity: "tool_calls.finish",
             source_record_key: fact.closed_by_record_key.clone(),
         });
     }
+    validate_timestamp(fact.ended_at_ms)?;
+    if fact.output_file_identity.is_empty() {
+        return Err(StorageError::InvalidInput(
+            "tool output file identity is invalid",
+        ));
+    }
+    let output_offset = to_i64(fact.output_offset, "tool output offset")?;
+    let output_length = to_i64(fact.output_length, "tool output length")?;
     let existing_finish: Option<i64> = connection
         .query_row(
             "SELECT id FROM tool_calls WHERE closed_by_record_key = ?1",
@@ -1863,15 +1906,17 @@ fn finish_tool_call(connection: &Connection, fact: &ToolFinishFact) -> Result<bo
             ended_at_ms = ?2,
             status = 'closed',
             closed_by_record_key = ?3,
-            output_file_identity = ?4,
-            output_offset = ?5,
-            output_length = ?6
+            closed_by_payload_hash = ?4,
+            output_file_identity = ?5,
+            output_offset = ?6,
+            output_length = ?7
         WHERE id = ?1 AND status = 'open'
         "#,
         params![
             stored.0,
             fact.ended_at_ms,
             fact.closed_by_record_key,
+            fact.closed_by_payload_hash,
             fact.output_file_identity,
             output_offset,
             output_length,
@@ -2001,12 +2046,12 @@ fn validate_sha256(value: &str, field: &'static str) -> Result<(), StorageError>
 mod tests {
     use std::path::Path;
 
-    use rusqlite::Connection;
+    use rusqlite::{Connection, params};
     use serde_json::json;
     use tempfile::tempdir;
 
     use super::{
-        CursorExpectation, CursorUpsertResult, Migration, SourceFileCursorWrite,
+        CursorExpectation, CursorUpsertResult, MIGRATIONS, Migration, SourceFileCursorWrite,
         SourceFileLocation, SourceHealthStatus, Storage, StorageError, StorageTable,
         apply_migrations, configure_connection,
     };
@@ -2025,7 +2070,7 @@ mod tests {
 
         assert_eq!(
             storage.row_count(StorageTable::SchemaMigrations).unwrap(),
-            1
+            u64::try_from(MIGRATIONS.len()).unwrap()
         );
         assert_eq!(storage.row_count(StorageTable::Devices).unwrap(), 1);
         assert_eq!(
@@ -2049,8 +2094,46 @@ mod tests {
 
         assert_eq!(
             storage.row_count(StorageTable::SchemaMigrations).unwrap(),
-            1
+            u64::try_from(MIGRATIONS.len()).unwrap()
         );
+    }
+
+    #[test]
+    fn existing_v1_database_upgrades_to_v2_without_losing_data() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        configure_connection(&connection, false).unwrap();
+        apply_migrations(&mut connection, &MIGRATIONS[..1]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO app_settings(key, value_json, value_version, updated_at_ms) VALUES (?1, ?2, 1, 1)",
+                params!["synthetic.setting", r#"{"enabled":true}"#],
+            )
+            .unwrap();
+
+        apply_migrations(&mut connection, MIGRATIONS).unwrap();
+
+        let value: String = connection
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                ["synthetic.setting"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let finish_hash_column_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('tool_calls') WHERE name = 'closed_by_payload_hash')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let migration_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(value, r#"{"enabled":true}"#);
+        assert!(finish_hash_column_exists);
+        assert_eq!(migration_count, i64::try_from(MIGRATIONS.len()).unwrap());
     }
 
     #[test]
@@ -2266,6 +2349,7 @@ mod tests {
             tool_finishes: vec![ToolFinishFact {
                 start_source_record_key: digest(3),
                 closed_by_record_key: digest(4),
+                closed_by_payload_hash: digest(14),
                 ended_at_ms: Some(25),
                 output_file_identity: "volume-1:file-1".to_string(),
                 output_offset: 26,
@@ -2407,6 +2491,87 @@ mod tests {
         assert!(!replay.read_model_changed);
         assert_eq!(storage.row_count(StorageTable::UsageEvents).unwrap(), 2);
         assert_eq!(storage.row_count(StorageTable::Turns).unwrap(), 1);
+    }
+
+    #[test]
+    fn tool_finish_replay_accepts_a_changed_archive_file_identity() {
+        let storage = Storage::open_in_memory().unwrap();
+        let root = storage
+            .ensure_codex_source_root(Path::new("C:\\synthetic\\.codex"), None, true, 1)
+            .unwrap();
+        let batch = synthetic_parsed_batch();
+        let first = storage
+            .commit_codex_batch(&commit_cursor(root.id, CursorExpectation::Missing), &batch)
+            .unwrap();
+        storage
+            .lock_connection()
+            .unwrap()
+            .execute("UPDATE tool_calls SET closed_by_payload_hash = NULL", [])
+            .unwrap();
+
+        let mut archived_replay = batch;
+        archived_replay.tool_finishes[0].output_file_identity =
+            "volume-1:file-archived-copy".to_string();
+        let replay = storage
+            .commit_codex_batch(
+                &commit_cursor(
+                    root.id,
+                    CursorExpectation::Match {
+                        cursor_generation: first.cursor.cursor_generation,
+                        committed_offset: first.cursor.committed_offset,
+                        parser_state_hash: first.cursor.parser_state_hash,
+                    },
+                ),
+                &archived_replay,
+            )
+            .unwrap();
+
+        assert!(!replay.read_model_changed);
+        assert_eq!(storage.row_count(StorageTable::ToolCalls).unwrap(), 1);
+        let backfilled: String = storage
+            .lock_connection()
+            .unwrap()
+            .query_row("SELECT closed_by_payload_hash FROM tool_calls", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(backfilled, digest(14));
+    }
+
+    #[test]
+    fn tool_finish_reused_identity_with_changed_payload_is_a_conflict() {
+        let storage = Storage::open_in_memory().unwrap();
+        let root = storage
+            .ensure_codex_source_root(Path::new("C:\\synthetic\\.codex"), None, true, 1)
+            .unwrap();
+        let batch = synthetic_parsed_batch();
+        let first = storage
+            .commit_codex_batch(&commit_cursor(root.id, CursorExpectation::Missing), &batch)
+            .unwrap();
+
+        let mut conflicting_replay = batch;
+        conflicting_replay.tool_finishes[0].closed_by_payload_hash = digest(99);
+        let error = storage
+            .commit_codex_batch(
+                &commit_cursor(
+                    root.id,
+                    CursorExpectation::Match {
+                        cursor_generation: first.cursor.cursor_generation,
+                        committed_offset: first.cursor.committed_offset,
+                        parser_state_hash: first.cursor.parser_state_hash,
+                    },
+                ),
+                &conflicting_replay,
+            )
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            StorageError::RecordIdentityConflict {
+                entity: "tool_calls.finish",
+                ..
+            }
+        ));
     }
 
     #[test]

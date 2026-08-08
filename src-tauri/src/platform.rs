@@ -7,6 +7,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::domain::{ReportingTimeZoneSource, ReportingTimeZoneView};
@@ -212,7 +213,11 @@ pub fn discover_codex_files(
             if is_reparse(&metadata) || !metadata.is_file() || !is_rollout_file(&path) {
                 continue;
             }
-            discovered.push(discovered_rollout(path, CodexFileKind::Archive));
+            discovered.push(discovered_rollout(
+                canonical_root,
+                path,
+                CodexFileKind::Archive,
+            ));
         }
     }
 
@@ -234,7 +239,6 @@ pub fn discover_codex_files(
             .then_with(|| left.logical_file_id.cmp(&right.logical_file_id))
             .then_with(|| left.path.cmp(&right.path))
     });
-    discovered.dedup_by(|left, right| left.logical_file_id == right.logical_file_id);
     Ok(discovered)
 }
 
@@ -265,22 +269,47 @@ fn discover_session_tree(
             && let Ok(canonical) = fs::canonicalize(&path)
             && canonical.starts_with(root)
         {
-            discovered.push(discovered_rollout(canonical, CodexFileKind::Active));
+            discovered.push(discovered_rollout(root, canonical, CodexFileKind::Active));
         }
     }
     Ok(())
 }
 
-fn discovered_rollout(path: PathBuf, kind: CodexFileKind) -> DiscoveredCodexFile {
-    let stem = path
-        .file_stem()
-        .and_then(OsStr::to_str)
-        .unwrap_or("rollout-unknown");
+fn discovered_rollout(root: &Path, path: PathBuf, kind: CodexFileKind) -> DiscoveredCodexFile {
     DiscoveredCodexFile {
-        logical_file_id: format!("rollout/{stem}"),
+        logical_file_id: pending_path_key(root, &path),
         path,
         kind,
     }
+}
+
+fn pending_path_key(root: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let mut hasher = Sha256::new();
+    hasher.update(b"tokenometer/codex-pending-path/v1");
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        for unit in relative.as_os_str().encode_wide() {
+            hasher.update(unit.to_le_bytes());
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        hasher.update(relative.as_os_str().as_bytes());
+    }
+    #[cfg(not(any(windows, unix)))]
+    hasher.update(relative.to_string_lossy().as_bytes());
+
+    let digest = hasher.finalize();
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        use std::fmt::Write;
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    format!("pending/{encoded}")
 }
 
 fn file_kind_priority(kind: CodexFileKind) -> u8 {
@@ -592,6 +621,22 @@ mod tests {
         let files = discover_codex_files(&canonical).unwrap();
         assert_eq!(files.len(), 3);
         assert!(files.iter().all(|file| !file.path.ends_with("auth.json")));
+    }
+
+    #[test]
+    fn discovery_does_not_collapse_equal_filenames_in_different_session_directories() {
+        let root = tempdir().unwrap();
+        let first = root.path().join("sessions/2026/08/08/a");
+        let second = root.path().join("sessions/2026/08/08/b");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("rollout-same.jsonl"), b"{}").unwrap();
+        fs::write(second.join("rollout-same.jsonl"), b"{}").unwrap();
+
+        let canonical = fs::canonicalize(root.path()).unwrap();
+        let files = discover_codex_files(&canonical).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_ne!(files[0].logical_file_id, files[1].logical_file_id);
     }
 
     #[test]

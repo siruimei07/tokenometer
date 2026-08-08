@@ -73,6 +73,16 @@ fn initialize_desktop(app: &mut tauri::App) -> Result<(), Box<dyn Error>> {
         .title("Tokenometer")
         .inner_size(1280.0, 800.0)
         .min_inner_size(1024.0, 640.0)
+        .on_navigation(|url| {
+            url.scheme() == "tauri"
+                || (url.host_str() == Some("tauri.localhost")
+                    && matches!(url.scheme(), "http" | "https"))
+                || (cfg!(debug_assertions)
+                    && url
+                        .host_str()
+                        .is_some_and(|host| matches!(host, "localhost" | "127.0.0.1" | "[::1]")))
+        })
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .build()?;
 
     spawn_usage_runtime(app.handle().clone(), state, refresh_rx);
@@ -104,9 +114,14 @@ fn create_tray(app: &tauri::App) -> Result<(), Box<dyn Error>> {
                 let state = app.state::<AppState>();
                 let _ = state.request_refresh();
             } else if event.id == quit_id {
-                let state = app.state::<AppState>();
+                let state = app.state::<AppState>().inner().clone();
                 state.begin_quit();
-                app.exit(0);
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ =
+                        tauri::async_runtime::spawn_blocking(move || state.wait_for_idle()).await;
+                    app.exit(0);
+                });
             }
         })
         .on_tray_icon_event(|tray, event| {
@@ -151,6 +166,9 @@ fn spawn_usage_runtime(
         discovery.tick().await;
 
         loop {
+            if state.is_quitting() {
+                break;
+            }
             tokio::select! {
                 _ = poll.tick() => publish_tick(&app, &state, ScanReason::Poll).await,
                 _ = discovery.tick() => publish_tick(&app, &state, ScanReason::Discovery).await,
@@ -164,6 +182,9 @@ fn spawn_usage_runtime(
 }
 
 async fn publish_tick(app: &AppHandle, state: &AppState, reason: ScanReason) {
+    if state.is_quitting() {
+        return;
+    }
     let blocking_state = state.clone();
     match tauri::async_runtime::spawn_blocking(move || blocking_state.run_tick(reason)).await {
         Ok(Ok(publication)) => {

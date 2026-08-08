@@ -3,7 +3,6 @@ pub mod jsonl;
 
 use std::{
     collections::BTreeMap,
-    fs::OpenOptions,
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard, TryLockError},
@@ -128,7 +127,7 @@ impl CodexIngestor {
             }
             Err(error) => return Err(error.into()),
         };
-        let source = self.load_known_source(&root, reason.discovers(), now)?;
+        let (source, discovery_changed) = self.load_known_source(&root, reason.discovers(), now)?;
         let device = self.storage.device_identity()?;
         let previous_health = self
             .storage
@@ -136,17 +135,15 @@ impl CodexIngestor {
             .into_iter()
             .find(|health| health.source_id == source.identity.public_id);
 
-        let mut history_changed = false;
+        let mut history_changed = discovery_changed;
         let mut files_processed = 0usize;
         let mut failed_files = 0usize;
-        let mut did_work = false;
         for discovered in &source.files {
             match self.scan_file(&source, discovered, &device.public_id, now) {
                 Ok(outcome) => {
                     files_processed = files_processed
                         .checked_add(usize::from(outcome.processed))
                         .ok_or(CollectorError::ArithmeticOverflow)?;
-                    did_work |= outcome.processed;
                     history_changed |= outcome.history_changed;
                 }
                 Err(error) => {
@@ -155,40 +152,37 @@ impl CodexIngestor {
                         .ok_or(CollectorError::ArithmeticOverflow)?;
                     let changed =
                         self.mark_file_failure(&source, discovered, now, safe_error_code(&error))?;
-                    did_work |= changed;
                     history_changed |= changed;
                 }
             }
         }
 
         let aggregate = self.aggregate_source_health(&source)?;
-        if did_work {
-            let root_update = SourceRootHealthUpdate {
-                health: aggregate.health,
-                last_attempt_at_ms: aggregate.last_attempt_at_ms,
-                last_success_at_ms: aggregate.last_success_at_ms,
-                last_error_code: aggregate.last_error_code.clone(),
-                affected_file_count: aggregate.affected_file_count,
-                malformed_records: aggregate.malformed_records,
-                oversized_records: aggregate.oversized_records,
-                data_quality_errors: aggregate.data_quality_errors,
-                updated_at_ms: now,
-            };
-            let root_visible_changed = previous_health.as_ref().is_none_or(|previous| {
-                previous.health != root_update.health
-                    || previous.last_attempt_at_ms != root_update.last_attempt_at_ms
-                    || previous.last_success_at_ms != root_update.last_success_at_ms
-                    || previous.last_error_code != root_update.last_error_code
-                    || previous.affected_file_count != root_update.affected_file_count
-                    || previous.malformed_records != root_update.malformed_records
-                    || previous.oversized_records != root_update.oversized_records
-                    || previous.data_quality_errors != root_update.data_quality_errors
-            });
-            if root_visible_changed {
-                self.storage
-                    .update_source_root_health(source.identity.id, &root_update)?;
-                history_changed = true;
-            }
+        let root_update = SourceRootHealthUpdate {
+            health: aggregate.health,
+            last_attempt_at_ms: aggregate.last_attempt_at_ms,
+            last_success_at_ms: aggregate.last_success_at_ms,
+            last_error_code: aggregate.last_error_code.clone(),
+            affected_file_count: aggregate.affected_file_count,
+            malformed_records: aggregate.malformed_records,
+            oversized_records: aggregate.oversized_records,
+            data_quality_errors: aggregate.data_quality_errors,
+            updated_at_ms: now,
+        };
+        let root_visible_changed = previous_health.as_ref().is_none_or(|previous| {
+            previous.health != root_update.health
+                || previous.last_attempt_at_ms != root_update.last_attempt_at_ms
+                || previous.last_success_at_ms != root_update.last_success_at_ms
+                || previous.last_error_code != root_update.last_error_code
+                || previous.affected_file_count != root_update.affected_file_count
+                || previous.malformed_records != root_update.malformed_records
+                || previous.oversized_records != root_update.oversized_records
+                || previous.data_quality_errors != root_update.data_quality_errors
+        });
+        if root_visible_changed {
+            self.storage
+                .update_source_root_health(source.identity.id, &root_update)?;
+            history_changed = true;
         }
 
         Ok(IngestReport {
@@ -219,7 +213,7 @@ impl CodexIngestor {
         root: &Path,
         discover: bool,
         now: i64,
-    ) -> Result<KnownSource, CollectorError> {
+    ) -> Result<(KnownSource, bool), CollectorError> {
         let mut known = self
             .known
             .lock()
@@ -229,14 +223,18 @@ impl CodexIngestor {
                 .as_ref()
                 .is_none_or(|source| source.root != root || source.files.is_empty());
         if !needs_discovery {
-            return known.clone().ok_or(CollectorError::LockPoisoned);
+            return known
+                .clone()
+                .map(|source| (source, false))
+                .ok_or(CollectorError::LockPoisoned);
         }
 
         let identity = self
             .storage
             .ensure_codex_source_root(root, None, false, now)?;
         let mut files = discover_codex_files(root)?;
-        resolve_logical_session_ids(&mut files);
+        resolve_logical_session_ids(root, &mut files);
+        let mut discovery_changed = false;
         if let Some(previous) = known.as_ref().filter(|previous| previous.root == root) {
             let current: BTreeMap<&str, ()> = files
                 .iter()
@@ -247,7 +245,7 @@ impl CodexIngestor {
                 .iter()
                 .filter(|file| !current.contains_key(file.logical_file_id.as_str()))
             {
-                let _ = self.mark_removed_file(&identity, removed, now)?;
+                discovery_changed |= self.mark_removed_file(&identity, removed, now)?;
             }
         }
         let source = KnownSource {
@@ -256,7 +254,7 @@ impl CodexIngestor {
             files,
         };
         *known = Some(source.clone());
-        Ok(source)
+        Ok((source, discovery_changed))
     }
 
     fn mark_known_root_stale(&self, now: i64) -> Result<bool, CollectorError> {
@@ -331,7 +329,10 @@ impl CodexIngestor {
         let shrunk = existing
             .as_ref()
             .is_some_and(|cursor| before.len() < cursor.committed_offset);
-        let reset = identity_changed || version_changed || shrunk;
+        let state_hash_invalid = existing
+            .as_ref()
+            .is_some_and(|cursor| !cursor.parser_state_hash_valid);
+        let reset = identity_changed || version_changed || shrunk || state_hash_invalid;
         let state = if reset {
             ParserStateV1::default()
         } else {
@@ -517,13 +518,7 @@ impl CodexIngestor {
         source: &KnownSource,
     ) -> Result<AggregateHealth, CollectorError> {
         let mut aggregate = AggregateHealth::default();
-        for file in &source.files {
-            let Some(cursor) = self
-                .storage
-                .load_source_file_cursor(source.identity.id, &file.logical_file_id)?
-            else {
-                continue;
-            };
+        for cursor in self.storage.list_source_file_cursors(source.identity.id)? {
             aggregate.observe(&cursor)?;
         }
         aggregate.finish();
@@ -550,6 +545,7 @@ struct AggregateHealth {
     seen: u64,
     healthy: u64,
     failed: u64,
+    stale: u64,
     error_code: Option<&'static str>,
 }
 
@@ -567,6 +563,7 @@ impl Default for AggregateHealth {
             seen: 0,
             healthy: 0,
             failed: 0,
+            stale: 0,
             error_code: None,
         }
     }
@@ -605,12 +602,14 @@ impl AggregateHealth {
             if let Some(code) = cursor.last_error_code.as_ref() {
                 self.last_error_code = Some(code.clone());
             }
-            if matches!(
-                cursor.health,
-                SourceHealthStatus::Failed | SourceHealthStatus::Stale
-            ) {
+            if cursor.health == SourceHealthStatus::Failed {
                 self.failed = self
                     .failed
+                    .checked_add(1)
+                    .ok_or(CollectorError::ArithmeticOverflow)?;
+            } else if cursor.health == SourceHealthStatus::Stale {
+                self.stale = self
+                    .stale
                     .checked_add(1)
                     .ok_or(CollectorError::ArithmeticOverflow)?;
             }
@@ -623,6 +622,8 @@ impl AggregateHealth {
             SourceHealthStatus::Never
         } else if self.affected_file_count == 0 {
             SourceHealthStatus::Healthy
+        } else if self.stale == self.seen {
+            SourceHealthStatus::Stale
         } else if self.failed == self.seen {
             SourceHealthStatus::Failed
         } else {
@@ -630,6 +631,7 @@ impl AggregateHealth {
         };
         self.error_code = match self.health {
             SourceHealthStatus::Failed => Some("codex.allFilesFailed"),
+            SourceHealthStatus::Stale => Some("codex.sourcesStale"),
             SourceHealthStatus::Partial => Some("codex.someFilesPartial"),
             _ => None,
         };
@@ -726,12 +728,12 @@ fn location(kind: CodexFileKind) -> SourceFileLocation {
     }
 }
 
-fn resolve_logical_session_ids(files: &mut Vec<DiscoveredCodexFile>) {
+fn resolve_logical_session_ids(root: &Path, files: &mut Vec<DiscoveredCodexFile>) {
     for discovered in files
         .iter_mut()
         .filter(|file| file.kind != CodexFileKind::Index)
     {
-        if let Some(session_id) = probe_session_id(&discovered.path) {
+        if let Some(session_id) = probe_session_id(root, &discovered.path) {
             discovered.logical_file_id = format!("rollout/{session_id}");
         }
     }
@@ -744,17 +746,22 @@ fn resolve_logical_session_ids(files: &mut Vec<DiscoveredCodexFile>) {
     files.dedup_by(|left, right| left.logical_file_id == right.logical_file_id);
 }
 
-fn probe_session_id(path: &Path) -> Option<String> {
+fn probe_session_id(root: &Path, path: &Path) -> Option<String> {
     const PROBE_BYTES: u64 = 1024 * 1024;
-    let file = OpenOptions::new().read(true).open(path).ok()?;
+    let file = open_allowed_file(root, path).ok()?.file;
     let mut reader = BufReader::with_capacity(64 * 1024, file.take(PROBE_BYTES));
     let mut line = Vec::new();
-    while reader.read_until(b'\n', &mut line).ok()? > 0 {
+    loop {
+        let read = reader.read_until(b'\n', &mut line).ok()?;
+        if read == 0 {
+            break;
+        }
         if line.len() > usize::try_from(PROBE_BYTES).ok()? {
             return None;
         }
-        let value: Value = serde_json::from_slice(&line).ok()?;
-        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
+        if let Ok(value) = serde_json::from_slice::<Value>(&line)
+            && value.get("type").and_then(Value::as_str) == Some("session_meta")
+        {
             return value
                 .get("payload")
                 .and_then(|payload| payload.get("id"))
@@ -813,16 +820,24 @@ impl From<std::io::Error> for CollectorError {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, io::Write, sync::Arc};
+    use std::{
+        env, fs,
+        io::Write,
+        sync::{Arc, Mutex},
+    };
 
     use tempfile::tempdir;
 
     use super::{CodexIngestor, ScanReason};
     use crate::domain::SourceHealthStatus;
-    use crate::storage::{Storage, StorageTable};
+    use crate::platform::resolve_codex_root;
+    use crate::storage::{SourceRootHealthUpdate, Storage, StorageTable};
+
+    static CODEX_HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn first_repeat_append_and_archive_keep_one_canonical_total() {
+        let _env_guard = CODEX_HOME_ENV_LOCK.lock().unwrap();
         let root = tempdir().unwrap();
         let active = root.path().join("sessions/2026/08/08");
         let archive = root.path().join("archived_sessions");
@@ -859,6 +874,63 @@ mod tests {
             storage.canonical_usage_totals().unwrap().normalized_total,
             15
         );
+
+        // Simulate interruption after a file cursor commit but before the root aggregate was
+        // persisted. A known-file fast-path tick must repair the root without reprocessing data.
+        let canonical_root = resolve_codex_root().unwrap();
+        let identity = storage
+            .ensure_codex_source_root(&canonical_root, None, false, 1)
+            .unwrap();
+        let healthy_root = storage
+            .list_source_root_health()
+            .unwrap()
+            .into_iter()
+            .find(|health| health.source_id == identity.public_id)
+            .unwrap();
+        assert!(
+            storage
+                .update_source_root_health(
+                    identity.id,
+                    &SourceRootHealthUpdate {
+                        health: SourceHealthStatus::Stale,
+                        last_attempt_at_ms: healthy_root.last_attempt_at_ms,
+                        last_success_at_ms: healthy_root.last_success_at_ms,
+                        last_error_code: Some("synthetic.interruptedAggregate".to_string()),
+                        affected_file_count: 1,
+                        malformed_records: healthy_root.malformed_records,
+                        oversized_records: healthy_root.oversized_records,
+                        data_quality_errors: healthy_root.data_quality_errors,
+                        updated_at_ms: healthy_root.updated_at_ms + 1,
+                    },
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            storage
+                .list_source_root_health()
+                .unwrap()
+                .into_iter()
+                .find(|health| health.source_id == identity.public_id)
+                .unwrap()
+                .health,
+            SourceHealthStatus::Stale
+        );
+        let repaired = ingestor.run_tick(ScanReason::Poll).unwrap();
+        assert_eq!(repaired.files_processed, 0);
+        assert_eq!(repaired.health, SourceHealthStatus::Healthy);
+        assert!(repaired.history_changed);
+        let repaired_root = storage
+            .list_source_root_health()
+            .unwrap()
+            .into_iter()
+            .find(|health| health.source_id == identity.public_id)
+            .unwrap();
+        assert_eq!(repaired_root.health, SourceHealthStatus::Healthy);
+        assert_eq!(repaired_root.affected_file_count, 0);
+        assert_eq!(repaired_root.last_error_code, None);
+        let consistent = ingestor.run_tick(ScanReason::Poll).unwrap();
+        assert_eq!(consistent.files_processed, 0);
+        assert!(!consistent.history_changed);
 
         fs::OpenOptions::new()
             .append(true)
@@ -909,6 +981,16 @@ mod tests {
             21
         );
 
+        fs::remove_file(&archived).unwrap();
+        fs::remove_file(&broken).unwrap();
+        let removed = ingestor.run_tick(ScanReason::Discovery).unwrap();
+        assert!(removed.history_changed);
+        assert_eq!(removed.health, SourceHealthStatus::Stale);
+        assert_eq!(
+            storage.canonical_usage_totals().unwrap().normalized_total,
+            21
+        );
+
         drop(ingestor);
         drop(storage);
         let mut persisted = fs::read(&database_path).unwrap();
@@ -927,6 +1009,58 @@ mod tests {
                     .any(|window| window == sentinel)
             );
         }
+
+        if let Some(previous) = previous {
+            unsafe { env::set_var("CODEX_HOME", previous) };
+        } else {
+            unsafe { env::remove_var("CODEX_HOME") };
+        }
+    }
+
+    #[test]
+    fn parser_state_hash_mismatch_replays_from_zero_and_heals_cursor() {
+        let _env_guard = CODEX_HOME_ENV_LOCK.lock().unwrap();
+        let root = tempdir().unwrap();
+        let active = root.path().join("sessions/2026/08/08");
+        fs::create_dir_all(&active).unwrap();
+        fs::write(
+            active.join("rollout-hash-replay.jsonl"),
+            concat!(
+                "{\"type\":\"session_meta\",\"timestamp\":\"2026-08-08T00:00:00Z\",\"payload\":{\"id\":\"session-hash-replay\"}}\n",
+                "{\"type\":\"event_msg\",\"timestamp\":\"2026-08-08T00:00:01Z\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":10,\"output_tokens\":5},\"last_token_usage\":{\"input_tokens\":10,\"output_tokens\":5}}}}\n"
+            ),
+        )
+        .unwrap();
+        let previous = env::var_os("CODEX_HOME");
+        unsafe { env::set_var("CODEX_HOME", root.path()) };
+
+        let storage = Arc::new(Storage::open_in_memory().unwrap());
+        let ingestor = CodexIngestor::new(storage.clone());
+        ingestor.run_tick(ScanReason::Startup).unwrap();
+        let original = storage.list_source_file_cursors(1).unwrap().pop().unwrap();
+        let mut tampered_state = original.parser_state.clone();
+        tampered_state["cumulativeGeneration"] = serde_json::Value::from(99);
+        let tampered_json = serde_json::to_string(&tampered_state).unwrap();
+        storage
+            .lock_connection()
+            .unwrap()
+            .execute(
+                "UPDATE source_files SET parser_state_json = ?1 WHERE id = ?2",
+                rusqlite::params![tampered_json, original.id],
+            )
+            .unwrap();
+
+        let replayed = ingestor.run_tick(ScanReason::Manual).unwrap();
+        let healed = storage.list_source_file_cursors(1).unwrap().pop().unwrap();
+
+        assert_eq!(replayed.files_processed, 1);
+        assert_eq!(healed.cursor_generation, original.cursor_generation + 1);
+        assert_eq!(healed.parser_state, original.parser_state);
+        assert_eq!(storage.row_count(StorageTable::UsageEvents).unwrap(), 2);
+        assert_eq!(
+            storage.canonical_usage_totals().unwrap().normalized_total,
+            15
+        );
 
         if let Some(previous) = previous {
             unsafe { env::set_var("CODEX_HOME", previous) };

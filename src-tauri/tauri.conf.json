@@ -13,10 +13,14 @@
     "windows": [],
     "security": {
       "csp": {
+        "base-uri": "'self'",
         "default-src": "'self'",
         "connect-src": "ipc: http://ipc.localhost",
         "font-src": "'self'",
-        "img-src": "'self' data:",
+        "form-action": "'none'",
+        "frame-ancestors": "'none'",
+        "frame-src": "'none'",
+        "img-src": "'self'",
         "object-src": "'none'",
         "script-src": "'self'",
         "style-src": "'self'"

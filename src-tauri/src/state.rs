@@ -169,6 +169,14 @@ impl AppState {
         self.quitting.load(Ordering::Acquire)
     }
 
+    pub fn wait_for_idle(&self) -> Result<(), StateError> {
+        let _snapshot = self
+            .snapshot_gate
+            .write()
+            .map_err(|_| StateError::LockPoisoned)?;
+        Ok(())
+    }
+
     fn next_history_revision(&self) -> Result<u64, StateError> {
         self.history_revision
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |revision| {
@@ -196,5 +204,29 @@ impl AppState {
             usage.message = message;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manual_refresh_requests_coalesce_to_one_pending_tick() {
+        let storage = Arc::new(Storage::open_in_memory().unwrap());
+        let ingestor = Arc::new(CodexIngestor::new(storage.clone()));
+        let (refresh_tx, mut refresh_rx) = mpsc::channel(1);
+        let state = AppState::new(storage, ingestor, refresh_tx);
+
+        assert!(state.request_refresh());
+        assert!(state.request_refresh());
+        assert_eq!(refresh_rx.try_recv().unwrap(), ScanReason::Manual);
+        assert!(matches!(
+            refresh_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        drop(refresh_rx);
+        assert!(!state.request_refresh());
     }
 }

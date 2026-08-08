@@ -1,6 +1,6 @@
 # Tokenometer 重构架构与 AI 开发交接
 
-> 文档状态：架构基线 v2（已按 token-monitor-main 与 abtop-main 的最终用户效果校准；尚未创建应用脚手架）
+> 文档状态：架构基线 v2（规范仍有效；Phase 0 与 Phase 1 已实现，当前检查点见 [`docs/PHASE_1_HANDOFF.md`](docs/PHASE_1_HANDOFF.md)）
 >
 > 基线日期：2026-08-08
 >
@@ -10,21 +10,26 @@
 
 ## 0. 如何使用本文档
 
-本文档是清空旧实现后的开发起点。后续 AI 在创建或修改代码前必须完整阅读本文档，并遵守以下优先级：
+本文档是清空旧实现后的架构规范。后续 AI 在创建或修改代码前必须先读
+[`docs/PHASE_1_HANDOFF.md`](docs/PHASE_1_HANDOFF.md) 了解当前检查点，再按任务涉及的章节阅读本文档，并遵守以下优先级：
 
 1. 用户当次明确要求；
 2. 本文档中的“已锁定决策”和安全/数据正确性约束；
 3. 已经存在且通过测试的代码行为；
 4. 本文档中的阶段建议。
 
-当前仓库没有可运行应用。清理后只保留：
+本文档最初写成时，仓库没有可运行应用，只保留 `.git/`、`LICENSE`、`.gitignore` 与本文档。该描述是历史基线，不是当前仓库状态。旧 C++/WinUI 源码、NuGet 库、旧构建产物和旧数据库仍不属于新实现；不要从 Git 历史整批恢复它们。
 
-- `.git/`：提交历史和远端信息；
-- `LICENSE`：Tokenometer 自身的 MIT 许可证；
-- `.gitignore`：新 React/Tauri 技术栈的最小忽略规则；
-- `ARCHITECTURE.md`：本文件。
+### 0.1 当前实现检查点
 
-旧 C++/WinUI 源码、NuGet 库、构建产物、截图、旧 README、安全说明和第三方声明均已删除。不要假定旧类型、表结构或 UI 组件仍然存在，也不要从 Git 历史整批恢复旧实现。
+| 阶段 | 状态 | 当前边界 |
+|---|---|---|
+| Phase 0：可启动壳 | 已实现并通过自动化构建/运行时 smoke | Tauri 2 + React/TypeScript/Vite、最小窗口/托盘/单实例、严格 CSP 与 capability、唯一前端 bridge、NSIS offline WebView2 |
+| Phase 1：Codex 数据核心 | 已实现并通过自动化测试 | allowlist、稳定文件身份、JSONL 增量解析、SQLite 原子幂等写入、双账 reconciliation、source health、后台 tick 与 history revision |
+| Phase 2 及以后 | 未实现 | 产品查询、Dashboard/Usage/Sessions/Trends/Sources/Settings、Live/Limits 等从 Phase 2 起按顺序交付 |
+
+阶段状态、恢复命令、验证证据、已知延期和 Git 检查点只在
+[`docs/PHASE_1_HANDOFF.md`](docs/PHASE_1_HANDOFF.md) 维护，本文档继续作为决策与验收规范。
 
 ## 1. 产品定义
 
@@ -1264,4 +1269,4 @@ CI 首先只需要 Windows：安装锁定依赖，运行前后端测试和 Tauri
 
 ---
 
-架构基线到此结束。下一位开发者应从 Phase 0 开始，不应在同一个变更里同时实现多个后续阶段。
+架构基线到此结束。下一位开发者应先按 [`docs/PHASE_1_HANDOFF.md`](docs/PHASE_1_HANDOFF.md) 恢复并确认 Phase 1 检查点，再从最早未完成阶段（当前为 Phase 2）继续；一个变更仍只交付一个可运行的阶段纵切。

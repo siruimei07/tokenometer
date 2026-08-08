@@ -207,6 +207,7 @@ pub struct ToolStartFact {
 pub struct ToolFinishFact {
     pub start_source_record_key: String,
     pub closed_by_record_key: String,
+    pub closed_by_payload_hash: String,
     pub ended_at_ms: Option<i64>,
     pub output_offset: u64,
     pub output_length: u64,
@@ -626,84 +627,83 @@ fn parse_token_count(
     let line_key = line_key(value, line.start_offset, state, context);
     if invalid_counts {
         increment_quality(state)?;
+    }
+    let total = total.and_then(Result::ok);
+    let last = last.and_then(Result::ok);
+    if total
+        .as_ref()
+        .is_some_and(|counts| counts.invalid_breakdown)
+        || last.as_ref().is_some_and(|counts| counts.invalid_breakdown)
+    {
+        increment_quality(state)?;
+    }
+    let mut delta = None;
+    let mut reset = false;
+
+    if let Some(current) = total.as_ref() {
+        match current.delta_from(state.cumulative_baseline.as_ref()) {
+            Ok(value) => delta = Some(value),
+            Err(crate::domain::CountError::CounterDecreased) => {
+                state.cumulative_generation = state
+                    .cumulative_generation
+                    .checked_add(1)
+                    .ok_or(ParseError::CounterOverflow)?;
+                delta = Some(current.clone());
+                reset = true;
+            }
+            Err(_) => increment_quality(state)?,
+        }
+        state.cumulative_baseline = Some(current.clone());
+    }
+
+    let reconciliation = if reset {
+        Reconciliation::Reset
     } else {
-        let total = total.and_then(Result::ok);
-        let last = last.and_then(Result::ok);
-        if total
-            .as_ref()
-            .is_some_and(|counts| counts.invalid_breakdown)
-            || last.as_ref().is_some_and(|counts| counts.invalid_breakdown)
-        {
-            increment_quality(state)?;
+        match (delta.as_ref(), last.as_ref()) {
+            (Some(delta), Some(last)) => match delta.compare_components(last) {
+                CountComparison::Equal => Reconciliation::Consistent,
+                CountComparison::Different => Reconciliation::Mismatch,
+                CountComparison::Incomplete => Reconciliation::Missing,
+            },
+            _ => Reconciliation::Missing,
         }
-        let mut delta = None;
-        let mut reset = false;
+    };
 
-        if let Some(current) = total.as_ref() {
-            match current.delta_from(state.cumulative_baseline.as_ref()) {
-                Ok(value) => delta = Some(value),
-                Err(crate::domain::CountError::CounterDecreased) => {
-                    state.cumulative_generation = state
-                        .cumulative_generation
-                        .checked_add(1)
-                        .ok_or(ParseError::CounterOverflow)?;
-                    delta = Some(current.clone());
-                    reset = true;
-                }
-                Err(_) => increment_quality(state)?,
-            }
-            state.cumulative_baseline = Some(current.clone());
+    let counting_enabled = !state.fork_like || state.counting_boundary_seen;
+    if counting_enabled {
+        if let Some(delta) = delta.filter(|counts| !counts.is_zero()) {
+            usage.push(UsageFact {
+                source_record_key: fact_key(&line_key, "cumulative-delta"),
+                source_payload_hash: payload_hash.to_string(),
+                session_id: session_id.clone(),
+                turn_key: state.current_turn_key.clone(),
+                metric_scope: MetricScope::SessionCumulativeDelta,
+                cumulative_generation: state.cumulative_generation,
+                effective_at_ms: timestamp,
+                observed_at_ms,
+                model: state.model.clone(),
+                effort: state.effort.clone(),
+                reconciliation,
+                counts: delta,
+                source_offset: line.start_offset,
+            });
         }
-
-        let reconciliation = if reset {
-            Reconciliation::Reset
-        } else {
-            match (delta.as_ref(), last.as_ref()) {
-                (Some(delta), Some(last)) => match delta.compare_components(last) {
-                    CountComparison::Equal => Reconciliation::Consistent,
-                    CountComparison::Different => Reconciliation::Mismatch,
-                    CountComparison::Incomplete => Reconciliation::Missing,
-                },
-                _ => Reconciliation::Missing,
-            }
-        };
-
-        let counting_enabled = !state.fork_like || state.counting_boundary_seen;
-        if counting_enabled {
-            if let Some(delta) = delta.filter(|counts| !counts.is_zero()) {
-                usage.push(UsageFact {
-                    source_record_key: fact_key(&line_key, "cumulative-delta"),
-                    source_payload_hash: payload_hash.to_string(),
-                    session_id: session_id.clone(),
-                    turn_key: state.current_turn_key.clone(),
-                    metric_scope: MetricScope::SessionCumulativeDelta,
-                    cumulative_generation: state.cumulative_generation,
-                    effective_at_ms: timestamp,
-                    observed_at_ms,
-                    model: state.model.clone(),
-                    effort: state.effort.clone(),
-                    reconciliation,
-                    counts: delta,
-                    source_offset: line.start_offset,
-                });
-            }
-            if let Some(last) = last.filter(|counts| !counts.is_zero()) {
-                usage.push(UsageFact {
-                    source_record_key: fact_key(&line_key, "turn-reported"),
-                    source_payload_hash: payload_hash.to_string(),
-                    session_id: session_id.clone(),
-                    turn_key: state.current_turn_key.clone(),
-                    metric_scope: MetricScope::TurnReported,
-                    cumulative_generation: state.cumulative_generation,
-                    effective_at_ms: timestamp,
-                    observed_at_ms,
-                    model: state.model.clone(),
-                    effort: state.effort.clone(),
-                    reconciliation,
-                    counts: last,
-                    source_offset: line.start_offset,
-                });
-            }
+        if let Some(last) = last.filter(|counts| !counts.is_zero()) {
+            usage.push(UsageFact {
+                source_record_key: fact_key(&line_key, "turn-reported"),
+                source_payload_hash: payload_hash.to_string(),
+                session_id: session_id.clone(),
+                turn_key: state.current_turn_key.clone(),
+                metric_scope: MetricScope::TurnReported,
+                cumulative_generation: state.cumulative_generation,
+                effective_at_ms: timestamp,
+                observed_at_ms,
+                model: state.model.clone(),
+                effort: state.effort.clone(),
+                reconciliation,
+                counts: last,
+                source_offset: line.start_offset,
+            });
         }
     }
 
@@ -914,6 +914,7 @@ fn finish_tool(
     tool_finishes.push(ToolFinishFact {
         start_source_record_key: pending.source_record_key,
         closed_by_record_key: fact_key(&line_key, "tool-finish"),
+        closed_by_payload_hash: hash_bytes(&line.bytes),
         ended_at_ms: timestamp,
         output_offset: line.start_offset,
         output_length,
@@ -1121,6 +1122,49 @@ mod tests {
     }
 
     #[test]
+    fn valid_total_is_emitted_when_last_account_is_invalid() {
+        let parsed = parse_batch(
+            batch(&[
+                r#"{"type":"session_meta","payload":{"id":"session-a"}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-08-08T00:00:01Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"output_tokens":5},"last_token_usage":{"input_tokens":-1,"output_tokens":2}}}}"#,
+            ]),
+            ParserStateV1::default(),
+            &context(),
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.usage.len(), 1);
+        assert_eq!(
+            parsed.usage[0].metric_scope,
+            MetricScope::SessionCumulativeDelta
+        );
+        assert_eq!(parsed.usage[0].counts.normalized_total().unwrap(), 15);
+        assert_eq!(parsed.usage[0].reconciliation, Reconciliation::Missing);
+        assert_eq!(parsed.next_state.data_quality_errors, 1);
+    }
+
+    #[test]
+    fn valid_last_is_emitted_when_total_account_is_invalid() {
+        let parsed = parse_batch(
+            batch(&[
+                r#"{"type":"session_meta","payload":{"id":"session-a"}}"#,
+                r#"{"type":"event_msg","timestamp":"2026-08-08T00:00:01Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":-1,"output_tokens":5},"last_token_usage":{"input_tokens":4,"output_tokens":2}}}}"#,
+            ]),
+            ParserStateV1::default(),
+            &context(),
+            10,
+        )
+        .unwrap();
+
+        assert_eq!(parsed.usage.len(), 1);
+        assert_eq!(parsed.usage[0].metric_scope, MetricScope::TurnReported);
+        assert_eq!(parsed.usage[0].counts.normalized_total().unwrap(), 6);
+        assert_eq!(parsed.usage[0].reconciliation, Reconciliation::Missing);
+        assert_eq!(parsed.next_state.data_quality_errors, 1);
+    }
+
+    #[test]
     fn mismatch_and_cumulative_reset_are_explicit_generations() {
         let first = parse_batch(
             batch(&[
@@ -1215,6 +1259,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(finished.tool_finishes.len(), 1);
+        assert_eq!(
+            finished.tool_finishes[0].closed_by_payload_hash,
+            "8a5880e189add46a20008da27a538a4b07774fbfb4e3e34c12ba04a528a53a24"
+        );
         assert_eq!(finished.next_state.status(), TranscriptStatus::Unknown);
         let state_json = serde_json::to_string(&finished.next_state).unwrap();
         assert!(!state_json.contains("SECRET_OUTPUT_SENTINEL"));
