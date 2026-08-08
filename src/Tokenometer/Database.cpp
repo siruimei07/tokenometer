@@ -872,7 +872,7 @@ namespace tokenometer
             versionStatement.Step();
             version = versionStatement.Int(0);
         }
-        if (version > 6)
+        if (version > 7)
         {
             throw std::runtime_error("The usage database was created by a newer Tokenometer version");
         }
@@ -893,7 +893,11 @@ namespace tokenometer
             CREATE TABLE IF NOT EXISTS devices(
                 id TEXT PRIMARY KEY,
                 display_name TEXT NOT NULL,
-                last_seen INTEGER NOT NULL
+                last_seen INTEGER NOT NULL DEFAULT 0,
+                last_attempt INTEGER NOT NULL DEFAULT 0,
+                last_success INTEGER NOT NULL DEFAULT 0,
+                sync_status INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS source_files(
                 path TEXT PRIMARY KEY,
@@ -1149,7 +1153,9 @@ namespace tokenometer
                 VALUES(5, CAST(strftime('%s','now') AS INTEGER));
             INSERT OR IGNORE INTO schema_migrations(version, applied_at)
                 VALUES(6, CAST(strftime('%s','now') AS INTEGER));
-            PRAGMA user_version=6;
+            INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                VALUES(7, CAST(strftime('%s','now') AS INTEGER));
+            PRAGMA user_version=7;
                 )sql");
             });
         }
@@ -1473,6 +1479,32 @@ namespace tokenometer
                     PRAGMA user_version=6;
                 )sql");
             });
+            version = 6;
+        }
+
+        if (version == 6)
+        {
+            Transaction([&]
+            {
+                Execute(R"sql(
+                    CREATE TABLE IF NOT EXISTS devices(
+                        id TEXT PRIMARY KEY,
+                        display_name TEXT NOT NULL,
+                        last_seen INTEGER NOT NULL DEFAULT 0
+                    );
+                    ALTER TABLE devices ADD COLUMN last_attempt INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE devices ADD COLUMN last_success INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE devices ADD COLUMN sync_status INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE devices ADD COLUMN last_error TEXT NOT NULL DEFAULT '';
+                    UPDATE devices
+                    SET last_attempt=last_seen,
+                        last_success=last_seen,
+                        sync_status=CASE WHEN last_seen > 0 THEN 1 ELSE 0 END;
+                    INSERT OR IGNORE INTO schema_migrations(version, applied_at)
+                        VALUES(7, CAST(strftime('%s','now') AS INTEGER));
+                    PRAGMA user_version=7;
+                )sql");
+            });
         }
         if (m_path != L":memory:")
         {
@@ -1516,15 +1548,52 @@ namespace tokenometer
         }
 
         Statement device(m_database, R"sql(
-            INSERT INTO devices(id, display_name, last_seen) VALUES(?1,?2,?3)
-            ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name,
-                                         last_seen=excluded.last_seen;
+            INSERT INTO devices(id, display_name, last_seen) VALUES(?1,?2,0)
+            ON CONFLICT(id) DO UPDATE SET display_name=excluded.display_name;
         )sql");
         device.Bind(1, id);
         device.Bind(2, displayName);
-        device.Bind(3, UnixNow());
         device.Step();
         return id;
+    }
+
+    void Database::RecordDeviceSync(
+        std::wstring_view deviceId,
+        DeviceSyncStatus status,
+        std::wstring_view error)
+    {
+        if (deviceId.empty() || deviceId.size() > 128 || error.size() > 2048 ||
+            status == DeviceSyncStatus::Never)
+        {
+            throw std::invalid_argument("Device sync result is invalid");
+        }
+        int const statusValue = static_cast<int>(status);
+        if (statusValue < static_cast<int>(DeviceSyncStatus::Synced) ||
+            statusValue > static_cast<int>(DeviceSyncStatus::Failed))
+        {
+            throw std::invalid_argument("Device sync status is invalid");
+        }
+
+        std::scoped_lock lock(m_mutex);
+        int64_t const now = UnixNow();
+        Statement statement(m_database, R"sql(
+            UPDATE devices
+            SET last_attempt=?2,
+                last_success=CASE WHEN ?3=1 THEN ?2 ELSE last_success END,
+                last_seen=CASE WHEN ?3=1 THEN ?2 ELSE last_seen END,
+                sync_status=?3,
+                last_error=CASE WHEN ?3=1 THEN '' ELSE ?4 END
+            WHERE id=?1;
+        )sql");
+        statement.Bind(1, deviceId);
+        statement.Bind(2, now);
+        statement.Bind(3, statusValue);
+        statement.Bind(4, error);
+        statement.Step();
+        if (sqlite3_changes(m_database) == 0)
+        {
+            throw std::invalid_argument("Device identifier is unknown");
+        }
     }
 
     std::optional<std::wstring> Database::GetAppState(std::wstring_view key)
@@ -3135,7 +3204,8 @@ namespace tokenometer
     {
         std::scoped_lock lock(m_mutex);
         Statement statement(m_database, R"sql(
-            SELECT d.id, d.display_name, d.last_seen,
+            SELECT d.id, d.display_name, d.last_attempt, d.last_success,
+                   d.sync_status, d.last_error,
                    EXISTS(SELECT 1 FROM app_state a
                           WHERE a.value=d.id AND a.key LIKE 'wsl_device_id:%'),
                    COALESCE(SUM(u.input_tokens),0),
@@ -3147,8 +3217,9 @@ namespace tokenometer
                    COUNT(DISTINCT u.account_id || char(31) || u.session_id)
             FROM devices d
             LEFT JOIN daily_usage u ON u.device_id=d.id
-            GROUP BY d.id, d.display_name, d.last_seen
-            ORDER BY 4 ASC, d.last_seen DESC
+            GROUP BY d.id, d.display_name, d.last_attempt, d.last_success,
+                     d.sync_status, d.last_error
+            ORDER BY 7 ASC, d.last_attempt DESC, d.display_name ASC
             LIMIT ?1;
         )sql");
         statement.Bind(1, std::clamp(limit, 1, 100));
@@ -3158,10 +3229,18 @@ namespace tokenometer
             DeviceSummary row;
             row.id = statement.Text(0);
             row.displayName = statement.Text(1);
-            row.lastSeen = statement.Int64(2);
-            row.kind = statement.Int(3) != 0 ? DeviceKind::Wsl : DeviceKind::Windows;
-            row.counts = ReadCounts(statement, 4);
-            row.sessions = statement.Int64(10);
+            row.lastAttempt = statement.Int64(2);
+            row.lastSuccess = statement.Int64(3);
+            row.lastSeen = row.lastSuccess;
+            int const status = statement.Int(4);
+            row.syncStatus = status >= static_cast<int>(DeviceSyncStatus::Never) &&
+                status <= static_cast<int>(DeviceSyncStatus::Failed)
+                ? static_cast<DeviceSyncStatus>(status)
+                : DeviceSyncStatus::Failed;
+            row.lastError = statement.Text(5);
+            row.kind = statement.Int(6) != 0 ? DeviceKind::Wsl : DeviceKind::Windows;
+            row.counts = ReadCounts(statement, 7);
+            row.sessions = statement.Int64(13);
             result.push_back(std::move(row));
         }
         return result;
@@ -3247,6 +3326,23 @@ namespace tokenometer
             {
                 return false;
             }
+            auto const discoveredDevices = database.GetDeviceSummaries(10);
+            if (discoveredDevices.size() != 2 || std::ranges::any_of(
+                    discoveredDevices, [](auto const& device)
+                    {
+                        return device.lastAttempt != 0 || device.lastSuccess != 0 ||
+                            device.lastSeen != 0 ||
+                            device.syncStatus != DeviceSyncStatus::Never ||
+                            !device.lastError.empty();
+                    }))
+            {
+                return false;
+            }
+            database.RecordDeviceSync(deviceId, DeviceSyncStatus::Synced);
+            database.RecordDeviceSync(
+                wslDeviceId,
+                DeviceSyncStatus::Failed,
+                L"WSL root unavailable");
             SessionRecord session{ L"session-1", L"fixture.jsonl", L"codex", L"Fixture", L"D:\\work", L"gpt-test", deviceId, 100, 100, 0 };
             session.accountId = L"account-a";
             SessionRef const sessionRef{ session.sourceKind, session.accountId, session.id };
@@ -3419,6 +3515,10 @@ namespace tokenometer
             auto const duplicateWslId = database.GetOrCreateDeviceId(
                 L"Renamed WSL device",
                 L"wsl_device_id:test-device:Debian");
+            database.RecordDeviceSync(
+                duplicateWslId,
+                DeviceSyncStatus::PartialError,
+                L"One transcript could not be read");
             auto const devicesBeforeChatGpt = database.GetDeviceSummaries(10);
             auto const findDevice = [&](std::wstring_view id) -> DeviceSummary const*
             {
@@ -3439,10 +3539,21 @@ namespace tokenometer
             }
             if (duplicateWslId.empty() || duplicateWslId == wslDeviceId ||
                 !localDevice || localDevice->kind != DeviceKind::Windows ||
+                localDevice->syncStatus != DeviceSyncStatus::Synced ||
+                localDevice->lastAttempt <= 0 ||
+                localDevice->lastSuccess != localDevice->lastAttempt ||
+                localDevice->lastSeen != localDevice->lastSuccess ||
+                !localDevice->lastError.empty() ||
                 localDevice->counts.DisplayTotal() != 1500 ||
                 !ubuntuDevice || ubuntuDevice->kind != DeviceKind::Wsl ||
+                ubuntuDevice->syncStatus != DeviceSyncStatus::Failed ||
+                ubuntuDevice->lastAttempt <= 0 || ubuntuDevice->lastSuccess != 0 ||
+                ubuntuDevice->lastError != L"WSL root unavailable" ||
                 ubuntuDevice->counts.DisplayTotal() != 250 ||
                 !debianDevice || debianDevice->kind != DeviceKind::Wsl ||
+                debianDevice->syncStatus != DeviceSyncStatus::PartialError ||
+                debianDevice->lastAttempt <= 0 || debianDevice->lastSuccess != 0 ||
+                debianDevice->lastError != L"One transcript could not be read" ||
                 ubuntuDevice->displayName != debianDevice->displayName ||
                 devicesBeforeChatGptTotal != 1750)
             {
@@ -3752,6 +3863,14 @@ namespace tokenometer
             Database migrated(L":memory:");
             migrated.Execute(R"sql(
                 CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+                CREATE TABLE app_state(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE devices(
+                    id TEXT PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    last_seen INTEGER NOT NULL
+                );
+                INSERT INTO devices(id, display_name, last_seen)
+                    VALUES('legacy-device', 'Legacy device', 123);
                 CREATE TABLE sessions(
                     id TEXT PRIMARY KEY,
                     source_path TEXT NOT NULL DEFAULT '',
@@ -3812,7 +3931,7 @@ namespace tokenometer
             )sql");
             migrated.Initialize();
             Statement migratedVersion(migrated.m_database, "PRAGMA user_version;");
-            if (!migratedVersion.Step() || migratedVersion.Int(0) != 6) return false;
+            if (!migratedVersion.Step() || migratedVersion.Int(0) != 7) return false;
             auto hasAccountColumn = [&](char const* table)
             {
                 std::string sql = "PRAGMA table_info(";
@@ -3839,12 +3958,19 @@ namespace tokenometer
             };
             auto const migratedDays = migrated.GetDailyUsage(0);
             auto const migratedHours = migrated.GetHourlyUsage(0);
+            auto const migratedDevices = migrated.GetDeviceSummaries(10);
             return hasAccountColumn("sessions") &&
                    hasAccountColumn("daily_usage") &&
                    hasAccountColumn("hourly_usage") &&
                    columnIsPartOfPrimaryKey("daily_usage", L"account_id") &&
                    columnIsPartOfPrimaryKey("hourly_usage", L"account_id") &&
                    columnIsPartOfPrimaryKey("hourly_usage", L"day") &&
+                   migratedDevices.size() == 1 &&
+                   migratedDevices.front().lastAttempt == 123 &&
+                   migratedDevices.front().lastSuccess == 123 &&
+                   migratedDevices.front().lastSeen == 123 &&
+                   migratedDevices.front().syncStatus == DeviceSyncStatus::Synced &&
+                   migratedDevices.front().lastError.empty() &&
                    migratedDays.size() == 1 && migratedDays.front().counts.reportedTotal == 183 &&
                    migratedHours.size() == 1 && migratedHours.front().counts.reportedTotal == 270;
         }

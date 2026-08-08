@@ -29,6 +29,10 @@ namespace tokenometer
         [[nodiscard]] std::wstring GetOrCreateDeviceId(
             std::wstring_view displayName,
             std::wstring_view stateKey = L"local_device_id");
+        void RecordDeviceSync(
+            std::wstring_view deviceId,
+            DeviceSyncStatus status,
+            std::wstring_view error = {});
         [[nodiscard]] std::optional<std::wstring> GetAppState(
             std::wstring_view key);
         void SetAppState(std::wstring_view key, std::wstring_view value);

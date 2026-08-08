@@ -54,7 +54,9 @@ namespace tokenometer
                 : 0;
         }
 
-        std::optional<FileState> ReadFileState(std::filesystem::path const& path)
+        std::optional<FileState> ReadFileState(
+            std::filesystem::path const& path,
+            CollectionResult& result)
         {
             HANDLE const file = CreateFileW(
                 path.c_str(),
@@ -66,12 +68,14 @@ namespace tokenometer
                 nullptr);
             if (file == INVALID_HANDLE_VALUE)
             {
+                ++result.ioErrors;
                 return std::nullopt;
             }
 
             BY_HANDLE_FILE_INFORMATION information{};
             if (!GetFileInformationByHandle(file, &information))
             {
+                ++result.ioErrors;
                 CloseHandle(file);
                 return std::nullopt;
             }
@@ -93,12 +97,21 @@ namespace tokenometer
             {
                 LARGE_INTEGER position{};
                 position.QuadPart = -1;
-                if (SetFilePointerEx(file, position, nullptr, FILE_END))
+                if (!SetFilePointerEx(file, position, nullptr, FILE_END))
                 {
-                    char last{};
-                    DWORD read{};
-                    trailingNewline = ReadFile(file, &last, 1, &read, nullptr) && read == 1 && last == '\n';
+                    ++result.ioErrors;
+                    CloseHandle(file);
+                    return std::nullopt;
                 }
+                char last{};
+                DWORD read{};
+                if (!ReadFile(file, &last, 1, &read, nullptr) || read != 1)
+                {
+                    ++result.ioErrors;
+                    CloseHandle(file);
+                    return std::nullopt;
+                }
+                trailingNewline = last == '\n';
             }
             CloseHandle(file);
             return FileState{
@@ -377,10 +390,33 @@ namespace tokenometer
     CollectionResult CodexCollector::CollectOnce(std::stop_token stopToken)
     {
         CollectionResult result;
-        LoadSessionTitles();
-        CollectDirectory(m_root / L"sessions", result, stopToken);
-        CollectDirectory(m_root / L"archived_sessions", result, stopToken);
+        if (stopToken.stop_requested())
+        {
+            result.completedAt = UnixNow();
+            return result;
+        }
+        if (m_root.empty())
+        {
+            ++result.ioErrors;
+        }
+        else
+        {
+            LoadSessionTitles(result);
+            CollectDirectory(m_root / L"sessions", result, stopToken);
+            CollectDirectory(m_root / L"archived_sessions", result, stopToken);
+        }
         result.completedAt = UnixNow();
+        if (!stopToken.stop_requested())
+        {
+            m_database.RecordDeviceSync(
+                m_deviceId,
+                result.HasPartialErrors()
+                    ? DeviceSyncStatus::PartialError
+                    : DeviceSyncStatus::Synced,
+                result.HasPartialErrors()
+                    ? L"Some local Codex files or records could not be collected"
+                    : L"");
+        }
         return result;
     }
 
@@ -522,6 +558,29 @@ namespace tokenometer
                     afterRejectedNumbers.counts.output == validatedTotals.counts.output &&
                     afterRejectedNumbers.counts.reportedTotal == validatedTotals.counts.reportedTotal;
 
+            auto const lockedFixture = fixture.parent_path() /
+                L"rollout-2026-01-01T00-00-00-44444444-4444-4444-4444-444444444444.jsonl";
+            std::ofstream(lockedFixture, std::ios::binary).close();
+            HANDLE const lockedHandle = CreateFileW(
+                lockedFixture.c_str(),
+                GENERIC_READ,
+                0,
+                nullptr,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr);
+            if (lockedHandle == INVALID_HANDLE_VALUE) return false;
+            auto const unreadable = collector.CollectOnce();
+            CloseHandle(lockedHandle);
+            auto const recovered = collector.CollectOnce();
+            auto const syncDevices = database.GetDeviceSummaries(10);
+            valid = valid && unreadable.ioErrors >= 1 && unreadable.HasPartialErrors() &&
+                !recovered.HasPartialErrors() && syncDevices.size() == 1 &&
+                syncDevices.front().syncStatus == DeviceSyncStatus::Synced &&
+                syncDevices.front().lastAttempt > 0 &&
+                syncDevices.front().lastSuccess == syncDevices.front().lastAttempt &&
+                syncDevices.front().lastError.empty();
+
             Database externalDatabase(L":memory:");
             externalDatabase.Initialize();
             CodexCollector externalCollector(externalDatabase, root / L"external-unused");
@@ -619,20 +678,36 @@ namespace tokenometer
         }
     }
 
-    void CodexCollector::LoadSessionTitles()
+    void CodexCollector::LoadSessionTitles(CollectionResult& result)
     {
         m_titles.clear();
-        std::ifstream stream(m_root / L"session_index.jsonl", std::ios::binary);
+        auto const path = m_root / L"session_index.jsonl";
+        std::error_code error;
+        bool const exists = std::filesystem::exists(path, error);
+        if (error)
+        {
+            ++result.ioErrors;
+            return;
+        }
+        if (!exists) return;
+        std::ifstream stream(path, std::ios::binary);
+        if (!stream)
+        {
+            ++result.ioErrors;
+            return;
+        }
         std::string line;
         while (std::getline(stream, line))
         {
             if (line.size() > maximumRecordBytes)
             {
+                ++result.oversizedRecords;
                 continue;
             }
             auto const object = Parse(line);
             if (!object)
             {
+                ++result.malformedRecords;
                 continue;
             }
             auto const id = String(*object, L"id");
@@ -642,6 +717,7 @@ namespace tokenometer
                 m_titles.insert_or_assign(id, title);
             }
         }
+        if (stream.bad()) ++result.ioErrors;
     }
 
     void CodexCollector::CollectDirectory(
@@ -650,28 +726,48 @@ namespace tokenometer
         std::stop_token stopToken)
     {
         std::error_code error;
-        if (!std::filesystem::exists(directory, error))
+        bool const exists = std::filesystem::exists(directory, error);
+        if (error)
+        {
+            ++result.ioErrors;
+            return;
+        }
+        if (!exists)
         {
             return;
         }
         std::vector<std::filesystem::path> files;
-        for (std::filesystem::recursive_directory_iterator iterator(
-                 directory,
-                 std::filesystem::directory_options::skip_permission_denied,
-                 error), end;
-             iterator != end;
-             iterator.increment(error))
+        std::filesystem::recursive_directory_iterator iterator(
+            directory,
+            std::filesystem::directory_options::none,
+            error);
+        std::filesystem::recursive_directory_iterator end;
+        if (error)
         {
+            ++result.ioErrors;
+            return;
+        }
+        while (iterator != end)
+        {
+            if (stopToken.stop_requested()) break;
+            auto const name = iterator->path().filename().wstring();
+            error.clear();
+            bool const regular = iterator->is_regular_file(error);
             if (error)
             {
+                ++result.ioErrors;
                 error.clear();
-                continue;
             }
-            auto const name = iterator->path().filename().wstring();
-            if (iterator->is_regular_file(error) && iterator->path().extension() == L".jsonl" &&
+            else if (regular && iterator->path().extension() == L".jsonl" &&
                 name.starts_with(L"rollout-"))
             {
                 files.push_back(iterator->path());
+            }
+            iterator.increment(error);
+            if (error)
+            {
+                ++result.ioErrors;
+                error.clear();
             }
         }
         std::sort(files.begin(), files.end());
@@ -688,7 +784,7 @@ namespace tokenometer
         std::stop_token stopToken)
     {
         ++result.filesVisited;
-        auto const state = ReadFileState(path);
+        auto const state = ReadFileState(path, result);
         if (!state)
         {
             return;
@@ -714,11 +810,13 @@ namespace tokenometer
         std::ifstream stream(path, std::ios::binary);
         if (!stream)
         {
+            ++result.ioErrors;
             return;
         }
         stream.seekg(current.offset);
         if (!stream)
         {
+            ++result.ioErrors;
             return;
         }
 
@@ -901,12 +999,18 @@ namespace tokenometer
             auto const before = stream.tellg();
             if (before < 0)
             {
+                if (!stream.eof()) ++result.ioErrors;
                 break;
             }
             int64_t const sourceOffset = streamBaseOffset + static_cast<int64_t>(before);
             stream.getline(recordBuffer.data(), static_cast<std::streamsize>(recordBuffer.size()));
             std::streamsize const extracted = stream.gcount();
-            if (stream.bad() || (extracted == 0 && stream.eof()))
+            if (stream.bad())
+            {
+                ++result.ioErrors;
+                break;
+            }
+            if (extracted == 0 && stream.eof())
             {
                 break;
             }
@@ -914,6 +1018,12 @@ namespace tokenometer
             {
                 stream.clear();
                 stream.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+                if (stream.bad())
+                {
+                    ++result.ioErrors;
+                    current.offset = sourceOffset;
+                    break;
+                }
                 auto const after = stream.tellg();
                 if (after < 0 && availableEnd < transcript.size)
                 {

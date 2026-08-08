@@ -46,10 +46,20 @@ namespace tokenometer
 
         constexpr std::wstring_view rootScript =
             L"if [ -n \"${CODEX_HOME:-}\" ]; then root=$CODEX_HOME; "
-            L"else root=$HOME/.codex; fi; root=$(readlink -f -- \"$root\") || exit 1; "
-            L"[ -d \"$root\" ] || exit 1; printf '%s\\0' \"$root\"";
+            L"else root=$HOME/.codex; fi; "
+            L"case \"$root\" in /*) ;; *) exit 126 ;; esac; "
+            L"while [ \"$root\" != / ] && [ \"${root%/}\" != \"$root\" ]; do root=${root%/}; done; "
+            L"parent=${root%/*}; [ -n \"$parent\" ] || parent=/; "
+            L"[ -d \"$parent\" ] && [ -r \"$parent\" ] && [ -x \"$parent\" ] || exit 126; "
+            L"[ -e \"$root\" ] || { printf '\\0'; exit 0; }; "
+            L"root=$(readlink -f -- \"$root\") || exit 1; "
+            L"[ -d \"$root\" ] && [ -r \"$root\" ] && [ -x \"$root\" ] || exit 126; "
+            L"printf '%s\\0' \"$root\"";
         constexpr std::wstring_view enumerateScript =
-            L"directory=$1; [ -d \"$directory\" ] || exit 0; "
+            L"directory=$1; parent=${directory%/*}; "
+            L"[ -d \"$parent\" ] && [ -r \"$parent\" ] && [ -x \"$parent\" ] || exit 126; "
+            L"[ -e \"$directory\" ] || exit 0; "
+            L"[ -d \"$directory\" ] && [ -r \"$directory\" ] && [ -x \"$directory\" ] || exit 126; "
             L"for tool in find sort sed dd stat readlink; do "
             L"\"$tool\" --version >/dev/null 2>&1 || exit 125; done; "
             L"set -o pipefail || exit 125; first=$2; last=$((first + $3 - 1)); "
@@ -593,7 +603,9 @@ namespace tokenometer
             auto root = Utf8(std::span<uint8_t const>{
                 result.standardOutput.data(),
                 static_cast<size_t>(terminator - result.standardOutput.begin())});
-            return root && ValidAbsoluteLinuxPath(*root) ? std::optional{std::move(*root)} : std::nullopt;
+            if (!root) return std::nullopt;
+            if (root->empty()) return std::optional{std::wstring{}};
+            return ValidAbsoluteLinuxPath(*root) ? std::optional{std::move(*root)} : std::nullopt;
         }
 
         std::optional<RemotePage> EnumeratePage(
@@ -691,7 +703,7 @@ namespace tokenometer
                 return std::nullopt;
             }
             auto root = ResolveRoot(runner, parsed->distribution, stopToken);
-            if (!root || !IsRolloutPath(parsed->path, *root)) return std::nullopt;
+            if (!root || root->empty() || !IsRolloutPath(parsed->path, *root)) return std::nullopt;
             return ReadBytes(
                 runner,
                 parsed->distribution,
@@ -720,6 +732,7 @@ namespace tokenometer
             destination.toolEvents += source.toolEvents;
             destination.malformedRecords += source.malformedRecords;
             destination.oversizedRecords += source.oversizedRecords;
+            destination.ioErrors += source.ioErrors;
             destination.bytesRead += source.bytesRead;
             destination.completedAt = std::max(destination.completedAt, source.completedAt);
         }
@@ -751,6 +764,12 @@ namespace tokenometer
     WslCollectionResult WslCodexCollector::CollectOnce(std::stop_token stopToken)
     {
         WslCollectionResult result;
+        if (stopToken.stop_requested())
+        {
+            result.completedAt = UnixNow();
+            result.usage.completedAt = result.completedAt;
+            return result;
+        }
         auto distributions = RunningDistributions(m_runner, stopToken);
         if (!distributions)
         {
@@ -766,12 +785,6 @@ namespace tokenometer
             if (stopToken.stop_requested()) break;
             auto const startedAt = std::chrono::steady_clock::now();
             auto const deadline = startedAt + distributionBudget;
-            auto root = ResolveRoot(m_runner, distribution, stopToken, deadline);
-            if (!root)
-            {
-                if (!stopToken.stop_requested()) ++result.errors;
-                continue;
-            }
             std::wstring deviceId;
             try
             {
@@ -784,7 +797,33 @@ namespace tokenometer
                 ++result.errors;
                 continue;
             }
+            bool distributionHadError{};
+            bool distributionWasPartial{};
+            int successfulPages{};
+            auto recordStatus = [&](DeviceSyncStatus status, std::wstring_view error = {})
+            {
+                if (!stopToken.stop_requested())
+                {
+                    m_database.RecordDeviceSync(deviceId, status, error);
+                }
+            };
+
+            auto root = ResolveRoot(m_runner, distribution, stopToken, deadline);
+            if (!root)
+            {
+                if (!stopToken.stop_requested())
+                {
+                    ++result.errors;
+                    recordStatus(DeviceSyncStatus::Failed, L"WSL Codex root could not be resolved");
+                }
+                continue;
+            }
             ++result.distributionsScanned;
+            if (root->empty())
+            {
+                recordStatus(DeviceSyncStatus::Synced);
+                continue;
+            }
             std::wstring const accountId = L"wsl-unknown:" + deviceId;
             std::wstring const activeCursorKey = L"wsl_active_cursor:" + deviceId;
             std::wstring const archiveCursorKey = L"wsl_archive_cursor:" + deviceId;
@@ -807,9 +846,13 @@ namespace tokenometer
                 result.filesFound += static_cast<int>(files.size());
                 for (auto const& file : files)
                 {
-                    if (stopToken.stop_requested() ||
-                        std::chrono::steady_clock::now() - startedAt >= distributionBudget)
+                    if (stopToken.stop_requested())
                     {
+                        return false;
+                    }
+                    if (std::chrono::steady_clock::now() - startedAt >= distributionBudget)
+                    {
+                        distributionWasPartial = true;
                         return false;
                     }
                     if (m_database.HasSessionSource(file.sessionId, L"codex"))
@@ -837,7 +880,9 @@ namespace tokenometer
                         transcript.modifiedAt = file.modifiedAt;
                         transcript.contentOffset = offset;
                         transcript.collectRateLimits = false;
-                        Add(result.usage, m_parser.CollectExternal(transcript, stopToken));
+                        auto const collected = m_parser.CollectExternal(transcript, stopToken);
+                        distributionWasPartial = distributionWasPartial || collected.HasPartialErrors();
+                        Add(result.usage, collected);
                         continue;
                     }
 
@@ -861,7 +906,11 @@ namespace tokenometer
                             deadline);
                         if (!content)
                         {
-                            if (!stopToken.stop_requested()) ++result.errors;
+                            if (!stopToken.stop_requested())
+                            {
+                                ++result.errors;
+                                distributionHadError = true;
+                            }
                             completedAll = false;
                             break;
                         }
@@ -881,7 +930,9 @@ namespace tokenometer
                         transcript.contentOffset = offset;
                         transcript.content = std::move(*content);
                         transcript.collectRateLimits = false;
-                        Add(result.usage, m_parser.CollectExternal(transcript, stopToken));
+                        auto const collected = m_parser.CollectExternal(transcript, stopToken);
+                        distributionWasPartial = distributionWasPartial || collected.HasPartialErrors();
+                        Add(result.usage, collected);
 
                         auto next = m_database.GetSourceProgress(locator, identity);
                         if (!next || next->offset <= offset)
@@ -955,20 +1006,33 @@ namespace tokenometer
                                         m_database.SaveSourceProgress(*next);
                                     });
                                     ++result.usage.oversizedRecords;
+                                    distributionWasPartial = true;
                                     result.usage.bytesRead += skipTo - offset;
                                     offset = skipTo;
                                     continue;
                                 }
-                                if (scanFailed) completedAll = false;
+                                if (scanFailed)
+                                {
+                                    if (!stopToken.stop_requested())
+                                    {
+                                        ++result.errors;
+                                        distributionHadError = true;
+                                    }
+                                    completedAll = false;
+                                }
                             }
                             break;
                         }
                         m_oversizedScanCursors.erase(identity);
                         offset = next->offset;
                     }
-                    if (stopToken.stop_requested() ||
-                        std::chrono::steady_clock::now() - startedAt >= distributionBudget)
+                    if (stopToken.stop_requested())
                     {
+                        return false;
+                    }
+                    if (std::chrono::steady_clock::now() - startedAt >= distributionBudget)
+                    {
+                        distributionWasPartial = true;
                         return false;
                     }
                 }
@@ -981,15 +1045,21 @@ namespace tokenometer
                 if (stopToken.stop_requested() ||
                     std::chrono::steady_clock::now() - startedAt >= distributionBudget)
                 {
+                    if (!stopToken.stop_requested()) distributionWasPartial = true;
                     return std::nullopt;
                 }
                 auto page = EnumeratePage(
                     m_runner, distribution, *root, directory, firstRecord, stopToken, deadline);
                 if (!page)
                 {
-                    if (!stopToken.stop_requested()) ++result.errors;
+                    if (!stopToken.stop_requested())
+                    {
+                        ++result.errors;
+                        distributionHadError = true;
+                    }
                     return std::nullopt;
                 }
+                ++successfulPages;
                 bool const completed = processFiles(page->files);
                 return std::pair{page->records, completed};
             };
@@ -1025,6 +1095,28 @@ namespace tokenometer
                     m_database.SetAppState(
                         archiveCursorKey,
                         std::to_wstring(archiveCursor));
+                }
+            }
+
+            if (!stopToken.stop_requested())
+            {
+                if (distributionHadError)
+                {
+                    recordStatus(
+                        successfulPages == 0
+                            ? DeviceSyncStatus::Failed
+                            : DeviceSyncStatus::PartialError,
+                        L"One or more WSL Codex files could not be collected");
+                }
+                else if (distributionWasPartial)
+                {
+                    recordStatus(
+                        DeviceSyncStatus::PartialError,
+                        L"The WSL Codex scan was incomplete or skipped invalid records");
+                }
+                else
+                {
+                    recordStatus(DeviceSyncStatus::Synced);
                 }
             }
         }
@@ -1065,6 +1157,9 @@ namespace tokenometer
             std::vector<std::vector<std::wstring>> calls;
             int64_t forcedReadFailureOffset{-1};
             bool forcedReadFailurePending{};
+            std::wstring forcedRootPermissionDistribution;
+            std::wstring missingRootDistribution;
+            std::wstring forcedEnumerationFailureDistribution;
 
             Runner fake = [&](std::vector<std::wstring> const& arguments,
                               WslProcessOptions const&,
@@ -1084,10 +1179,29 @@ namespace tokenometer
                 }
                 if (arguments.size() >= 6 && arguments[5] == rootScript)
                 {
+                    if (arguments[1] == forcedRootPermissionDistribution)
+                    {
+                        WslProcessResult denied;
+                        denied.started = true;
+                        denied.exitCode = 126;
+                        return denied;
+                    }
+                    if (arguments[1] == missingRootDistribution)
+                    {
+                        return Success(Bytes("\0"sv));
+                    }
                     return Success(Bytes("/home/test/.codex\0"sv));
                 }
                 if (arguments.size() >= 6 && arguments[5] == enumerateScript)
                 {
+                    if (arguments[1] == forcedEnumerationFailureDistribution &&
+                        arguments.size() >= 8 && arguments[7].ends_with(L"/sessions"))
+                    {
+                        WslProcessResult denied;
+                        denied.started = true;
+                        denied.exitCode = 126;
+                        return denied;
+                    }
                     if (arguments[1] == L"Ubuntu")
                     {
                         if (arguments.size() >= 10 && arguments[8] == L"1")
@@ -1136,11 +1250,36 @@ namespace tokenometer
             auto const first = collector.CollectOnce();
             auto const second = collector.CollectOnce();
             auto const accounts = database.GetBreakdown(L"account");
+            auto const firstDevices = database.GetDeviceSummaries(10);
+            auto const findDeviceByName = [&](std::wstring_view suffix)
+                -> DeviceSummary const*
+            {
+                auto const found = std::find_if(
+                    firstDevices.begin(), firstDevices.end(), [&](auto const& device)
+                    {
+                        return device.kind == DeviceKind::Wsl &&
+                            device.displayName.ends_with(suffix);
+                    });
+                return found == firstDevices.end() ? nullptr : &*found;
+            };
+            auto const fixtureDistributionDevice = findDeviceByName(distribution);
+            auto const ubuntuDevice = findDeviceByName(L"Ubuntu");
             if (!first.discoverySucceeded || first.distributionsFound != 2 ||
                 first.distributionsScanned != 2 ||
                 first.filesFound != 1 || first.errors != 0 || first.usage.usageEvents != 1 ||
                 first.usage.promptEvents != 1 || first.usage.toolEvents != 1 ||
                 second.usage.usageEvents != 0 || database.GetTotals().counts.reportedTotal != 42 ||
+                !fixtureDistributionDevice || !ubuntuDevice ||
+                fixtureDistributionDevice->syncStatus != DeviceSyncStatus::Synced ||
+                ubuntuDevice->syncStatus != DeviceSyncStatus::Synced ||
+                fixtureDistributionDevice->lastSuccess <= 0 ||
+                ubuntuDevice->lastSuccess <= 0 ||
+                std::ranges::none_of(firstDevices, [](auto const& device)
+                {
+                    return device.kind == DeviceKind::Windows &&
+                        device.syncStatus == DeviceSyncStatus::Never &&
+                        device.lastAttempt == 0 && device.lastSuccess == 0;
+                }) ||
                 std::ranges::none_of(accounts, [](auto const& row)
                 {
                     return row.key.starts_with(L"wsl-unknown:") &&
@@ -1195,6 +1334,23 @@ namespace tokenometer
                 afterOversized.usage.oversizedRecords != 1 ||
                 afterOversized.usage.usageEvents != 1 ||
                 database.GetTotals().counts.reportedTotal != 60)
+            {
+                return false;
+            }
+            auto const afterOversizedDevices = database.GetDeviceSummaries(10);
+            auto currentStatus = [&](std::wstring_view id)
+            {
+                auto const found = std::find_if(
+                    afterOversizedDevices.begin(), afterOversizedDevices.end(), [&](auto const& device)
+                    {
+                        return device.id == id;
+                    });
+                return found == afterOversizedDevices.end()
+                    ? DeviceSyncStatus::Never
+                    : found->syncStatus;
+            };
+            if (currentStatus(fixtureDistributionDevice->id) != DeviceSyncStatus::PartialError ||
+                currentStatus(ubuntuDevice->id) != DeviceSyncStatus::Synced)
             {
                 return false;
             }
@@ -1276,6 +1432,73 @@ namespace tokenometer
             }
             if (!resumedArchiveCursor) return false;
 
+            forcedRootPermissionDistribution = L"Ubuntu";
+            auto const rootFailure = collector.CollectOnce();
+            forcedRootPermissionDistribution.clear();
+            auto const afterRootFailure = database.GetDeviceSummaries(10);
+            auto statusFor = [](std::vector<DeviceSummary> const& devices, std::wstring_view id)
+            {
+                auto const found = std::find_if(devices.begin(), devices.end(), [&](auto const& device)
+                {
+                    return device.id == id;
+                });
+                return found == devices.end() ? DeviceSyncStatus::Never : found->syncStatus;
+            };
+            if (rootFailure.errors != 1 || rootFailure.distributionsScanned != 1 ||
+                statusFor(afterRootFailure, fixtureDistributionDevice->id) !=
+                    DeviceSyncStatus::Synced ||
+                statusFor(afterRootFailure, ubuntuDevice->id) != DeviceSyncStatus::Failed)
+            {
+                return false;
+            }
+
+            missingRootDistribution = L"Ubuntu";
+            auto const noCodexRoot = collector.CollectOnce();
+            missingRootDistribution.clear();
+            auto const afterNoRoot = database.GetDeviceSummaries(10);
+            auto const noRootDevice = std::find_if(
+                afterNoRoot.begin(), afterNoRoot.end(), [&](auto const& device)
+                {
+                    return device.id == ubuntuDevice->id;
+                });
+            if (noCodexRoot.errors != 0 || noCodexRoot.distributionsScanned != 2 ||
+                noRootDevice == afterNoRoot.end() ||
+                noRootDevice->syncStatus != DeviceSyncStatus::Synced ||
+                noRootDevice->lastSuccess <= 0 || !noRootDevice->lastError.empty())
+            {
+                return false;
+            }
+
+            forcedEnumerationFailureDistribution = L"Ubuntu";
+            auto const enumerationFailure = collector.CollectOnce();
+            forcedEnumerationFailureDistribution.clear();
+            auto const afterEnumerationFailure = database.GetDeviceSummaries(10);
+            if (enumerationFailure.errors != 1 ||
+                enumerationFailure.distributionsScanned != 2 ||
+                statusFor(afterEnumerationFailure, fixtureDistributionDevice->id) !=
+                    DeviceSyncStatus::Synced ||
+                statusFor(afterEnumerationFailure, ubuntuDevice->id) !=
+                    DeviceSyncStatus::PartialError)
+            {
+                return false;
+            }
+
+            auto syncSnapshot = [&]
+            {
+                std::unordered_map<std::wstring, std::pair<int64_t, DeviceSyncStatus>> snapshot;
+                for (auto const& device : database.GetDeviceSummaries(100))
+                {
+                    snapshot.emplace(device.id, std::pair{device.lastAttempt, device.syncStatus});
+                }
+                return snapshot;
+            };
+            auto const beforeStopped = syncSnapshot();
+            std::stop_source stopped;
+            stopped.request_stop();
+            static_cast<void>(collector.CollectOnce(stopped.get_token()));
+            if (syncSnapshot() != beforeStopped) return false;
+
+            auto const beforeUnavailable = syncSnapshot();
             WslCodexCollector unavailable(database, [](
                 std::vector<std::wstring> const&,
                 WslProcessOptions const&,
@@ -1284,7 +1507,8 @@ namespace tokenometer
                 return WslProcessResult{};
             });
             auto const unavailableResult = unavailable.CollectOnce();
-            if (unavailableResult.discoverySucceeded || unavailableResult.errors != 1)
+            if (unavailableResult.discoverySucceeded || unavailableResult.errors != 1 ||
+                syncSnapshot() != beforeUnavailable)
             {
                 return false;
             }

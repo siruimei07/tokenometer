@@ -19,8 +19,14 @@ namespace tokenometer
         int toolEvents{};
         int malformedRecords{};
         int oversizedRecords{};
+        int ioErrors{};
         int64_t bytesRead{};
         int64_t completedAt{};
+
+        [[nodiscard]] bool HasPartialErrors() const noexcept
+        {
+            return ioErrors > 0 || malformedRecords > 0 || oversizedRecords > 0;
+        }
     };
 
     struct ExternalCodexTranscript
@@ -52,7 +58,7 @@ namespace tokenometer
             std::stop_token stopToken = {});
 
     private:
-        void LoadSessionTitles();
+        void LoadSessionTitles(CollectionResult& result);
         void CollectDirectory(
             std::filesystem::path const& directory,
             CollectionResult& result,

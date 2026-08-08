@@ -345,12 +345,24 @@ namespace tokenometer
         Wsl,
     };
 
+    enum class DeviceSyncStatus
+    {
+        Never,
+        Synced,
+        PartialError,
+        Failed,
+    };
+
     struct DeviceSummary
     {
         std::wstring id;
         std::wstring displayName;
         DeviceKind kind{ DeviceKind::Windows };
         int64_t lastSeen{};
+        int64_t lastAttempt{};
+        int64_t lastSuccess{};
+        DeviceSyncStatus syncStatus{ DeviceSyncStatus::Never };
+        std::wstring lastError;
         TokenCounts counts;
         int64_t sessions{};
     };
